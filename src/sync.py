@@ -56,6 +56,17 @@ def process_playlist(
     max_age_days = int(max_age_days)
     sleep_between = int(sleep_between)
 
+    if sleep_between < 0:
+        raise ValueError(
+            f"sleep_between must be >= 0, got {sleep_between}. "
+            "Set SLEEP_BETWEEN_DOWNLOADS=0 to disable sleeping."
+        )
+
+    logger.info(
+        "[Config] max_downloads=%d  max_age_days=%d  sleep_between=%ds",
+        max_downloads, max_age_days, sleep_between,
+    )
+
     playlist_id = extract_playlist_id(playlist_url)
     s3 = S3Manager(bucket=bucket, playlist_id=playlist_id)
     tmp_dir = f"/tmp/{playlist_id}"

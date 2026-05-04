@@ -316,6 +316,14 @@ class TestProcessPlaylistAgeFiltering:
 # ---------------------------------------------------------------------------
 
 class TestProcessPlaylistSleep:
+    def test_raises_on_negative_sleep_between(self):
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            with pytest.raises(ValueError, match="sleep_between must be >= 0"):
+                process_playlist(
+                    "https://youtube.com/playlist?list=PLtest",
+                    sleep_between=-1,
+                )
+
     def test_sleeps_between_downloads(self):
         videos = [_make_video(f"vid{i:03d}") for i in range(2)]
         playlist_meta = _make_playlist_meta()
