@@ -1,0 +1,165 @@
+"""Unit tests for S3Manager."""
+
+import os
+import tempfile
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from s3_manager import S3Manager
+
+BUCKET = "test-podcast-bucket"
+PLAYLIST_ID = "PLtest123"
+
+
+@pytest.fixture
+def s3_manager():
+    """Create an S3Manager with a mocked S3 bucket."""
+    with mock_aws():
+        # Create the bucket in the mock
+        conn = boto3.client("s3", region_name="us-east-1")
+        conn.create_bucket(Bucket=BUCKET)
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        # Override the client to use the mocked one
+        manager.s3_client = conn
+        yield manager
+
+
+class TestInit:
+    def test_stores_bucket_and_playlist_id(self):
+        with mock_aws():
+            manager = S3Manager(bucket="my-bucket", playlist_id="PLabc")
+            assert manager.bucket == "my-bucket"
+            assert manager.playlist_id == "PLabc"
+
+    def test_creates_s3_client(self):
+        with mock_aws():
+            manager = S3Manager(bucket="my-bucket", playlist_id="PLabc")
+            assert manager.s3_client is not None
+
+
+class TestListExistingEpisodes:
+    def test_empty_bucket_returns_empty_set(self, s3_manager):
+        result = s3_manager.list_existing_episodes()
+        assert result == set()
+
+    def test_returns_video_ids_from_mp3_keys(self, s3_manager):
+        # Upload some test objects
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/episodes/vid001.mp3",
+            Body=b"audio",
+        )
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/episodes/vid002.mp3",
+            Body=b"audio",
+        )
+        result = s3_manager.list_existing_episodes()
+        assert result == {"vid001", "vid002"}
+
+    def test_ignores_non_mp3_files(self, s3_manager):
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/episodes/vid001.mp3",
+            Body=b"audio",
+        )
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/episodes/readme.txt",
+            Body=b"text",
+        )
+        result = s3_manager.list_existing_episodes()
+        assert result == {"vid001"}
+
+    def test_ignores_other_playlist_prefixes(self, s3_manager):
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/episodes/vid001.mp3",
+            Body=b"audio",
+        )
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key="OtherPlaylist/episodes/vid999.mp3",
+            Body=b"audio",
+        )
+        result = s3_manager.list_existing_episodes()
+        assert result == {"vid001"}
+
+
+class TestUploadEpisode:
+    def test_uploads_file_and_returns_key(self, s3_manager):
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake mp3 data")
+            tmp_path = f.name
+
+        try:
+            key = s3_manager.upload_episode(tmp_path, "vid001")
+            assert key == f"{PLAYLIST_ID}/episodes/vid001.mp3"
+
+            # Verify the object exists in S3
+            obj = s3_manager.s3_client.get_object(Bucket=BUCKET, Key=key)
+            assert obj["Body"].read() == b"fake mp3 data"
+        finally:
+            os.unlink(tmp_path)
+
+    def test_sets_audio_mpeg_content_type(self, s3_manager):
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake mp3 data")
+            tmp_path = f.name
+
+        try:
+            key = s3_manager.upload_episode(tmp_path, "vid001")
+            obj = s3_manager.s3_client.head_object(Bucket=BUCKET, Key=key)
+            assert obj["ContentType"] == "audio/mpeg"
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestDeleteEpisode:
+    def test_deletes_episode_from_s3(self, s3_manager):
+        # Upload first
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/episodes/vid001.mp3",
+            Body=b"audio",
+        )
+        # Verify it exists
+        assert s3_manager.list_existing_episodes() == {"vid001"}
+
+        # Delete
+        s3_manager.delete_episode("vid001")
+
+        # Verify it's gone
+        assert s3_manager.list_existing_episodes() == set()
+
+
+class TestUploadFeed:
+    def test_uploads_feed_and_returns_key(self, s3_manager):
+        xml = "<rss><channel><title>Test</title></channel></rss>"
+        key = s3_manager.upload_feed(xml)
+        assert key == f"{PLAYLIST_ID}/feed.xml"
+
+        # Verify content
+        obj = s3_manager.s3_client.get_object(Bucket=BUCKET, Key=key)
+        assert obj["Body"].read().decode("utf-8") == xml
+
+    def test_sets_rss_xml_content_type(self, s3_manager):
+        xml = "<rss><channel><title>Test</title></channel></rss>"
+        key = s3_manager.upload_feed(xml)
+        obj = s3_manager.s3_client.head_object(Bucket=BUCKET, Key=key)
+        assert obj["ContentType"] == "application/rss+xml"
+
+
+class TestGetObjectSize:
+    def test_returns_content_length(self, s3_manager):
+        data = b"hello world 12345"
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/episodes/vid001.mp3",
+            Body=data,
+        )
+        size = s3_manager.get_object_size(f"{PLAYLIST_ID}/episodes/vid001.mp3")
+        assert size == len(data)

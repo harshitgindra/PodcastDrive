@@ -1,0 +1,39 @@
+# Podcast subscriptions — copy to podcasts.yaml and customize.
+#
+# Each entry can override global defaults.
+# Set enabled: false to unsubscribe without removing the entry.
+#
+# URL can be any of:
+#   - A YouTube playlist ID:  PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#   - A channel handle:       @YourChannelHandle
+#   - A full YouTube URL:     https://www.youtube.com/playlist?list=PLxxx
+
+defaults:
+  max_downloads: 10
+  max_age_days: 7
+  sleep_between: 5
+
+podcasts:
+  - name: My Favourite Podcast
+    url: PLxxxxxxxxxxxxxxxxxxxxxxxxxxxx01
+    enabled: true
+
+  - name: Another Great Show
+    url: PLxxxxxxxxxxxxxxxxxxxxxxxxxxxx02
+    enabled: true
+    max_downloads: 5
+
+  - name: A YouTube Channel
+    url: "@YourChannelHandle"
+    enabled: true
+    max_age_days: 30
+    max_downloads: 3
+
+  - name: Another Channel
+    url: "@AnotherChannelHandle"
+    enabled: true
+    max_age_days: 7
+
+  # - name: Unsubscribed Show
+  #   url: PLxxxxxxxxxxxxxxxxxxxxxxxxxxxx03
+  #   enabled: false
