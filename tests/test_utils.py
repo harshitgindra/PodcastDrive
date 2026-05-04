@@ -37,6 +37,27 @@ class TestExtractPlaylistId:
         with pytest.raises(ValueError, match="Could not extract playlist or channel ID"):
             extract_playlist_id(url)
 
+    def test_channel_handle_url(self):
+        url = "https://www.youtube.com/@MyChannel/videos"
+        assert extract_playlist_id(url) == "@MyChannel"
+
+    def test_channel_handle_url_without_videos(self):
+        url = "https://www.youtube.com/@SomeHandle"
+        assert extract_playlist_id(url) == "@SomeHandle"
+
+    def test_channel_id_url(self):
+        url = "https://www.youtube.com/channel/UCabcdef1234567890"
+        assert extract_playlist_id(url) == "UCabcdef1234567890"
+
+    def test_raw_playlist_id_returned_as_is(self):
+        assert extract_playlist_id("PLEVkQGIATCXI1F2qs0") == "PLEVkQGIATCXI1F2qs0"
+
+    def test_raw_channel_handle_returned_as_is(self):
+        assert extract_playlist_id("@MyChannel") == "@MyChannel"
+
+    def test_raw_uc_id_returned_as_is(self):
+        assert extract_playlist_id("UCabcdef1234567890") == "UCabcdef1234567890"
+
 
 # --- parse_upload_date tests ---
 

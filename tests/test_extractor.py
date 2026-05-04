@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from extractor import extract_playlist
+from extractor import extract_playlist, extract_video_metadata
 from models import PlaylistMeta, VideoEntry
 
 
@@ -330,3 +330,74 @@ class TestValidationRules:
         _, videos = extract_playlist(PLAYLIST_URL)
 
         assert videos[0].upload_date == ""
+
+
+# ---------------------------------------------------------------------------
+# extract_video_metadata
+# ---------------------------------------------------------------------------
+
+class TestExtractVideoMetadata:
+    """Tests for full single-video metadata extraction."""
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_returns_metadata_dict(self, mock_ydl_cls):
+        info = {
+            "upload_date": "20250601",
+            "description": "Test desc",
+            "thumbnail": "https://img.com/thumb.jpg",
+            "duration": 360,
+            "title": "My Video",
+        }
+        mock_ydl = MagicMock()
+        mock_ydl.extract_info.return_value = info
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl_cls.return_value = mock_ydl
+
+        result = extract_video_metadata("https://youtube.com/watch?v=abc")
+
+        assert result is not None
+        assert result["upload_date"] == "20250601"
+        assert result["description"] == "Test desc"
+        assert result["thumbnail"] == "https://img.com/thumb.jpg"
+        assert result["duration"] == 360
+        assert result["title"] == "My Video"
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_returns_none_when_info_is_none(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl.extract_info.return_value = None
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl_cls.return_value = mock_ydl
+
+        result = extract_video_metadata("https://youtube.com/watch?v=missing")
+        assert result is None
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_returns_none_on_exception(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl.extract_info.side_effect = Exception("yt-dlp error")
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl_cls.return_value = mock_ydl
+
+        result = extract_video_metadata("https://youtube.com/watch?v=error")
+        assert result is None
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_missing_fields_default_to_empty(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        # Use a non-empty dict (truthy) so the `if not info` check passes
+        mock_ydl.extract_info.return_value = {"_type": "video"}  # minimal truthy dict
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl_cls.return_value = mock_ydl
+
+        result = extract_video_metadata("https://youtube.com/watch?v=empty")
+        assert result is not None
+        assert result["upload_date"] == ""
+        assert result["description"] == ""
+        assert result["thumbnail"] == ""
+        assert result["duration"] is None
+        assert result["title"] == ""

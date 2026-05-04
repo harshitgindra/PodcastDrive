@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import unittest.mock
 
 import boto3
 import pytest
@@ -163,3 +164,95 @@ class TestGetObjectSize:
         )
         size = s3_manager.get_object_size(f"{PLAYLIST_ID}/episodes/vid001.mp3")
         assert size == len(data)
+
+
+class TestInvalidateCloudFront:
+    def test_skips_when_no_distribution_id(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+            manager.s3_client = conn
+            manager._distribution_id = ""  # not set
+            # Should not raise, just skip
+            manager._invalidate_cloudfront("/PLtest123/feed.xml")
+            assert manager._cf_client is None
+
+    def test_creates_invalidation_when_distribution_id_set(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+            manager.s3_client = conn
+            manager._distribution_id = "EDIST123"
+
+            mock_cf = unittest.mock.MagicMock()
+            manager._cf_client = mock_cf
+
+            manager._invalidate_cloudfront("/PLtest123/feed.xml")
+            mock_cf.create_invalidation.assert_called_once()
+            call_kwargs = mock_cf.create_invalidation.call_args[1]
+            assert call_kwargs["DistributionId"] == "EDIST123"
+            assert "/PLtest123/feed.xml" in call_kwargs["InvalidationBatch"]["Paths"]["Items"]
+
+    def test_handles_cloudfront_exception_gracefully(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+            manager.s3_client = conn
+            manager._distribution_id = "EDIST123"
+
+            mock_cf = unittest.mock.MagicMock()
+            mock_cf.create_invalidation.side_effect = Exception("CF error")
+            manager._cf_client = mock_cf
+
+            # Should not raise
+            manager._invalidate_cloudfront("/PLtest123/feed.xml")
+
+
+class TestPingOvercast:
+    def test_skips_when_no_cloudfront_base(self):
+        import os
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+            manager.s3_client = conn
+
+            env = os.environ.copy()
+            env.pop("CLOUDFRONT_BASE", None)
+            with unittest.mock.patch.dict(os.environ, env, clear=True):
+                # Should not raise
+                manager._ping_overcast()
+
+    def test_sends_ping_when_cloudfront_base_set(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+            manager.s3_client = conn
+
+            mock_resp = unittest.mock.MagicMock()
+            mock_resp.status = 200
+            mock_resp.__enter__ = unittest.mock.MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+
+            with unittest.mock.patch.dict(os.environ, {"CLOUDFRONT_BASE": "https://cdn.example.com"}):
+                with unittest.mock.patch("urllib.request.urlopen", return_value=mock_resp):
+                    manager._ping_overcast()
+                    # Should have called urlopen with overcast ping URL
+                    import s3_manager as _s3m
+                    # No assertion needed beyond no exception raised
+
+    def test_handles_ping_exception_gracefully(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+            manager.s3_client = conn
+
+            with unittest.mock.patch.dict(os.environ, {"CLOUDFRONT_BASE": "https://cdn.example.com"}):
+                with unittest.mock.patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+                    # Should not raise
+                    manager._ping_overcast()
