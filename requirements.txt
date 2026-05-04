@@ -6,5 +6,6 @@ yt-dlp
 
 # Test dependencies
 hypothesis
+moto[s3]
 pytest
 pytest-mock
