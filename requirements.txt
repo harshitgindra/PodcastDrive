@@ -1,5 +1,6 @@
 # Core dependencies
 boto3
+certifi
 pyyaml
 yt-dlp
 

@@ -114,8 +114,12 @@ class NotionConfigProvider(ConfigProvider):
             )
 
     def get_podcasts(self) -> list[PodcastConfig]:
+        import ssl
         import urllib.request
         import json
+        import certifi
+
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
         url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
         headers = {
@@ -141,7 +145,7 @@ class NotionConfigProvider(ConfigProvider):
             )
 
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             except Exception as exc:
                 logger.error("Failed to query Notion database: %s", exc)
@@ -219,9 +223,13 @@ class NotionConfigProvider(ConfigProvider):
             logger.warning("No page_id for %s, skipping Notion update", podcast.name)
             return
 
+        import ssl
         import urllib.request
         import json
+        import certifi
         from datetime import datetime, timezone
+
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
         url = f"https://api.notion.com/v1/pages/{podcast.page_id}"
         headers = {
@@ -254,7 +262,7 @@ class NotionConfigProvider(ConfigProvider):
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
                 logger.info("Updated Notion for %s", podcast.name)
         except Exception as exc:
             logger.warning("Failed to update Notion for %s: %s", podcast.name, exc)
