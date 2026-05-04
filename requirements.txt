@@ -1,1 +1,9 @@
+# Core dependencies
+boto3
+pyyaml
 yt-dlp
+
+# Test dependencies
+hypothesis
+pytest
+pytest-mock
