@@ -249,7 +249,21 @@ PodcastDrive is a pipeline that converts YouTube playlists and channels into sel
 Podcast subscriptions (which YouTube playlists/channels to follow) can be managed in two ways:
 
 - **YAML file** (`podcasts.yaml`) — simple local file listing playlist IDs, channel handles (`@xyz`), or full URLs. Ideal for self-hosted or local runs.
-- **Notion database** — a Notion DB with columns for Name, URL, Enabled, Max Downloads, and Max Age Days. Enables a no-code UI for managing subscriptions. The tool writes back the last-run timestamp and RSS feed URL to Notion after each sync.
+- **Notion database** — a Notion DB that acts as a no-code UI for managing subscriptions. The tool writes back the last-run timestamp and RSS feed URL to Notion after each sync.
+
+  **Required Notion database schema:**
+
+  | Column name | Notion type | Required | Description |
+  |---|---|---|---|
+  | `Name` | Title | ✅ | Display name for the podcast |
+  | `URL` | Rich Text or URL | ✅ | Playlist ID (`PLxxx`), channel handle (`@xyz`), or full YouTube URL |
+  | `Enabled` | Checkbox | | Whether to include this podcast in the sync (default: checked) |
+  | `Max Downloads` | Number | | Per-run download limit — overrides `MAX_DOWNLOADS_PER_RUN` |
+  | `Max Age Days` | Number | | Episode retention in days — overrides `MAX_AGE_DAYS` |
+  | `LastUpdated` | Date | | Written back by the tool after each successful sync |
+  | `Podcast URL` | URL | | Written back by the tool with the CloudFront RSS feed URL |
+
+  To connect Notion, set `CONFIG_PROVIDER=notion` and provide `NOTION_API_KEY` and `NOTION_DATABASE_ID` in `config.env`.
 
 #### 2. Processing Engine
 The core pipeline runs locally via `run.sh` or any scheduler of your choice:
