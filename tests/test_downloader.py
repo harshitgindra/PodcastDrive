@@ -6,7 +6,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import downloader as _dl_module
 from downloader import DownloadError, download_and_convert
+
+# Speed up retry tests: 1 attempt, no sleep
+_FAST_RETRY = {
+    "downloader._MAX_RETRIES": 1,
+    "downloader._RETRY_WAIT_MIN": 0,
+    "downloader._RETRY_WAIT_MAX": 0,
+}
 
 
 class TestDownloadAndConvertSuccess:
@@ -139,6 +147,9 @@ class TestIntermediateFileCleanup:
 class TestDownloadFailureHandling:
     """5.3 — Failures raise DownloadError after cleaning up partial files."""
 
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
     @patch("downloader.yt_dlp.YoutubeDL")
     def test_download_error_raised_on_ydl_exception(self, mock_ydl_cls):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -155,6 +166,9 @@ class TestDownloadFailureHandling:
                     "https://youtube.com/watch?v=failtest", video_id, tmp_dir
                 )
 
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
     @patch("downloader.yt_dlp.YoutubeDL")
     def test_partial_files_cleaned_on_failure(self, mock_ydl_cls):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -233,6 +247,9 @@ class TestDownloadFailureHandling:
             # Empty MP3 should be cleaned up
             assert not os.path.exists(mp3_path)
 
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
     @patch("downloader.yt_dlp.YoutubeDL")
     def test_error_message_includes_video_id(self, mock_ydl_cls):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -253,6 +270,9 @@ class TestDownloadFailureHandling:
 class TestOsErrorHandling:
     """OSError in cleanup/remove branches should be silently swallowed."""
 
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
     @patch("downloader.yt_dlp.YoutubeDL")
     @patch("downloader.os.remove")
     def test_cleanup_intermediate_oserror_is_swallowed(self, mock_remove, mock_ydl_cls):
@@ -290,6 +310,9 @@ class TestOsErrorHandling:
                 )
             assert result == mp3_path
 
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
     @patch("downloader.yt_dlp.YoutubeDL")
     @patch("downloader.os.remove")
     def test_partial_mp3_oserror_on_failure_is_swallowed(self, mock_remove, mock_ydl_cls):
@@ -319,6 +342,9 @@ class TestOsErrorHandling:
                         f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
                     )
 
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
     @patch("downloader.yt_dlp.YoutubeDL")
     @patch("downloader.os.remove")
     def test_empty_mp3_oserror_on_cleanup_is_swallowed(self, mock_remove, mock_ydl_cls):

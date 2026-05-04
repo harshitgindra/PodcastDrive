@@ -2,6 +2,9 @@
 
 Downloads the best available audio from a YouTube video and converts it
 to MP3 format. Processes one video at a time to keep disk usage low.
+
+Transient download failures (network timeouts, rate limiting) are
+retried automatically with exponential back-off via ``tenacity``.
 """
 
 import glob
@@ -10,6 +13,13 @@ import os
 import sys
 
 import yt_dlp
+from tenacity import (
+    RetryError,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +48,63 @@ def _cleanup_intermediate_files(tmp_dir: str, video_id: str) -> None:
                 pass
 
 
+#: Number of download attempts before giving up.
+_MAX_RETRIES = int(os.environ.get("DOWNLOAD_MAX_RETRIES", "3"))
+
+#: Initial wait in seconds between retries (doubles each attempt).
+_RETRY_WAIT_MIN = int(os.environ.get("DOWNLOAD_RETRY_WAIT_MIN", "5"))
+_RETRY_WAIT_MAX = int(os.environ.get("DOWNLOAD_RETRY_WAIT_MAX", "60"))
+
+
+def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -> None:
+    """Perform the yt_dlp download, retrying on transient failures.
+
+    Wrapped with tenacity so that network errors, rate-limit responses,
+    and other transient exceptions are retried with exponential back-off.
+
+    Args:
+        ydl_opts: yt_dlp options dict.
+        video_url: YouTube video URL.
+        tmp_dir: Temp directory (used for cleanup on failure).
+        video_id: Video ID (used for cleanup on failure).
+
+    Raises:
+        DownloadError: After all retries are exhausted.
+    """
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        stop=stop_after_attempt(_MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=_RETRY_WAIT_MIN, max=_RETRY_WAIT_MAX),
+        reraise=False,
+    )
+    def _attempt() -> None:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+
+    try:
+        _attempt()
+    except RetryError as exc:
+        last = exc.last_attempt.exception()
+        _cleanup_intermediate_files(tmp_dir, video_id)
+        raise DownloadError(
+            f"Failed to download/convert {video_id} after {_MAX_RETRIES} attempts: {last}"
+        ) from last
+    except Exception as exc:
+        _cleanup_intermediate_files(tmp_dir, video_id)
+        raise DownloadError(
+            f"Failed to download/convert {video_id}: {exc}"
+        ) from exc
+
+
 def download_and_convert(
     video_url: str,
     video_id: str,
     tmp_dir: str,
 ) -> str:
     """Download audio from YouTube and convert to MP3.
+
+    Transient failures are retried up to ``DOWNLOAD_MAX_RETRIES`` times
+    (default: 3) with exponential back-off between attempts.
 
     Args:
         video_url: YouTube video URL.
@@ -54,7 +115,7 @@ def download_and_convert(
         Absolute path to the resulting MP3 file.
 
     Raises:
-        DownloadError: If the download or conversion fails.
+        DownloadError: If the download or conversion fails after all retries.
     """
     _ensure_ffmpeg_on_path()
 
@@ -76,20 +137,15 @@ def download_and_convert(
     }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-    except Exception as exc:
-        # Clean up any partial files before raising
-        _cleanup_intermediate_files(tmp_dir, video_id)
-        # Also remove a partial MP3 if it exists
+        _ydl_download(ydl_opts, video_url, tmp_dir, video_id)
+    except DownloadError:
+        # Clean up partial MP3 if it exists
         if os.path.exists(mp3_path):
             try:
                 os.remove(mp3_path)
             except OSError:
                 pass
-        raise DownloadError(
-            f"Failed to download/convert {video_id}: {exc}"
-        ) from exc
+        raise
 
     # Clean up intermediate files (webm, opus, m4a, etc.)
     _cleanup_intermediate_files(tmp_dir, video_id)

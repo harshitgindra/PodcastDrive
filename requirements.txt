@@ -2,6 +2,7 @@
 boto3
 certifi
 pyyaml
+tenacity
 yt-dlp
 
 # Test dependencies
