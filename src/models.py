@@ -1,7 +1,6 @@
 """Data models for YouTube Playlist to Podcast Lambda."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -23,11 +22,11 @@ class VideoEntry:
     video_id: str
     title: str
     description: str
-    duration: Optional[int]  # seconds
+    duration: int | None  # seconds
     upload_date: str  # YYYYMMDD format from yt_dlp
     thumbnail: str
     webpage_url: str
-    playlist_index: Optional[int]
+    playlist_index: int | None
 
 
 @dataclass
@@ -37,11 +36,11 @@ class EpisodeMeta:
     video_id: str
     title: str
     description: str
-    duration: Optional[int]
+    duration: int | None
     upload_date: str
     thumbnail: str
     webpage_url: str
-    playlist_index: Optional[int]
+    playlist_index: int | None
     s3_key: str  # e.g. "PLxyz/episodes/abc123.mp3"
     file_size: int  # bytes
     cloudfront_url: str  # full URL for enclosure

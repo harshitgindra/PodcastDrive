@@ -10,9 +10,8 @@ from datetime import datetime, timezone
 from email.utils import format_datetime
 from xml.dom.minidom import parseString
 
-from typing import Optional
-
 from models import EpisodeMeta, PlaylistMeta, VideoEntry
+from s3_manager import S3Manager
 from utils import parse_upload_date
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,7 @@ ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 ET.register_namespace("itunes", ITUNES_NS)
 
 
-def _format_duration(seconds: Optional[int]) -> str:
+def _format_duration(seconds: int | None) -> str:
     """Format a duration in seconds as ``H:MM:SS`` or ``M:SS``.
 
     Args:
@@ -184,7 +183,7 @@ def build_episode_metadata(
     final_keys: set[str],
     cloudfront_base: str,
     playlist_id: str,
-    s3,
+    s3: S3Manager,
 ) -> list[EpisodeMeta]:
     """Build a sorted list of :class:`EpisodeMeta` for episodes in S3.
 

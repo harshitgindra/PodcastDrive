@@ -187,7 +187,13 @@ def process_playlist(
         logger.info("Cleaned up %s", tmp_dir)
 
 
-def _rebuild_feed(s3, video_entries, cloudfront_base, playlist_id, playlist_meta):
+def _rebuild_feed(
+    s3: "S3Manager",
+    video_entries: list,
+    cloudfront_base: str,
+    playlist_id: str,
+    playlist_meta: "PlaylistMeta",
+) -> int:
     """Re-list S3, generate and upload feed.xml using metadata already in memory."""
     final_keys = s3.list_existing_episodes()
     episodes = build_episode_metadata(
@@ -198,7 +204,14 @@ def _rebuild_feed(s3, video_entries, cloudfront_base, playlist_id, playlist_meta
     return len(episodes)
 
 
-def _reconcile(s3, video_entries, cloudfront_base, playlist_id, playlist_meta, max_age_days):
+def _reconcile(
+    s3: "S3Manager",
+    video_entries: list,
+    cloudfront_base: str,
+    playlist_id: str,
+    playlist_meta: "PlaylistMeta",
+    max_age_days: int,
+) -> None:
     """Reconcile S3 files and RSS feed entries.
 
     After this runs:
