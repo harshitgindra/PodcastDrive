@@ -25,14 +25,23 @@ def process_playlist(
     max_downloads: int | None = None,
     max_age_days: int | None = None,
     sleep_between: int | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """Process a single playlist: download new episodes, upload to S3, generate RSS.
+
+    When *dry_run* is ``True`` the function performs all read-only steps
+    (playlist extraction, S3 listing, candidate selection) and logs what
+    *would* happen, but skips all write operations (download, S3 upload,
+    feed generation, reconciliation).  The returned counters reflect the
+    planned actions rather than completed ones.
 
     Args:
         playlist_url: Full YouTube playlist URL.
         max_downloads: Override for max downloads per run (None = use env/default).
         max_age_days: Override for max episode age in days (None = use env/default).
         sleep_between: Override for sleep between downloads (None = use env/default).
+        dry_run: If ``True``, no files are downloaded or uploaded and S3 is
+                 not modified.
 
     Returns:
         dict with playlist_id, new_episodes, skipped_old, failed, total_episodes.
@@ -62,9 +71,12 @@ def process_playlist(
             "Set SLEEP_BETWEEN_DOWNLOADS=0 to disable sleeping."
         )
 
+    if dry_run:
+        logger.info("[DRY-RUN] No files will be downloaded or uploaded.")
+
     logger.info(
-        "[Config] max_downloads=%d  max_age_days=%d  sleep_between=%ds",
-        max_downloads, max_age_days, sleep_between,
+        "[Config] max_downloads=%d  max_age_days=%d  sleep_between=%ds  dry_run=%s",
+        max_downloads, max_age_days, sleep_between, dry_run,
     )
 
     playlist_id = extract_playlist_id(playlist_url)
@@ -143,6 +155,14 @@ def process_playlist(
                         )
                         continue
 
+                if dry_run:
+                    logger.info(
+                        "[DRY-RUN] Would download and upload %s: %s",
+                        video.video_id, video.title,
+                    )
+                    new_count += 1
+                    continue
+
                 # Download audio
                 logger.info("[Step 4] Downloading %s: %s", video.video_id, video.title)
                 mp3_path = download_and_convert(
@@ -173,13 +193,17 @@ def process_playlist(
         )
 
         # --- Step 5: Reconciliation ---
-        logger.info("[Step 5] Starting reconciliation...")
-        _reconcile(
-            s3, video_entries, cloudfront_base, playlist_id,
-            playlist_meta, max_age_days,
-        )
+        if dry_run:
+            logger.info("[DRY-RUN] Skipping reconciliation and feed upload.")
+            final_keys = existing_keys  # use pre-run S3 state for total count
+        else:
+            logger.info("[Step 5] Starting reconciliation...")
+            _reconcile(
+                s3, video_entries, cloudfront_base, playlist_id,
+                playlist_meta, max_age_days,
+            )
+            final_keys = s3.list_existing_episodes()
 
-        final_keys = s3.list_existing_episodes()
         logger.info(
             "=== DONE === %d new, %d skipped_old, %d failed, %d total in S3",
             new_count, skipped_old, failed_count, len(final_keys),

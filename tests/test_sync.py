@@ -379,6 +379,68 @@ class TestProcessPlaylistSleep:
 
 
 # ---------------------------------------------------------------------------
+# process_playlist — dry-run mode
+# ---------------------------------------------------------------------------
+
+class TestProcessPlaylistDryRun:
+    def _run_dry(self, video_entries, existing=None, meta_override=None):
+        playlist_meta = _make_playlist_meta()
+        meta = meta_override or {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 300,
+            "title": "Video Title",
+        }
+
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            with patch("sync.S3Manager") as mock_s3_cls, \
+                 patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)), \
+                 patch("sync.extract_video_metadata", return_value=meta), \
+                 patch("sync.download_and_convert") as mock_dl, \
+                 patch("sync.build_episode_metadata", return_value=[]), \
+                 patch("sync.generate_rss", return_value="<rss/>"), \
+                 patch("sync.shutil.rmtree"), \
+                 patch("os.makedirs"), \
+                 patch("os.remove"):
+
+                s3 = _make_s3_manager(existing=existing)
+                mock_s3_cls.return_value = s3
+                result = process_playlist(
+                    "https://youtube.com/playlist?list=PLtest",
+                    dry_run=True,
+                )
+                return result, mock_dl, s3
+
+    def test_dry_run_does_not_call_download(self):
+        videos = [_make_video("vid001")]
+        result, mock_dl, s3 = self._run_dry(videos)
+        mock_dl.assert_not_called()
+
+    def test_dry_run_does_not_upload_to_s3(self):
+        videos = [_make_video("vid001")]
+        result, mock_dl, s3 = self._run_dry(videos)
+        s3.upload_episode.assert_not_called()
+
+    def test_dry_run_does_not_call_reconcile_methods(self):
+        videos = [_make_video("vid001")]
+        result, mock_dl, s3 = self._run_dry(videos)
+        s3.delete_episode.assert_not_called()
+        s3.upload_feed.assert_not_called()
+
+    def test_dry_run_counts_would_be_new(self):
+        """new_episodes should reflect planned downloads, not actual ones."""
+        videos = [_make_video("vid001"), _make_video("vid002")]
+        result, _, _ = self._run_dry(videos)
+        assert result["new_episodes"] == 2
+
+    def test_dry_run_empty_playlist(self):
+        result, mock_dl, _ = self._run_dry([])
+        assert result["new_episodes"] == 0
+        mock_dl.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _rebuild_feed
 # ---------------------------------------------------------------------------
 

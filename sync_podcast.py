@@ -51,8 +51,23 @@ def sync_playlist(
     cloudfront_base: str,
     max_age_days: int,
     region: str,
+    dry_run: bool = False,
 ) -> dict:
-    """Run the full sync pipeline for a single playlist."""
+    """Run the full sync pipeline for a single playlist.
+
+    Args:
+        playlist_url: YouTube playlist URL.
+        bucket: S3 bucket name.
+        cloudfront_base: CloudFront base URL.
+        max_age_days: Maximum episode age in days.
+        region: AWS region string.
+        dry_run: If ``True``, perform all read-only steps and log planned
+                 actions without downloading, uploading, or deleting anything.
+
+    Returns:
+        dict with playlist_id, new_episodes, cleaned_episodes,
+        total_episodes, feed_url.
+    """
 
     playlist_id = extract_playlist_id(playlist_url)
     logger.info("Syncing playlist: %s", playlist_id)
@@ -167,6 +182,13 @@ def main():
         "--region", default=DEFAULT_REGION,
         help=f"AWS region (default: {DEFAULT_REGION})",
     )
+    parser.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help=(
+            "Preview what would be downloaded/deleted without making any changes. "
+            "S3 is not modified and no files are downloaded."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -176,6 +198,7 @@ def main():
         cloudfront_base=args.cloudfront,
         max_age_days=args.max_age,
         region=args.region,
+        dry_run=args.dry_run,
     )
 
     print(f"\n{'='*50}")
