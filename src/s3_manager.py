@@ -168,13 +168,16 @@ class S3Manager:
         feed_url = f"{cloudfront_base}/{self.playlist_id}/feed.xml"
 
         try:
+            import ssl
             import urllib.request
             import urllib.parse
+            import certifi
 
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
             params = urllib.parse.urlencode({"urlprefix": feed_url})
             url = f"https://overcast.fm/ping?{params}"
             req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
                 logger.info("Overcast ping sent for %s (status=%d)", feed_url, resp.status)
         except Exception as exc:
             logger.warning("Overcast ping failed: %s", exc)
