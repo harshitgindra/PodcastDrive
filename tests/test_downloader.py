@@ -250,6 +250,104 @@ class TestDownloadFailureHandling:
                 )
 
 
+class TestOsErrorHandling:
+    """OSError in cleanup/remove branches should be silently swallowed."""
+
+    @patch("downloader.yt_dlp.YoutubeDL")
+    @patch("downloader.os.remove")
+    def test_cleanup_intermediate_oserror_is_swallowed(self, mock_remove, mock_ydl_cls):
+        """OSError when removing intermediate file should not propagate."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_id = "oserr1"
+            mp3_path = os.path.join(tmp_dir, f"{video_id}.mp3")
+            webm_path = os.path.join(tmp_dir, f"{video_id}.webm")
+
+            def fake_download(urls):
+                with open(mp3_path, "wb") as f:
+                    f.write(b"\xff\xfb\x90\x00" * 100)
+                with open(webm_path, "wb") as f:
+                    f.write(b"intermediate")
+
+            mock_ydl = MagicMock()
+            mock_ydl.download.side_effect = fake_download
+            mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+            mock_ydl.__exit__ = MagicMock(return_value=False)
+            mock_ydl_cls.return_value = mock_ydl
+
+            # Make os.remove raise OSError for non-mp3 files but succeed for mp3
+            def selective_remove(path):
+                if not path.endswith(".mp3"):
+                    raise OSError("permission denied")
+                # For mp3 just do nothing (file still exists for the check)
+
+            mock_remove.side_effect = selective_remove
+
+            # Should not raise even though cleanup fails
+            with patch("downloader.os.path.exists", return_value=True), \
+                 patch("downloader.os.path.getsize", return_value=400):
+                result = download_and_convert(
+                    f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
+                )
+            assert result == mp3_path
+
+    @patch("downloader.yt_dlp.YoutubeDL")
+    @patch("downloader.os.remove")
+    def test_partial_mp3_oserror_on_failure_is_swallowed(self, mock_remove, mock_ydl_cls):
+        """OSError when removing partial mp3 after download failure should not propagate."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_id = "oserr2"
+            mp3_path = os.path.join(tmp_dir, f"{video_id}.mp3")
+
+            def failing_download(urls):
+                with open(mp3_path, "wb") as f:
+                    f.write(b"partial")
+                raise Exception("Download failed")
+
+            mock_ydl = MagicMock()
+            mock_ydl.download.side_effect = failing_download
+            mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+            mock_ydl.__exit__ = MagicMock(return_value=False)
+            mock_ydl_cls.return_value = mock_ydl
+
+            # os.remove raises OSError
+            mock_remove.side_effect = OSError("locked")
+
+            from downloader import DownloadError
+            with pytest.raises(DownloadError):
+                with patch("downloader.os.path.exists", return_value=True):
+                    download_and_convert(
+                        f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
+                    )
+
+    @patch("downloader.yt_dlp.YoutubeDL")
+    @patch("downloader.os.remove")
+    def test_empty_mp3_oserror_on_cleanup_is_swallowed(self, mock_remove, mock_ydl_cls):
+        """OSError when removing empty mp3 should not propagate (DownloadError still raised)."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_id = "oserr3"
+            mp3_path = os.path.join(tmp_dir, f"{video_id}.mp3")
+
+            def fake_download(urls):
+                open(mp3_path, "wb").close()  # empty file
+
+            mock_ydl = MagicMock()
+            mock_ydl.download.side_effect = fake_download
+            mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+            mock_ydl.__exit__ = MagicMock(return_value=False)
+            mock_ydl_cls.return_value = mock_ydl
+
+            # os.remove raises OSError for empty mp3 cleanup
+            mock_remove.side_effect = OSError("locked")
+
+            from downloader import DownloadError
+            with pytest.raises(DownloadError, match="empty"):
+                with patch("downloader.os.path.exists", return_value=True), \
+                     patch("downloader.os.path.getsize", return_value=0):
+                    download_and_convert(
+                        f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
+                    )
+
+
 class TestFfmpegPathSetup:
     """FFmpeg PATH setup for Lambda layer."""
 
