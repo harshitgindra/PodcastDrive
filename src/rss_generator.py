@@ -109,7 +109,20 @@ def _add_channel_metadata(
     cloudfront_base: str,
     playlist_id: str,
 ) -> None:
-    """Populate channel-level RSS and iTunes elements."""
+    """Populate channel-level RSS and iTunes ``<channel>`` child elements.
+
+    Sets standard RSS fields (title, link, description, language, lastBuildDate)
+    and iTunes-namespace extensions (author, summary, explicit, owner, image).
+
+    Args:
+        channel: The ``<channel>`` :class:`xml.etree.ElementTree.Element` to
+                 populate.
+        meta: Playlist-level metadata.
+        episodes: Episode list — used to pick a channel thumbnail from the
+                  first episode (if available).
+        cloudfront_base: CloudFront base URL (unused here, kept for symmetry).
+        playlist_id: Playlist ID (unused here, kept for symmetry).
+    """
     ET.SubElement(channel, "title").text = meta.title
     ET.SubElement(channel, "link").text = meta.webpage_url or meta.channel_url
     ET.SubElement(channel, "description").text = meta.description or meta.title
@@ -139,7 +152,19 @@ def _add_item(
     cloudfront_base: str,
     playlist_id: str,
 ) -> None:
-    """Add a single ``<item>`` element to the channel."""
+    """Append a single RSS ``<item>`` element to *channel*.
+
+    Populates standard RSS fields (title, guid, enclosure, pubDate,
+    description) and iTunes extensions (duration, summary, explicit,
+    image, episode number).
+
+    Args:
+        channel: The parent ``<channel>`` element to append to.
+        episode: Episode metadata including file size and CloudFront URL.
+        cloudfront_base: CloudFront base URL (unused directly; URL already
+                         pre-built in ``episode.cloudfront_url``).
+        playlist_id: Playlist ID (unused directly; kept for API symmetry).
+    """
     item = ET.SubElement(channel, "item")
 
     ET.SubElement(item, "title").text = episode.title

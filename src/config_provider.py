@@ -7,8 +7,7 @@ interface. Each provider returns a list of PodcastConfig objects.
 import logging
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +19,10 @@ class PodcastConfig:
     name: str
     url: str  # Playlist ID, channel handle (@xyz), or full URL
     enabled: bool = True
-    max_downloads: Optional[int] = None  # None = use global default
-    max_age_days: Optional[int] = None
-    sleep_between: Optional[int] = None
-    page_id: Optional[str] = None  # Notion page ID (for write-back)
+    max_downloads: int | None = None  # None = use global default
+    max_age_days: int | None = None
+    sleep_between: int | None = None
+    page_id: str | None = None  # Notion page ID (for write-back)
 
 
 class ConfigProvider(ABC):
@@ -58,10 +57,21 @@ class YamlConfigProvider(ConfigProvider):
             max_age_days: 14
     """
 
-    def __init__(self, path: str = "podcasts.yaml"):
+    def __init__(self, path: str = "podcasts.yaml") -> None:
+        """Initialise the provider.
+
+        Args:
+            path: Path to the YAML file (default: ``"podcasts.yaml"``).
+        """
         self.path = path
 
     def get_podcasts(self) -> list[PodcastConfig]:
+        """Load and return podcasts from the YAML file.
+
+        Returns:
+            List of :class:`PodcastConfig` objects.  Returns an empty list
+            if the file does not exist.
+        """
         import yaml
 
         if not os.path.exists(self.path):
@@ -103,7 +113,12 @@ class NotionConfigProvider(ConfigProvider):
     - Max Age Days (number): Episode retention in days (optional)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialise the provider, reading credentials from environment variables.
+
+        Raises:
+            ValueError: If ``NOTION_API_KEY`` or ``NOTION_DATABASE_ID`` is not set.
+        """
         self.api_key = os.environ.get("NOTION_API_KEY", "")
         self.database_id = os.environ.get("NOTION_DATABASE_ID", "")
 
@@ -114,6 +129,14 @@ class NotionConfigProvider(ConfigProvider):
             )
 
     def get_podcasts(self) -> list[PodcastConfig]:
+        """Query the Notion database and return enabled podcast configs.
+
+        Handles Notion pagination automatically.
+
+        Returns:
+            List of :class:`PodcastConfig` objects parsed from Notion pages.
+            Returns whatever was collected so far if the API call fails mid-way.
+        """
         import ssl
         import urllib.request
         import json
@@ -164,8 +187,16 @@ class NotionConfigProvider(ConfigProvider):
         logger.info("Loaded %d podcasts from Notion", len(podcasts))
         return podcasts
 
-    def _parse_page(self, props: dict) -> Optional[PodcastConfig]:
-        """Parse a Notion page's properties into a PodcastConfig."""
+    def _parse_page(self, props: dict) -> PodcastConfig | None:
+        """Parse a Notion page's properties dict into a :class:`PodcastConfig`.
+
+        Args:
+            props: The ``properties`` dict from a Notion API page object.
+
+        Returns:
+            A populated :class:`PodcastConfig`, or ``None`` if the entry
+            has no URL or cannot be parsed.
+        """
         try:
             # Name (title type)
             name_prop = props.get("Name", {})
@@ -218,7 +249,14 @@ class NotionConfigProvider(ConfigProvider):
             return None
 
     def update_last_run(self, podcast: PodcastConfig, feed_url: str = "") -> None:
-        """Update LastUpdated and Podcast URL fields in Notion."""
+        """Update ``LastUpdated`` (and optionally ``Podcast URL``) in Notion.
+
+        Args:
+            podcast: The podcast whose Notion page should be updated.
+                     Must have a ``page_id`` attribute set.
+            feed_url: Optional CloudFront feed URL to write back to the
+                      ``Podcast URL`` property in Notion.
+        """
         if not podcast.page_id:
             logger.warning("No page_id for %s, skipping Notion update", podcast.name)
             return
