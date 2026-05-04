@@ -1,5 +1,9 @@
 # PodcastDrive
 
+[![CI](https://github.com/harshitgindra/PodcastDrive/actions/workflows/test.yml/badge.svg)](https://github.com/harshitgindra/PodcastDrive/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/badge/coverage-99%25-brightgreen)](https://github.com/harshitgindra/PodcastDrive/actions/workflows/test.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/harshitgindra/PodcastDrive)
+
 Converts YouTube playlists and channels into self-hosted podcast RSS feeds. Downloads audio as MP3, uploads to S3, and generates a podcast-compatible RSS 2.0 feed with iTunes extensions served via CloudFront.
 
 > ⚠️ **Personal use only.** This tool is intended solely for personal, non-commercial use. Downloading audio from YouTube may violate [YouTube's Terms of Service](https://www.youtube.com/t/terms). Only use this tool for content you have the legal right to download. See the [Disclaimer](#disclaimer) section for full details.
