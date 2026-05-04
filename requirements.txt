@@ -8,4 +8,5 @@ yt-dlp
 hypothesis
 moto[s3]
 pytest
+pytest-cov
 pytest-mock
