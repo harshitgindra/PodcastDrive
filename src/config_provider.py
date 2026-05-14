@@ -37,6 +37,15 @@ class ConfigProvider(ABC):
         """Update the last-run timestamp for a podcast. Override in subclasses."""
         pass
 
+    def update_status(self, podcast: PodcastConfig, status: str) -> None:
+        """Update the Status field for a podcast. Override in subclasses.
+
+        Args:
+            podcast: The podcast to update.
+            status: One of ``"Pending"``, ``"Running"``, ``"Done"``, ``"Failed"``.
+        """
+        pass
+
 
 class YamlConfigProvider(ConfigProvider):
     """Load podcast config from a local YAML file.
@@ -266,6 +275,57 @@ class NotionConfigProvider(ConfigProvider):
         except (KeyError, IndexError) as exc:
             logger.warning("Failed to parse Notion page: %s", exc)
             return None
+
+    def update_status(self, podcast: PodcastConfig, status: str) -> None:
+        """Update the ``Status`` select field in Notion.
+
+        Args:
+            podcast: The podcast whose Notion page should be updated.
+                     Must have a ``page_id`` attribute set.
+            status: One of ``"Pending"``, ``"Running"``, ``"Done"``, ``"Failed"``.
+        """
+        if not podcast.page_id:
+            logger.warning("No page_id for %s, skipping status update", podcast.name)
+            return
+
+        import ssl
+        import urllib.request
+        import json
+        import certifi
+
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+
+        url = f"https://api.notion.com/v1/pages/{podcast.page_id}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+
+        body = {
+            "properties": {
+                "Status": {
+                    "select": {
+                        "name": status,
+                    }
+                }
+            }
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="PATCH",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
+                logger.info("Updated Notion status to '%s' for %s", status, podcast.name)
+        except Exception as exc:
+            logger.warning(
+                "Failed to update Notion status for %s: %s", podcast.name, exc
+            )
 
     def update_last_run(self, podcast: PodcastConfig, feed_url: str = "") -> None:
         """Update ``LastUpdated`` (and optionally ``Podcast URL``) in Notion.

@@ -446,6 +446,79 @@ class TestNotionUpdateLastRun:
 
 
 # ---------------------------------------------------------------------------
+# NotionConfigProvider — update_status
+# ---------------------------------------------------------------------------
+
+class TestNotionUpdateStatus:
+    def _make_provider(self):
+        with patch.dict(os.environ, {
+            "NOTION_API_KEY": "key",
+            "NOTION_DATABASE_ID": "db",
+        }):
+            return NotionConfigProvider()
+
+    def test_skips_when_no_page_id(self):
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id=None)
+        # Should not raise, should just log and return
+        provider.update_status(podcast, "Running")
+
+    @patch("urllib.request.urlopen")
+    def test_calls_notion_api_with_page_id(self, mock_urlopen):
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        provider.update_status(podcast, "Running")
+        mock_urlopen.assert_called_once()
+
+    @patch("urllib.request.urlopen")
+    def test_sends_correct_status_value(self, mock_urlopen):
+        import json
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        for status in ("Pending", "Running", "Done", "Failed"):
+            mock_urlopen.reset_mock()
+            provider.update_status(podcast, status)
+            call_args = mock_urlopen.call_args[0][0]
+            body = json.loads(call_args.data.decode("utf-8"))
+            assert body["properties"]["Status"]["select"]["name"] == status
+
+    @patch("urllib.request.urlopen")
+    def test_uses_patch_method(self, mock_urlopen):
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        provider.update_status(podcast, "Done")
+        call_args = mock_urlopen.call_args[0][0]
+        assert call_args.method == "PATCH"
+        assert f"/pages/{podcast.page_id}" in call_args.full_url
+
+    @patch("urllib.request.urlopen")
+    def test_handles_http_error_gracefully(self, mock_urlopen):
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
+        mock_urlopen.side_effect = Exception("Timeout")
+        # Should not raise
+        provider.update_status(podcast, "Failed")
+
+
+# ---------------------------------------------------------------------------
 # get_config_provider factory
 # ---------------------------------------------------------------------------
 
