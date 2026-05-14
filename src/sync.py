@@ -10,6 +10,7 @@ import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
+from ad_remover import remove_ads
 from downloader import DownloadError, download_and_convert
 from extractor import extract_playlist, extract_video_metadata
 from models import PlaylistMeta
@@ -158,7 +159,7 @@ def process_playlist(
 
                 if dry_run:
                     logger.info(
-                        "[DRY-RUN] Would download and upload %s: %s",
+                        "[DRY-RUN] Would download, remove ads, and upload %s: %s",
                         video.video_id, video.title,
                     )
                     new_count += 1
@@ -169,6 +170,10 @@ def process_playlist(
                 mp3_path = download_and_convert(
                     video.webpage_url, video.video_id, tmp_dir,
                 )
+
+                # Remove ads (falls back to original file on failure)
+                logger.info("[Step 4] Running ad removal for %s", video.video_id)
+                mp3_path = remove_ads(mp3_path, video.video_id, tmp_dir)
 
                 # Upload to S3 (lifecycle expiration is set automatically)
                 logger.info("[Step 4] Uploading %s to S3", video.video_id)

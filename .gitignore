@@ -221,3 +221,4 @@ podcasts.yaml
 src/.pytest_cache/
 tests/.pytest_cache/
 logs/
+_LocalNotes.md

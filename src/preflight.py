@@ -194,6 +194,57 @@ def _check_ffmpeg() -> None:
     _ok(f"ffmpeg: {version_line}")
 
 
+def _check_transcribe(region: str) -> None:
+    """Verify the IAM principal has basic AWS Transcribe access.
+
+    Uses ``list_transcription_jobs`` (MaxResults=1) as a lightweight
+    permission probe — no audio is uploaded or transcribed.
+    """
+    _section("AWS Transcribe (ad removal)")
+
+    transcribe = boto3.client("transcribe", region_name=region)
+    try:
+        transcribe.list_transcription_jobs(MaxResults=1)
+        _ok(f"AWS Transcribe accessible (region={region})")
+    except botocore.exceptions.ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        if code in ("AccessDeniedException", "AccessDenied", "403"):
+            _fail(
+                "AWS Transcribe access denied — add the following IAM permission:\n"
+                "    transcribe:StartTranscriptionJob\n"
+                "    transcribe:GetTranscriptionJob\n"
+                "    transcribe:DeleteTranscriptionJob\n"
+                "    transcribe:ListTranscriptionJobs"
+            )
+        else:
+            _fail(f"AWS Transcribe check failed: {exc}")
+
+
+def _check_bedrock(region: str) -> None:
+    """Verify the IAM principal has basic AWS Bedrock access.
+
+    Uses ``list_foundation_models`` as a lightweight permission probe —
+    no model is invoked.
+    """
+    _section("AWS Bedrock (ad removal)")
+
+    bedrock = boto3.client("bedrock", region_name=region)
+    try:
+        bedrock.list_foundation_models()
+        _ok(f"AWS Bedrock accessible (region={region})")
+    except botocore.exceptions.ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        if code in ("AccessDeniedException", "AccessDenied", "403"):
+            _fail(
+                "AWS Bedrock access denied — add the following IAM permission:\n"
+                "    bedrock:InvokeModel\n"
+                "    bedrock:ListFoundationModels\n"
+                "Also ensure the model is enabled in the Bedrock console for this region."
+            )
+        else:
+            _fail(f"AWS Bedrock check failed: {exc}")
+
+
 def _check_notion() -> None:
     """Verify Notion credentials when CONFIG_PROVIDER=notion."""
     _section("Notion (config provider)")
@@ -274,6 +325,11 @@ def run_preflight(dry_run: bool = False) -> None:
     config_provider = os.environ.get("CONFIG_PROVIDER", "yaml")
     if config_provider == "notion":
         _check_notion()
+
+    remove_ads = os.environ.get("REMOVE_ADS", "true").lower()
+    if remove_ads not in ("false", "0", "no"):
+        _check_transcribe(region)
+        _check_bedrock(region)
 
     print(f"\n{_GREEN}{_BOLD}All preflight checks passed — starting sync.{_RESET}\n")
 

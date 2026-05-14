@@ -8,11 +8,13 @@ import pytest
 
 from preflight import (
     _check_aws_credentials,
+    _check_bedrock,
     _check_cloudfront,
     _check_env_vars,
     _check_ffmpeg,
     _check_notion,
     _check_s3_bucket,
+    _check_transcribe,
     _check_yt_dlp,
     _fail,
     _ok,
@@ -412,6 +414,88 @@ class TestCheckNotion:
                 _check_notion()
 
 
+# ── _check_transcribe ─────────────────────────────────────────────────────────
+
+class TestCheckTranscribe:
+    def test_passes_when_accessible(self, capsys):
+        mock_tc = MagicMock()
+        mock_tc.list_transcription_jobs.return_value = {"TranscriptionJobSummaries": []}
+        with patch("boto3.client", return_value=mock_tc):
+            _check_transcribe("us-west-2")
+        assert "Transcribe accessible" in capsys.readouterr().out
+
+    def test_fails_on_access_denied(self):
+        mock_tc = MagicMock()
+        mock_tc.list_transcription_jobs.side_effect = _client_error("AccessDeniedException")
+        with patch("boto3.client", return_value=mock_tc):
+            with pytest.raises(SystemExit):
+                _check_transcribe("us-west-2")
+
+    def test_fails_on_access_denied_variant(self):
+        mock_tc = MagicMock()
+        mock_tc.list_transcription_jobs.side_effect = _client_error("AccessDenied")
+        with patch("boto3.client", return_value=mock_tc):
+            with pytest.raises(SystemExit):
+                _check_transcribe("us-west-2")
+
+    def test_fails_on_other_client_error(self):
+        mock_tc = MagicMock()
+        mock_tc.list_transcription_jobs.side_effect = _client_error("InternalFailure")
+        with patch("boto3.client", return_value=mock_tc):
+            with pytest.raises(SystemExit):
+                _check_transcribe("us-west-2")
+
+    def test_fail_message_lists_required_permissions(self, capsys):
+        mock_tc = MagicMock()
+        mock_tc.list_transcription_jobs.side_effect = _client_error("AccessDeniedException")
+        with patch("boto3.client", return_value=mock_tc):
+            with pytest.raises(SystemExit):
+                _check_transcribe("us-west-2")
+        out = capsys.readouterr().out
+        assert "transcribe:StartTranscriptionJob" in out
+
+
+# ── _check_bedrock ────────────────────────────────────────────────────────────
+
+class TestCheckBedrock:
+    def test_passes_when_accessible(self, capsys):
+        mock_br = MagicMock()
+        mock_br.list_foundation_models.return_value = {"modelSummaries": []}
+        with patch("boto3.client", return_value=mock_br):
+            _check_bedrock("us-east-1")
+        assert "Bedrock accessible" in capsys.readouterr().out
+
+    def test_fails_on_access_denied(self):
+        mock_br = MagicMock()
+        mock_br.list_foundation_models.side_effect = _client_error("AccessDeniedException")
+        with patch("boto3.client", return_value=mock_br):
+            with pytest.raises(SystemExit):
+                _check_bedrock("us-east-1")
+
+    def test_fails_on_access_denied_variant(self):
+        mock_br = MagicMock()
+        mock_br.list_foundation_models.side_effect = _client_error("AccessDenied")
+        with patch("boto3.client", return_value=mock_br):
+            with pytest.raises(SystemExit):
+                _check_bedrock("us-east-1")
+
+    def test_fails_on_other_client_error(self):
+        mock_br = MagicMock()
+        mock_br.list_foundation_models.side_effect = _client_error("ServiceUnavailableException")
+        with patch("boto3.client", return_value=mock_br):
+            with pytest.raises(SystemExit):
+                _check_bedrock("us-east-1")
+
+    def test_fail_message_lists_required_permissions(self, capsys):
+        mock_br = MagicMock()
+        mock_br.list_foundation_models.side_effect = _client_error("AccessDeniedException")
+        with patch("boto3.client", return_value=mock_br):
+            with pytest.raises(SystemExit):
+                _check_bedrock("us-east-1")
+        out = capsys.readouterr().out
+        assert "bedrock:InvokeModel" in out
+
+
 # ── run_preflight ─────────────────────────────────────────────────────────────
 
 class TestRunPreflight:
@@ -427,6 +511,8 @@ class TestRunPreflight:
             "_check_yt_dlp": patch("preflight._check_yt_dlp"),
             "_check_ffmpeg": patch("preflight._check_ffmpeg"),
             "_check_notion": patch("preflight._check_notion"),
+            "_check_transcribe": patch("preflight._check_transcribe"),
+            "_check_bedrock": patch("preflight._check_bedrock"),
         }
 
     def test_runs_all_checks_in_normal_mode(self):
@@ -488,6 +574,60 @@ class TestRunPreflight:
             with patch.dict("os.environ", {"CONFIG_PROVIDER": "yaml"}):
                 run_preflight()
             assert "All preflight checks passed" in capsys.readouterr().out
+        finally:
+            for p in patches.values():
+                p.stop()
+
+    def test_calls_transcribe_and_bedrock_when_remove_ads_enabled(self):
+        """When REMOVE_ADS is unset (default true), both AWS checks are called."""
+        patches = self._patch_all_checks()
+        mocks = {k: p.start() for k, p in patches.items()}
+        try:
+            with patch.dict("os.environ", {"CONFIG_PROVIDER": "yaml"}, clear=False):
+                import os
+                os.environ.pop("REMOVE_ADS", None)
+                run_preflight()
+            mocks["_check_transcribe"].assert_called_once_with("us-west-2")
+            mocks["_check_bedrock"].assert_called_once_with("us-west-2")
+        finally:
+            for p in patches.values():
+                p.stop()
+
+    def test_skips_transcribe_and_bedrock_when_remove_ads_false(self):
+        """When REMOVE_ADS=false, Transcribe and Bedrock checks are skipped."""
+        patches = self._patch_all_checks()
+        mocks = {k: p.start() for k, p in patches.items()}
+        try:
+            with patch.dict("os.environ", {"CONFIG_PROVIDER": "yaml", "REMOVE_ADS": "false"}):
+                run_preflight()
+            mocks["_check_transcribe"].assert_not_called()
+            mocks["_check_bedrock"].assert_not_called()
+        finally:
+            for p in patches.values():
+                p.stop()
+
+    def test_skips_transcribe_and_bedrock_when_remove_ads_zero(self):
+        """When REMOVE_ADS=0, Transcribe and Bedrock checks are skipped."""
+        patches = self._patch_all_checks()
+        mocks = {k: p.start() for k, p in patches.items()}
+        try:
+            with patch.dict("os.environ", {"CONFIG_PROVIDER": "yaml", "REMOVE_ADS": "0"}):
+                run_preflight()
+            mocks["_check_transcribe"].assert_not_called()
+            mocks["_check_bedrock"].assert_not_called()
+        finally:
+            for p in patches.values():
+                p.stop()
+
+    def test_calls_transcribe_and_bedrock_when_remove_ads_true(self):
+        """When REMOVE_ADS=true explicitly, both AWS checks are called."""
+        patches = self._patch_all_checks()
+        mocks = {k: p.start() for k, p in patches.items()}
+        try:
+            with patch.dict("os.environ", {"CONFIG_PROVIDER": "yaml", "REMOVE_ADS": "true"}):
+                run_preflight()
+            mocks["_check_transcribe"].assert_called_once_with("us-west-2")
+            mocks["_check_bedrock"].assert_called_once_with("us-west-2")
         finally:
             for p in patches.values():
                 p.stop()
