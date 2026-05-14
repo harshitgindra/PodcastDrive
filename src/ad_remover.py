@@ -118,8 +118,11 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
         transcript_uri = status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
         logger.info("[AdRemover] Downloading transcript from %s", transcript_uri)
 
+        import ssl
         import urllib.request
-        with urllib.request.urlopen(transcript_uri) as resp:
+        import certifi
+        _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(transcript_uri, context=_ssl_ctx) as resp:
             transcript_data = json.loads(resp.read())
 
         items = transcript_data.get("results", {}).get("items", [])

@@ -13,12 +13,17 @@ import json
 import logging
 import os
 import re
+import ssl
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+
+import certifi
+
+_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -83,7 +88,7 @@ def resolve_feed_url(url: str) -> str:
             lookup_url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
         results = data.get("results", [])
@@ -128,7 +133,7 @@ def search_feed_url_by_name(name: str) -> str:
             search_url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
         results = data.get("results", [])
@@ -193,7 +198,7 @@ def fetch_feed_xml(feed_url: str) -> bytes:
             feed_url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
             return resp.read()
     except Exception as exc:
         raise RuntimeError(f"Failed to fetch RSS feed {feed_url}: {exc}") from exc
@@ -326,7 +331,7 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
             url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=300) as resp, open(local_path, "wb") as out:
+        with urllib.request.urlopen(req, timeout=300, context=_SSL_CTX) as resp, open(local_path, "wb") as out:
             while True:
                 chunk = resp.read(1024 * 1024)  # 1 MiB
                 if not chunk:
