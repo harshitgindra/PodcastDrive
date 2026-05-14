@@ -2,7 +2,9 @@
 # Run the podcast sync.
 # Usage:
 #   ./run.sh                                    # process all from config
+#   ./run.sh --dry-run                          # preview all from config (no writes)
 #   ./run.sh <playlist_id_or_url> [...]         # process specific playlists
+#   ./run.sh --dry-run <playlist_id_or_url> [...] # preview specific playlists
 
 set -euo pipefail
 
@@ -12,6 +14,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs}"
 mkdir -p "$LOG_DIR"
 export LOG_DIR
+
+# --- Parse --dry-run flag ---
+DRY_RUN=false
+ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--dry-run" ]]; then
+        DRY_RUN=true
+    else
+        ARGS+=("$arg")
+    fi
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+if [ "$DRY_RUN" = true ]; then
+    PY_DRY_RUN=True
+    echo ">>> DRY-RUN mode: no files will be downloaded, uploaded, or deleted <<<"
+    echo ""
+else
+    PY_DRY_RUN=False
+fi
 
 # --- Load config ---
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
@@ -86,7 +108,7 @@ import json
 from logger_config import setup_logging
 setup_logging()
 from sync import process_playlist
-result = process_playlist('$URL')
+result = process_playlist('$URL', dry_run=$PY_DRY_RUN)
 print(json.dumps(result, indent=2))
 " || echo "ERROR: Failed processing $URL"
     done
@@ -131,6 +153,7 @@ for i, podcast in enumerate(enabled):
             max_downloads=podcast.max_downloads,
             max_age_days=podcast.max_age_days,
             sleep_between=podcast.sleep_between,
+            dry_run=$PY_DRY_RUN,
         )
         print(json.dumps(result, indent=2))
 
