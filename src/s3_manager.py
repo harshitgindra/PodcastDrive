@@ -5,6 +5,7 @@ import os
 import time
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +54,17 @@ class S3Manager:
 
         return video_ids
 
-    def upload_episode(self, local_path: str, video_id: str) -> str:
-        """Upload an MP3 file to S3.
+    def upload_episode(self, local_path: str, video_id: str, max_age_days: int = 5) -> str:
+        """Upload an MP3 file to S3 and configure automatic expiration.
+
+        Sets an S3 lifecycle rule so the object is automatically deleted after
+        *max_age_days* days, removing the need for explicit age-based deletion.
 
         Args:
             local_path: Path to the local MP3 file.
             video_id: Video ID used to construct the S3 key.
+            max_age_days: Number of days after which S3 should auto-delete
+                this object (default: 5).
 
         Returns:
             The S3 key where the file was uploaded
@@ -70,9 +76,63 @@ class S3Manager:
             local_path,
             self.bucket,
             key,
-            ExtraArgs={"ContentType": "audio/mpeg"},
+            ExtraArgs={
+                "ContentType": "audio/mpeg",
+                "Tagging": f"expiry-days={max_age_days}",
+            },
         )
+        self.set_lifecycle_expiration(max_age_days)
         return key
+
+    def set_lifecycle_expiration(self, max_age_days: int) -> None:
+        """Upsert an S3 lifecycle rule to auto-delete episodes after *max_age_days* days.
+
+        The rule is scoped to the ``{playlist_id}/episodes/`` prefix so each
+        playlist can have an independent retention period.  Existing rules for
+        other playlists are preserved.
+
+        Args:
+            max_age_days: Number of days after upload before S3 expires the
+                object automatically.
+        """
+        rule_id = f"expire-{self.playlist_id}-episodes"
+        prefix = f"{self.playlist_id}/episodes/"
+
+        try:
+            # Fetch existing rules so we don't overwrite other playlists' rules
+            try:
+                existing = self.s3_client.get_bucket_lifecycle_configuration(
+                    Bucket=self.bucket
+                )
+                rules = [
+                    r for r in existing.get("Rules", [])
+                    if r.get("ID") != rule_id
+                ]
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "NoSuchLifecycleConfiguration":
+                    rules = []
+                else:
+                    raise
+
+            rules.append({
+                "ID": rule_id,
+                "Status": "Enabled",
+                "Filter": {"Prefix": prefix},
+                "Expiration": {"Days": max_age_days},
+            })
+
+            self.s3_client.put_bucket_lifecycle_configuration(
+                Bucket=self.bucket,
+                LifecycleConfiguration={"Rules": rules},
+            )
+            logger.info(
+                "Lifecycle rule '%s' set: expire after %d days (prefix=%s)",
+                rule_id, max_age_days, prefix,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to set lifecycle rule for %s: %s", self.playlist_id, exc
+            )
 
     def delete_episode(self, video_id: str) -> None:
         """Delete an MP3 episode from S3.

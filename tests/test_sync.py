@@ -1,17 +1,16 @@
 """Unit tests for the sync orchestration module."""
 
 import os
-import tempfile
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, call, patch
-
-# A date that is always recent (2 days ago) for tests that expect downloads
-_RECENT_DATE = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y%m%d")
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from models import EpisodeMeta, PlaylistMeta, VideoEntry
+from models import PlaylistMeta, VideoEntry
 from sync import _rebuild_feed, _reconcile, process_playlist
+
+# A date that is always recent (2 days ago) for tests that expect downloads
+_RECENT_DATE = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y%m%d")
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +99,7 @@ class TestProcessPlaylistConfig:
                 mock_dl.side_effect = fake_dl
 
                 with patch("os.makedirs"), patch("os.remove"):
-                    result = process_playlist("https://youtube.com/playlist?list=PLtest")
+                    process_playlist("https://youtube.com/playlist?list=PLtest")
 
                 # Should download at most 2
                 assert mock_dl.call_count <= 2
@@ -475,19 +474,19 @@ class TestRebuildFeed:
 # ---------------------------------------------------------------------------
 
 class TestReconcile:
-    def test_deletes_old_episodes_from_s3(self):
-        """Episodes older than max_age_days should be deleted from S3."""
+    def test_does_not_delete_old_episodes_by_age(self):
+        """Age-based deletion is now handled by S3 lifecycle — reconcile must not delete by age."""
         old_date = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y%m%d")
         video = _make_video("vid001", upload_date=old_date)
         s3 = _make_s3_manager(existing=["vid001"])
-        # Second call (after deletion) returns empty
-        s3.list_existing_episodes.side_effect = [{"vid001"}, set(), set()]
+        s3.list_existing_episodes.return_value = {"vid001"}
 
         with patch("sync.build_episode_metadata", return_value=[]), \
              patch("sync.generate_rss", return_value="<rss/>"):
             _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
                        _make_playlist_meta(), max_age_days=30)
-            s3.delete_episode.assert_called_with("vid001")
+            # vid001 is still in the playlist — must NOT be deleted even if old
+            s3.delete_episode.assert_not_called()
 
     def test_deletes_orphaned_s3_files(self):
         """S3 files not in the playlist anymore should be removed."""
@@ -495,7 +494,7 @@ class TestReconcile:
         s3 = _make_s3_manager(existing=["vid_orphan"])
         s3.list_existing_episodes.side_effect = [
             {"vid_orphan"},   # initial list
-            {"vid_orphan"},   # after age-deletion (nothing deleted)
+            {"vid_orphan"},   # orphan check
             set(),            # after orphan deletion
         ]
         video = _make_video("vid001")
@@ -518,12 +517,16 @@ class TestReconcile:
             s3.upload_feed.assert_called_once()
 
     def test_handles_delete_exception_gracefully(self):
-        """Deletion failures should not crash reconcile."""
-        old_date = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y%m%d")
-        video = _make_video("vid001", upload_date=old_date)
-        s3 = _make_s3_manager(existing=["vid001"])
+        """Deletion failures (orphan) should not crash reconcile."""
+        # vid_orphan is in S3 but not in playlist — orphan delete fails
+        s3 = _make_s3_manager(existing=["vid_orphan"])
         s3.delete_episode.side_effect = Exception("S3 error")
-        s3.list_existing_episodes.side_effect = [{"vid001"}, {"vid001"}, {"vid001"}]
+        s3.list_existing_episodes.side_effect = [
+            {"vid_orphan"},  # initial list
+            {"vid_orphan"},  # orphan check
+            {"vid_orphan"},  # feed rebuild
+        ]
+        video = _make_video("vid001")  # different video — vid_orphan is orphan
 
         with patch("sync.build_episode_metadata", return_value=[]), \
              patch("sync.generate_rss", return_value="<rss/>"):
@@ -531,8 +534,8 @@ class TestReconcile:
             _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
                        _make_playlist_meta(), max_age_days=30)
 
-    def test_no_deletions_when_all_recent(self):
-        """Recent episodes should not be deleted during reconcile."""
+    def test_no_deletions_when_no_orphans(self):
+        """No deletions should happen when all S3 files are still in the playlist."""
         recent_date = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y%m%d")
         video = _make_video("vid001", upload_date=recent_date)
         s3 = _make_s3_manager(existing=["vid001"])

@@ -10,7 +10,7 @@
 
 defaults:
   max_downloads: 10
-  max_age_days: 7
+  max_age_days: 5
   sleep_between: 5
 
 podcasts:

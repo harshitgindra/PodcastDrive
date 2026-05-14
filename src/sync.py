@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from downloader import DownloadError, download_and_convert
 from extractor import extract_playlist, extract_video_metadata
+from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
 from s3_manager import S3Manager
 from utils import extract_playlist_id, parse_upload_date
@@ -169,9 +170,9 @@ def process_playlist(
                     video.webpage_url, video.video_id, tmp_dir,
                 )
 
-                # Upload to S3
+                # Upload to S3 (lifecycle expiration is set automatically)
                 logger.info("[Step 4] Uploading %s to S3", video.video_id)
-                s3.upload_episode(mp3_path, video.video_id)
+                s3.upload_episode(mp3_path, video.video_id, max_age_days)
                 os.remove(mp3_path)
                 new_count += 1
 
@@ -227,7 +228,7 @@ def _rebuild_feed(
     video_entries: list,
     cloudfront_base: str,
     playlist_id: str,
-    playlist_meta: "PlaylistMeta",
+    playlist_meta: PlaylistMeta,
 ) -> int:
     """Re-list S3, generate and upload feed.xml using metadata already in memory."""
     final_keys = s3.list_existing_episodes()
@@ -244,44 +245,24 @@ def _reconcile(
     video_entries: list,
     cloudfront_base: str,
     playlist_id: str,
-    playlist_meta: "PlaylistMeta",
+    playlist_meta: PlaylistMeta,
     max_age_days: int,
 ) -> None:
     """Reconcile S3 files and RSS feed entries.
 
+    Age-based expiration is handled automatically by the S3 lifecycle rule set
+    during upload — this step only removes files that are no longer part of the
+    playlist (orphans) and rebuilds the RSS feed.
+
     After this runs:
-    - No entries older than max_age_days in the feed or S3
     - No feed entries without a corresponding S3 file
     - No S3 files without a corresponding feed entry
     - Entry count in feed == file count in S3
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-
     s3_keys = s3.list_existing_episodes()
     logger.info("[Reconcile] S3 has %d episodes", len(s3_keys))
 
-    entry_map = {v.video_id: v for v in video_entries}
-
-    # 1. Remove S3 files older than max_age_days
-    to_delete_old = []
-    for vid in s3_keys:
-        entry = entry_map.get(vid)
-        if entry and entry.upload_date:
-            pub_date = parse_upload_date(entry.upload_date)
-            if pub_date < cutoff:
-                to_delete_old.append(vid)
-
-    for vid in to_delete_old:
-        logger.info("[Reconcile] Deleting old episode: %s", vid)
-        try:
-            s3.delete_episode(vid)
-        except Exception as exc:
-            logger.error("[Reconcile] Failed to delete %s: %s", vid, exc)
-
-    if to_delete_old:
-        logger.info("[Reconcile] Deleted %d old episodes", len(to_delete_old))
-
-    # 2. Remove S3 files no longer in the playlist
+    # 1. Remove S3 files no longer in the playlist (orphans)
     playlist_ids = {v.video_id for v in video_entries}
     orphaned_files = s3.list_existing_episodes() - playlist_ids
     for vid in orphaned_files:
@@ -294,7 +275,7 @@ def _reconcile(
     if orphaned_files:
         logger.info("[Reconcile] Deleted %d orphaned files", len(orphaned_files))
 
-    # 3. Rebuild feed from current S3 state
+    # 2. Rebuild feed from current S3 state
     final_keys = s3.list_existing_episodes()
     episodes = build_episode_metadata(
         video_entries, final_keys, cloudfront_base, playlist_id, s3

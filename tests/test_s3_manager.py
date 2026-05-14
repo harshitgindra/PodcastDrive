@@ -97,7 +97,7 @@ class TestUploadEpisode:
             tmp_path = f.name
 
         try:
-            key = s3_manager.upload_episode(tmp_path, "vid001")
+            key = s3_manager.upload_episode(tmp_path, "vid001", max_age_days=5)
             assert key == f"{PLAYLIST_ID}/episodes/vid001.mp3"
 
             # Verify the object exists in S3
@@ -112,11 +112,103 @@ class TestUploadEpisode:
             tmp_path = f.name
 
         try:
-            key = s3_manager.upload_episode(tmp_path, "vid001")
+            key = s3_manager.upload_episode(tmp_path, "vid001", max_age_days=5)
             obj = s3_manager.s3_client.head_object(Bucket=BUCKET, Key=key)
             assert obj["ContentType"] == "audio/mpeg"
         finally:
             os.unlink(tmp_path)
+
+    def test_sets_expiry_days_tag(self, s3_manager):
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake mp3 data")
+            tmp_path = f.name
+
+        try:
+            key = s3_manager.upload_episode(tmp_path, "vid001", max_age_days=7)
+            tags = s3_manager.s3_client.get_object_tagging(Bucket=BUCKET, Key=key)
+            tag_dict = {t["Key"]: t["Value"] for t in tags.get("TagSet", [])}
+            assert tag_dict.get("expiry-days") == "7"
+        finally:
+            os.unlink(tmp_path)
+
+    def test_calls_set_lifecycle_expiration(self, s3_manager):
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake mp3 data")
+            tmp_path = f.name
+
+        try:
+            with unittest.mock.patch.object(s3_manager, "set_lifecycle_expiration") as mock_lc:
+                s3_manager.upload_episode(tmp_path, "vid001", max_age_days=10)
+                mock_lc.assert_called_once_with(10)
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestSetLifecycleExpiration:
+    def test_creates_lifecycle_rule(self, s3_manager):
+        s3_manager.set_lifecycle_expiration(5)
+        response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
+        rule_ids = [r["ID"] for r in response["Rules"]]
+        assert f"expire-{PLAYLIST_ID}-episodes" in rule_ids
+
+    def test_lifecycle_rule_has_correct_days(self, s3_manager):
+        s3_manager.set_lifecycle_expiration(10)
+        response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
+        rule = next(
+            r for r in response["Rules"]
+            if r["ID"] == f"expire-{PLAYLIST_ID}-episodes"
+        )
+        assert rule["Expiration"]["Days"] == 10
+
+    def test_lifecycle_rule_has_correct_prefix(self, s3_manager):
+        s3_manager.set_lifecycle_expiration(5)
+        response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
+        rule = next(
+            r for r in response["Rules"]
+            if r["ID"] == f"expire-{PLAYLIST_ID}-episodes"
+        )
+        assert rule["Filter"]["Prefix"] == f"{PLAYLIST_ID}/episodes/"
+
+    def test_updates_existing_rule_for_same_playlist(self, s3_manager):
+        s3_manager.set_lifecycle_expiration(5)
+        s3_manager.set_lifecycle_expiration(14)  # update to 14 days
+        response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
+        matching = [
+            r for r in response["Rules"]
+            if r["ID"] == f"expire-{PLAYLIST_ID}-episodes"
+        ]
+        assert len(matching) == 1
+        assert matching[0]["Expiration"]["Days"] == 14
+
+    def test_preserves_other_playlists_rules(self, s3_manager):
+        # Manually set a rule for a different playlist
+        other_rule_id = "expire-OtherPlaylist-episodes"
+        s3_manager.s3_client.put_bucket_lifecycle_configuration(
+            Bucket=BUCKET,
+            LifecycleConfiguration={
+                "Rules": [{
+                    "ID": other_rule_id,
+                    "Status": "Enabled",
+                    "Filter": {"Prefix": "OtherPlaylist/episodes/"},
+                    "Expiration": {"Days": 7},
+                }]
+            },
+        )
+        # Now set lifecycle for our playlist
+        s3_manager.set_lifecycle_expiration(5)
+        response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
+        rule_ids = {r["ID"] for r in response["Rules"]}
+        assert other_rule_id in rule_ids
+        assert f"expire-{PLAYLIST_ID}-episodes" in rule_ids
+
+    def test_handles_s3_error_gracefully(self, s3_manager):
+        from botocore.exceptions import ClientError
+        error_resp = {"Error": {"Code": "AccessDenied", "Message": "Forbidden"}}
+        s3_manager.s3_client.get_bucket_lifecycle_configuration = unittest.mock.MagicMock(
+            side_effect=ClientError(error_resp, "GetBucketLifecycleConfiguration")
+        )
+        # Should not raise
+        s3_manager.set_lifecycle_expiration(5)
 
 
 class TestDeleteEpisode:
@@ -242,7 +334,6 @@ class TestPingOvercast:
                 with unittest.mock.patch("urllib.request.urlopen", return_value=mock_resp):
                     manager._ping_overcast()
                     # Should have called urlopen with overcast ping URL
-                    import s3_manager as _s3m
                     # No assertion needed beyond no exception raised
 
     def test_handles_ping_exception_gracefully(self):
