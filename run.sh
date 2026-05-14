@@ -8,6 +8,15 @@
 
 set -euo pipefail
 
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+
+ok()      { echo -e "  ${GREEN}✅  $*${RESET}"; }
+fail()    { echo -e "  ${RED}❌  $*${RESET}"; exit 1; }
+warn()    { echo -e "  ${YELLOW}⚠️   $*${RESET}"; }
+info()    { echo -e "  ${CYAN}ℹ️   $*${RESET}"; }
+section() { echo -e "\n${BOLD}$*${RESET}\n$(printf '─%.0s' {1..52})"; }
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Ensure logs directory exists ---
@@ -36,39 +45,38 @@ else
 fi
 
 # --- Load config ---
+section "1 / 2  Environment (config.env)"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 if [ -f "$CONFIG_FILE" ]; then
     set -a
     source "$CONFIG_FILE"
     set +a
+    ok "config.env loaded"
 else
-    echo "WARNING: No config.env found. Using defaults/environment."
+    fail "config.env not found — copy config.env.example and fill in your values"
 fi
 
 # --- Setup venv if needed ---
+section "2 / 2  Python environment"
 if [ ! -d "${SCRIPT_DIR}/.venv" ]; then
-    echo "Creating virtual environment..."
+    info "Creating virtual environment..."
     python3 -m venv "${SCRIPT_DIR}/.venv"
 fi
 
 VENV_PIP="${SCRIPT_DIR}/.venv/bin/pip"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python3"
+ok "Virtual environment ready"
 
 # Install dependencies if missing
-if ! "${VENV_PYTHON}" -c "import yt_dlp, boto3, yaml" 2>/dev/null; then
-    echo "Installing dependencies..."
+if ! "${VENV_PYTHON}" -c "import yt_dlp, boto3, yaml, certifi" 2>/dev/null; then
+    info "Installing dependencies..."
     if [ -f "${SCRIPT_DIR}/requirements.txt" ]; then
         "${VENV_PIP}" install --quiet -r "${SCRIPT_DIR}/requirements.txt"
     else
-        "${VENV_PIP}" install --quiet yt-dlp boto3 pyyaml
+        "${VENV_PIP}" install --quiet yt-dlp boto3 pyyaml certifi
     fi
 fi
-
-# Check ffmpeg
-if ! command -v ffmpeg &>/dev/null; then
-    echo "ERROR: ffmpeg not found. Install it: brew install ffmpeg"
-    exit 1
-fi
+ok "Python dependencies installed"
 
 # --- Defaults ---
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-west-2}"
@@ -85,6 +93,14 @@ export SLEEP_BETWEEN_DOWNLOADS="${SLEEP_BETWEEN_DOWNLOADS:-5}"
 export CONFIG_PROVIDER="${CONFIG_PROVIDER:-yaml}"
 export PODCASTS_YAML="${PODCASTS_YAML:-${SCRIPT_DIR}/podcasts.yaml}"
 export PYTHONPATH="${SCRIPT_DIR}/src"
+
+# --- Preflight checks ---
+"${VENV_PYTHON}" -c "
+import sys, os
+sys.path.insert(0, '$SCRIPT_DIR/src')
+from preflight import run_preflight
+run_preflight(dry_run=$PY_DRY_RUN)
+" || exit 1
 
 if [ $# -gt 0 ]; then
     # --- CLI mode: process specific playlists ---
