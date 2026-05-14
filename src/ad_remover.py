@@ -3,7 +3,7 @@
 Pipeline:
     1. Upload the audio file to a temporary S3 prefix and transcribe it with
        AWS Transcribe (word-level timestamps).
-    2. Send the transcript to AWS Bedrock (amazon.nova-pro-v1:0 via the
+    2. Send the transcript to AWS Bedrock (us.anthropic.claude-sonnet-4-20250514-v1:0 via the
        Converse API) to identify ad-segment timestamps as JSON.
     3. Use ffmpeg to splice out the ad segments and stitch the remaining audio
        into a single output MP3.
@@ -16,7 +16,7 @@ Environment variables (all optional — sensible defaults provided):
     AWS_DEFAULT_REGION      – AWS region for Transcribe and Bedrock clients.
     TRANSCRIBE_LANGUAGE_CODE – BCP-47 language code passed to Transcribe (default: "en-US").
     BEDROCK_MODEL_ID        – Bedrock model ID for ad detection
-                              (default: "amazon.nova-pro-v1:0").
+                              (default: "us.anthropic.claude-sonnet-4-20250514-v1:0").
     TRANSCRIBE_POLL_INTERVAL – Seconds between Transcribe job status polls (default: 10).
     TRANSCRIBE_MAX_WAIT     – Maximum seconds to wait for a Transcribe job (default: 3600).
 """
@@ -237,7 +237,7 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
     """Ask AWS Bedrock to identify ad segments in *segments*.
 
     Uses the Bedrock Converse API with the model specified by
-    ``BEDROCK_MODEL_ID`` (default: ``amazon.nova-pro-v1:0``).
+    ``BEDROCK_MODEL_ID`` (default: ``us.anthropic.claude-sonnet-4-20250514-v1:0``).
 
     Args:
         segments: List of transcript segment dicts as returned by
@@ -257,12 +257,12 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
         return []
 
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    model_id = os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-pro-v1:0")
+    model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 
     # Build transcript: keep first + last 30 min of segments to stay within
     # Bedrock context window for very long episodes (ads are almost always
     # near the start or end of the content).
-    _MAX_TRANSCRIPT_CHARS = 60_000  # ~15k tokens, well within nova-pro limits
+    _MAX_TRANSCRIPT_CHARS = 60_000  # ~15k tokens, well within Claude Sonnet limits
     transcript_lines = "\n".join(
         f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in segments
     )

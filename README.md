@@ -150,7 +150,7 @@ cp config.env.example config.env
 | **Ad Removal** | | | |
 | `REMOVE_ADS` | | `true` | Set to `false` to disable ad removal entirely |
 | `TRANSCRIBE_LANGUAGE_CODE` | | `en-US` | BCP-47 language code for AWS Transcribe |
-| `BEDROCK_MODEL_ID` | | `amazon.nova-pro-v1:0` | Bedrock model ID for ad-segment detection |
+| `BEDROCK_MODEL_ID` | | `us.anthropic.claude-sonnet-4-20250514-v1:0` | Bedrock model ID for ad-segment detection |
 | `TRANSCRIBE_POLL_INTERVAL` | | `10` | Seconds between Transcribe job status polls |
 | `TRANSCRIBE_MAX_WAIT` | | `3600` | Max seconds to wait for a Transcribe job before giving up |
 | **Config Provider** | | | |
