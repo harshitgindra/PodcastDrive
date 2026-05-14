@@ -224,6 +224,25 @@ class NotionConfigProvider(ConfigProvider):
             if enabled_prop.get("type") == "checkbox":
                 enabled = enabled_prop.get("checkbox", True)
 
+            # Source (select type) — must be "YouTube" to be processed
+            source_prop = props.get("Source", {})
+            source = ""
+            if source_prop.get("type") == "select" and source_prop.get("select"):
+                source = source_prop["select"].get("name", "")
+
+            # Filter: skip disabled entries
+            if not enabled:
+                logger.debug("Skipping Notion entry '%s': disabled", name)
+                return None
+
+            # Filter: skip non-YouTube sources (absent Source also excluded)
+            if source != "YouTube":
+                logger.debug(
+                    "Skipping Notion entry '%s': source=%r (expected 'YouTube')",
+                    name, source,
+                )
+                return None
+
             # Max Downloads (number type)
             max_downloads = None
             md_prop = props.get("Max Downloads", {})
@@ -300,7 +319,7 @@ class NotionConfigProvider(ConfigProvider):
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
+            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
                 logger.info("Updated Notion for %s", podcast.name)
         except Exception as exc:
             logger.warning("Failed to update Notion for %s: %s", podcast.name, exc)

@@ -199,12 +199,25 @@ class TestNotionParsePage:
     def _number_prop(self, n):
         return {"type": "number", "number": n}
 
+    def _select_prop(self, value):
+        return {"type": "select", "select": {"name": value}}
+
+    def _base_props(self, name="My Podcast", url="PLabc123", enabled=True, source="YouTube"):
+        """Helper: return a complete valid props dict."""
+        return {
+            "Name": self._title_prop(name),
+            "URL": self._rich_text_prop(url),
+            "Enabled": self._checkbox_prop(enabled),
+            "Source": self._select_prop(source),
+        }
+
     def test_parses_full_page(self):
         provider = self._make_provider()
         props = {
             "Name": self._title_prop("My Podcast"),
             "URL": self._rich_text_prop("PLabc123"),
             "Enabled": self._checkbox_prop(True),
+            "Source": self._select_prop("YouTube"),
             "Max Downloads": self._number_prop(5),
             "Max Age Days": self._number_prop(14),
         }
@@ -221,6 +234,7 @@ class TestNotionParsePage:
         props = {
             "Name": self._title_prop("Podcast"),
             "URL": self._rich_text_prop(""),
+            "Source": self._select_prop("YouTube"),
         }
         result = provider._parse_page(props)
         assert result is None
@@ -230,38 +244,73 @@ class TestNotionParsePage:
         props = {
             "Name": self._title_prop("Podcast"),
             "URL": self._url_prop("https://youtube.com/playlist?list=PLxyz"),
+            "Source": self._select_prop("YouTube"),
         }
         result = provider._parse_page(props)
         assert result is not None
         assert result.url == "https://youtube.com/playlist?list=PLxyz"
 
-    def test_disabled_podcast(self):
+    def test_disabled_podcast_returns_none(self):
+        """Disabled entries should be filtered out and return None."""
         provider = self._make_provider()
-        props = {
-            "Name": self._title_prop("Podcast"),
-            "URL": self._rich_text_prop("PLabc"),
-            "Enabled": self._checkbox_prop(False),
-        }
+        props = self._base_props(enabled=False)
         result = provider._parse_page(props)
-        assert result is not None
-        assert result.enabled is False
+        assert result is None
 
     def test_optional_numbers_none_when_absent(self):
         provider = self._make_provider()
-        props = {
-            "Name": self._title_prop("Podcast"),
-            "URL": self._rich_text_prop("PLabc"),
-        }
+        props = self._base_props()
         result = provider._parse_page(props)
         assert result is not None
         assert result.max_downloads is None
         assert result.max_age_days is None
+
+    def test_returns_none_when_source_is_podcast(self):
+        """Source = 'Podcast' should be excluded."""
+        provider = self._make_provider()
+        props = self._base_props(source="Podcast")
+        result = provider._parse_page(props)
+        assert result is None
+
+    def test_returns_none_when_source_is_missing(self):
+        """Absent Source field should be excluded (source is required)."""
+        provider = self._make_provider()
+        props = {
+            "Name": self._title_prop("Podcast"),
+            "URL": self._rich_text_prop("PLabc"),
+            "Enabled": self._checkbox_prop(True),
+            # No "Source" key
+        }
+        result = provider._parse_page(props)
+        assert result is None
+
+    def test_returns_none_when_source_select_is_null(self):
+        """Source present but select value is null should be excluded."""
+        provider = self._make_provider()
+        props = {
+            "Name": self._title_prop("Podcast"),
+            "URL": self._rich_text_prop("PLabc"),
+            "Enabled": self._checkbox_prop(True),
+            "Source": {"type": "select", "select": None},
+        }
+        result = provider._parse_page(props)
+        assert result is None
+
+    def test_includes_when_source_is_youtube(self):
+        """Source = 'YouTube' + enabled = True → valid config returned."""
+        provider = self._make_provider()
+        props = self._base_props(source="YouTube")
+        result = provider._parse_page(props)
+        assert result is not None
+        assert result.url == "PLabc123"
 
     def test_url_used_as_name_when_title_empty(self):
         provider = self._make_provider()
         props = {
             "Name": {"type": "title", "title": []},
             "URL": self._rich_text_prop("PLabc"),
+            "Enabled": self._checkbox_prop(True),
+            "Source": self._select_prop("YouTube"),
         }
         result = provider._parse_page(props)
         assert result is not None
@@ -300,13 +349,14 @@ class TestNotionGetPodcasts:
             body["next_cursor"] = next_cursor
         return json.dumps(body).encode("utf-8")
 
-    def _make_page(self, name, url, enabled=True):
+    def _make_page(self, name, url, enabled=True, source="YouTube"):
         return {
             "id": "page-001",
             "properties": {
                 "Name": {"type": "title", "title": [{"plain_text": name}]},
                 "URL": {"type": "rich_text", "rich_text": [{"plain_text": url}]},
                 "Enabled": {"type": "checkbox", "checkbox": enabled},
+                "Source": {"type": "select", "select": {"name": source}},
             },
         }
 
