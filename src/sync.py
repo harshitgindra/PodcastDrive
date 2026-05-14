@@ -200,8 +200,7 @@ def process_playlist(
         else:
             logger.info("[Step 5] Starting reconciliation...")
             _reconcile(
-                s3, video_entries, cloudfront_base, playlist_id,
-                playlist_meta, max_age_days,
+                s3, video_entries, cloudfront_base, playlist_id, playlist_meta,
             )
             final_keys = s3.list_existing_episodes()
 
@@ -246,7 +245,6 @@ def _reconcile(
     cloudfront_base: str,
     playlist_id: str,
     playlist_meta: PlaylistMeta,
-    max_age_days: int,
 ) -> None:
     """Reconcile S3 files and RSS feed entries.
 
@@ -264,7 +262,7 @@ def _reconcile(
 
     # 1. Remove S3 files no longer in the playlist (orphans)
     playlist_ids = {v.video_id for v in video_entries}
-    orphaned_files = s3.list_existing_episodes() - playlist_ids
+    orphaned_files = s3_keys - playlist_ids
     for vid in orphaned_files:
         logger.info("[Reconcile] Deleting orphaned S3 file: %s", vid)
         try:

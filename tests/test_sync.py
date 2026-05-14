@@ -484,7 +484,7 @@ class TestReconcile:
         with patch("sync.build_episode_metadata", return_value=[]), \
              patch("sync.generate_rss", return_value="<rss/>"):
             _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta(), max_age_days=30)
+                       _make_playlist_meta())
             # vid001 is still in the playlist — must NOT be deleted even if old
             s3.delete_episode.assert_not_called()
 
@@ -502,7 +502,7 @@ class TestReconcile:
         with patch("sync.build_episode_metadata", return_value=[]), \
              patch("sync.generate_rss", return_value="<rss/>"):
             _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta(), max_age_days=30)
+                       _make_playlist_meta())
             s3.delete_episode.assert_called_with("vid_orphan")
 
     def test_rebuilds_feed_after_reconcile(self):
@@ -512,7 +512,7 @@ class TestReconcile:
         with patch("sync.build_episode_metadata", return_value=[]) as mock_build, \
              patch("sync.generate_rss", return_value="<rss/>"):
             _reconcile(s3, [], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta(), max_age_days=30)
+                       _make_playlist_meta())
             mock_build.assert_called_once()
             s3.upload_feed.assert_called_once()
 
@@ -532,7 +532,7 @@ class TestReconcile:
              patch("sync.generate_rss", return_value="<rss/>"):
             # Should not raise
             _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta(), max_age_days=30)
+                       _make_playlist_meta())
 
     def test_no_deletions_when_no_orphans(self):
         """No deletions should happen when all S3 files are still in the playlist."""
@@ -544,5 +544,5 @@ class TestReconcile:
         with patch("sync.build_episode_metadata", return_value=[]), \
              patch("sync.generate_rss", return_value="<rss/>"):
             _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta(), max_age_days=30)
+                       _make_playlist_meta())
             s3.delete_episode.assert_not_called()
