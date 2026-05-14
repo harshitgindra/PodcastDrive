@@ -23,6 +23,7 @@ class PodcastConfig:
     max_age_days: int | None = None
     sleep_between: int | None = None
     page_id: str | None = None  # Notion page ID (for write-back)
+    source: str = "YouTube"  # "YouTube" or "Podcast"
 
 
 class ConfigProvider(ABC):
@@ -385,6 +386,154 @@ class NotionConfigProvider(ConfigProvider):
             logger.warning("Failed to update Notion for %s: %s", podcast.name, exc)
 
 
+class NotionPodcastConfigProvider(NotionConfigProvider):
+    """Notion config provider that returns ``Source=Podcast`` entries.
+
+    Subclasses :class:`NotionConfigProvider` and overrides ``_parse_page`` to
+    filter for RSS podcast feed subscriptions rather than YouTube playlists.
+
+    Additional capability over the base class:
+    - :meth:`update_url` — write the resolved RSS feed URL back to the Notion
+      ``URL`` property (used after iTunes → RSS URL resolution so the
+      Apple Podcasts link is replaced with the real feed URL).
+    """
+
+    def _parse_page(self, props: dict) -> PodcastConfig | None:
+        """Parse a Notion page into a :class:`PodcastConfig` for RSS podcasts.
+
+        Only returns entries where ``Source == "Podcast"``.
+
+        Args:
+            props: The ``properties`` dict from a Notion API page object.
+
+        Returns:
+            A populated :class:`PodcastConfig` with ``source="Podcast"``, or
+            ``None`` if the entry should be skipped.
+        """
+        try:
+            # Name (title type)
+            name_prop = props.get("Name", {})
+            name = ""
+            if name_prop.get("type") == "title":
+                title_items = name_prop.get("title", [])
+                name = title_items[0]["plain_text"] if title_items else ""
+
+            # URL (rich_text or url type)
+            url_prop = props.get("URL", {})
+            url = ""
+            if url_prop.get("type") == "rich_text":
+                text_items = url_prop.get("rich_text", [])
+                url = text_items[0]["plain_text"] if text_items else ""
+            elif url_prop.get("type") == "url":
+                url = url_prop.get("url") or ""
+
+            if not url:
+                logger.warning("Skipping Notion entry with no URL: %s", name)
+                return None
+
+            # Enabled (checkbox type)
+            enabled = True
+            enabled_prop = props.get("Enabled", {})
+            if enabled_prop.get("type") == "checkbox":
+                enabled = enabled_prop.get("checkbox", True)
+
+            # Source (select type) — must be "Podcast"
+            source_prop = props.get("Source", {})
+            source = ""
+            if source_prop.get("type") == "select" and source_prop.get("select"):
+                source = source_prop["select"].get("name", "")
+
+            if not enabled:
+                logger.debug("Skipping Notion entry '%s': disabled", name)
+                return None
+
+            if source != "Podcast":
+                logger.debug(
+                    "Skipping Notion entry '%s': source=%r (expected 'Podcast')",
+                    name, source,
+                )
+                return None
+
+            # Max Age Days (number type) — controls how far back to fetch episodes
+            max_age_days = None
+            ma_prop = props.get("Max Age Days", {})
+            if ma_prop.get("type") == "number" and ma_prop.get("number") is not None:
+                max_age_days = int(ma_prop["number"])
+
+            # Max Downloads (number type) — max episodes to process per run
+            max_downloads = None
+            md_prop = props.get("Max Downloads", {})
+            if md_prop.get("type") == "number" and md_prop.get("number") is not None:
+                max_downloads = int(md_prop["number"])
+
+            return PodcastConfig(
+                name=name or url,
+                url=url,
+                enabled=enabled,
+                max_downloads=max_downloads,
+                max_age_days=max_age_days,
+                source="Podcast",
+            )
+
+        except (KeyError, IndexError) as exc:
+            logger.warning("Failed to parse Notion podcast page: %s", exc)
+            return None
+
+    def update_url(self, podcast: PodcastConfig, new_url: str) -> None:
+        """Write a resolved RSS feed URL back to the Notion ``URL`` property.
+
+        Called after an Apple Podcasts link is resolved to its real RSS feed
+        URL so subsequent runs skip the iTunes API lookup.
+
+        Args:
+            podcast: The podcast whose Notion page should be updated.
+                     Must have a ``page_id`` attribute set.
+            new_url: The resolved RSS feed URL to persist.
+        """
+        if not podcast.page_id:
+            logger.warning("No page_id for %s, skipping URL update", podcast.name)
+            return
+
+        import ssl
+        import urllib.request
+        import json
+        import certifi
+
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+
+        url = f"https://api.notion.com/v1/pages/{podcast.page_id}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+
+        body = {
+            "properties": {
+                "URL": {
+                    "url": new_url,
+                }
+            }
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="PATCH",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
+                logger.info(
+                    "Updated Notion URL for '%s' → %s", podcast.name, new_url
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to update Notion URL for %s: %s", podcast.name, exc
+            )
+
+
 def get_config_provider() -> ConfigProvider:
     """Factory: return the appropriate config provider based on CONFIG_PROVIDER env var.
 
@@ -395,6 +544,26 @@ def get_config_provider() -> ConfigProvider:
 
     if provider_type == "notion":
         return NotionConfigProvider()
+    else:
+        yaml_path = os.environ.get("PODCASTS_YAML", "podcasts.yaml")
+        return YamlConfigProvider(path=yaml_path)
+
+
+def get_podcast_config_provider() -> "NotionPodcastConfigProvider | ConfigProvider":
+    """Factory: return the RSS-podcast config provider.
+
+    Currently only Notion is supported for RSS podcast subscriptions.
+    Falls back gracefully when ``CONFIG_PROVIDER`` is not ``"notion"``.
+
+    Returns:
+        A :class:`NotionPodcastConfigProvider` when ``CONFIG_PROVIDER=notion``,
+        otherwise a :class:`YamlConfigProvider` (which returns no RSS podcast
+        entries by default — callers should check for an empty list).
+    """
+    provider_type = os.environ.get("CONFIG_PROVIDER", "yaml").lower()
+
+    if provider_type == "notion":
+        return NotionPodcastConfigProvider()
     else:
         yaml_path = os.environ.get("PODCASTS_YAML", "podcasts.yaml")
         return YamlConfigProvider(path=yaml_path)

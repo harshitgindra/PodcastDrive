@@ -187,5 +187,47 @@ for i, podcast in enumerate(enabled):
             provider.update_status(podcast, 'Failed')
         print(f'ERROR: {e}', file=sys.stderr)
     print()
-" || echo "ERROR: Failed processing podcasts"
+" || echo "ERROR: Failed processing YouTube podcasts"
+
+    # --- RSS Podcast feeds (Source=Podcast) ---
+    "${VENV_PYTHON}" -c "
+import json, sys, os
+from logger_config import setup_logging
+setup_logging()
+
+from config_provider import get_podcast_config_provider
+from podcast_sync import process_podcast_feed
+
+provider = get_podcast_config_provider()
+podcasts = provider.get_podcasts()
+
+enabled = [p for p in podcasts if p.enabled]
+print(f'Found {len(enabled)} enabled RSS podcast feeds (of {len(podcasts)} total)')
+print()
+
+for i, podcast in enumerate(enabled):
+    print('=' * 50)
+    print(f'[RSS {i+1}/{len(enabled)}] {podcast.name}')
+    print(f'URL: {podcast.url}')
+    print('=' * 50)
+
+    try:
+        if not $PY_DRY_RUN:
+            provider.update_status(podcast, 'Running')
+        result = process_podcast_feed(podcast, provider=provider, dry_run=$PY_DRY_RUN)
+        print(json.dumps(result, indent=2))
+
+        # Build feed URL and update Notion
+        slug = result.get('slug', '')
+        cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
+        feed_url = f'{cloudfront_base}/{slug}/feed.xml' if slug and cloudfront_base else ''
+        if not $PY_DRY_RUN:
+            provider.update_status(podcast, 'Done')
+            provider.update_last_run(podcast, feed_url=feed_url)
+    except Exception as e:
+        if not $PY_DRY_RUN:
+            provider.update_status(podcast, 'Failed')
+        print(f'ERROR: {e}', file=sys.stderr)
+    print()
+" || echo "ERROR: Failed processing RSS podcast feeds"
 fi
