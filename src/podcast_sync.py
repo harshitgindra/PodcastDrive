@@ -84,6 +84,7 @@ def _build_podcast_feed_xml(
     episode_ids: list[str],
     cloudfront_base: str,
     slug: str,
+    ep_sizes: dict[str, int] | None = None,
 ) -> str:
     """Generate a minimal RSS 2.0 feed for *podcast* from cleaned episode list.
 
@@ -93,11 +94,16 @@ def _build_podcast_feed_xml(
         episode_ids:     Parallel list of stable S3 episode IDs.
         cloudfront_base: CloudFront distribution base URL (no trailing slash).
         slug:            S3 folder slug for this podcast.
+        ep_sizes:        Optional dict mapping episode_id → file size in bytes
+                         for accurate ``<enclosure length>`` values.
 
     Returns:
         Pretty-printed RSS XML string.
     """
     import xml.etree.ElementTree as ET
+
+    if ep_sizes is None:
+        ep_sizes = {}
 
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
@@ -124,7 +130,7 @@ def _build_podcast_feed_xml(
         cf_url = f"{cloudfront_base}/{slug}/episodes/{ep_id}.mp3"
         enc = ET.SubElement(item, "enclosure")
         enc.set("url", cf_url)
-        enc.set("length", "0")  # size unknown until after upload; Overcast ignores
+        enc.set("length", str(ep_sizes.get(ep_id, 0)))
         enc.set("type", "audio/mpeg")
 
         ET.SubElement(item, "pubDate").text = format_datetime(ep.pub_date)
@@ -223,7 +229,7 @@ def process_podcast_feed(
                 return {"slug": slug, "new_episodes": 0, "skipped": 0, "failed": 0}
             feed_url = discovered
             # Write the discovered URL back to Notion so future runs skip search
-            if not dry_run and provider and hasattr(provider, "update_url"):
+            if not dry_run and provider and hasattr(provider, "update_url") and podcast.url != feed_url:
                 provider.update_url(podcast, feed_url)
                 podcast.url = feed_url
             logger.info("[PodcastSync] Discovered feed URL: %s", feed_url)
@@ -297,16 +303,22 @@ def process_podcast_feed(
 
         for ep, ep_id in candidates:
             logger.info("[PodcastSync] Processing episode: %s (%s)", ep.title, ep_id)
+            original_path = None
             try:
-                mp3_path = download_episode(ep.url, ep_id, tmp_dir)
+                original_path = download_episode(ep.url, ep_id, tmp_dir)
 
                 logger.info("[PodcastSync] Running ad removal for %s", ep_id)
-                mp3_path = remove_ads(mp3_path, ep_id, tmp_dir)
+                cleaned_path = remove_ads(original_path, ep_id, tmp_dir)
+
+                # Clean up the original if ad removal produced a separate file
+                if cleaned_path != original_path and os.path.exists(original_path):
+                    os.remove(original_path)
 
                 logger.info("[PodcastSync] Uploading %s to S3", ep_id)
                 age_days = max_age_days if max_age_days else 30
-                s3.upload_episode(mp3_path, ep_id, age_days)
-                os.remove(mp3_path)
+                s3.upload_episode(cleaned_path, ep_id, age_days)
+                if os.path.exists(cleaned_path):
+                    os.remove(cleaned_path)
 
                 new_count += 1
                 uploaded_pairs.append((ep, ep_id))
@@ -315,6 +327,13 @@ def process_podcast_feed(
             except Exception as exc:
                 failed_count += 1
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
+                # Best-effort cleanup of any partial file
+                for path in [original_path]:
+                    if path and os.path.exists(path):
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
 
         # ------------------------------------------------------------------
         # Step 5: Rebuild feed.xml
@@ -323,9 +342,12 @@ def process_podcast_feed(
             # Collect all episodes currently in S3 for the feed
             all_existing_ids = s3.list_existing_episodes()
 
-            # Build a map of ep_id → EpisodeMeta from what we know
+            # Build id→EpisodeMeta from the FULL (unfiltered) feed so that
+            # episodes already in S3 that are older than max_age_days aren't
+            # silently dropped from the feed XML.
+            all_feed_episodes = parse_episodes(feed_xml, max_age_days=None)
             id_to_ep: dict[str, EpisodeMeta] = {}
-            for ep in episodes:
+            for ep in all_feed_episodes:
                 eid = episode_id_from_guid(ep.guid, slug)
                 id_to_ep[eid] = ep
 
@@ -349,11 +371,20 @@ def process_podcast_feed(
             else:
                 feed_episodes, feed_ep_ids = [], []
 
+            # Gather real file sizes from S3 for accurate enclosure lengths
+            ep_sizes: dict[str, int] = {}
+            for eid in feed_ep_ids:
+                s3_key = f"{slug}/episodes/{eid}.mp3"
+                try:
+                    ep_sizes[eid] = s3.get_object_size(s3_key)
+                except Exception:
+                    ep_sizes[eid] = 0
+
             logger.info(
                 "[PodcastSync] Generating feed.xml with %d episodes", len(feed_episodes)
             )
             xml_content = _build_podcast_feed_xml(
-                podcast, feed_episodes, feed_ep_ids, cloudfront_base, slug
+                podcast, feed_episodes, feed_ep_ids, cloudfront_base, slug, ep_sizes
             )
             s3.upload_feed(xml_content)
             logger.info("[PodcastSync] feed.xml uploaded")

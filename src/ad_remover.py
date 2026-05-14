@@ -26,11 +26,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import ssl
 import subprocess
 import time
 import uuid
 
 import boto3
+import certifi
+
+_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -81,7 +86,9 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     s3_client.upload_file(mp3_path, bucket, tmp_key)
 
     media_uri = f"s3://{bucket}/{tmp_key}"
-    job_name = f"podcast-ad-detect-{video_id}-{uuid.uuid4().hex[:8]}"
+    # Transcribe job names only allow [A-Za-z0-9_-] — sanitize video_id
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "-", video_id)[:64].strip("-")
+    job_name = f"pad-{safe_id}-{uuid.uuid4().hex[:8]}"
 
     try:
         # 2. Start the transcription job
@@ -110,6 +117,7 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
             if status == "FAILED":
                 reason = status_resp["TranscriptionJob"].get("FailureReason", "unknown")
                 raise RuntimeError(f"Transcribe job {job_name} failed: {reason}")
+            # Ignore transient API errors on individual poll calls — keep looping
 
         else:
             raise RuntimeError(f"Transcribe job {job_name} timed out after {max_wait}s")
@@ -118,11 +126,8 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
         transcript_uri = status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
         logger.info("[AdRemover] Downloading transcript from %s", transcript_uri)
 
-        import ssl
         import urllib.request
-        import certifi
-        _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(transcript_uri, context=_ssl_ctx) as resp:
+        with urllib.request.urlopen(transcript_uri, context=_SSL_CTX) as resp:
             transcript_data = json.loads(resp.read())
 
         items = transcript_data.get("results", {}).get("items", [])
@@ -254,10 +259,24 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     model_id = os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-pro-v1:0")
 
-    # Build a compact transcript string for the prompt
+    # Build transcript: keep first + last 30 min of segments to stay within
+    # Bedrock context window for very long episodes (ads are almost always
+    # near the start or end of the content).
+    _MAX_TRANSCRIPT_CHARS = 60_000  # ~15k tokens, well within nova-pro limits
     transcript_lines = "\n".join(
         f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in segments
     )
+    if len(transcript_lines) > _MAX_TRANSCRIPT_CHARS:
+        half = _MAX_TRANSCRIPT_CHARS // 2
+        transcript_lines = (
+            transcript_lines[:half]
+            + "\n\n[... middle of episode truncated for brevity ...]\n\n"
+            + transcript_lines[-half:]
+        )
+        logger.info(
+            "[AdRemover] Transcript truncated to ~%d chars for Bedrock prompt",
+            _MAX_TRANSCRIPT_CHARS,
+        )
     prompt = _AD_DETECTION_PROMPT.format(transcript=transcript_lines)
 
     logger.info("[AdRemover] Sending transcript to Bedrock (model=%s, region=%s)", model_id, region)

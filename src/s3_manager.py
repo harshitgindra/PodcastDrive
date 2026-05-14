@@ -27,6 +27,7 @@ class S3Manager:
         self.s3_client = boto3.client("s3")
         self._cf_client = None
         self._distribution_id = os.environ.get("CLOUDFRONT_DISTRIBUTION_ID", "")
+        self._lifecycle_days_set: int | None = None  # cache to skip redundant PUTs
         # Note: bucket name should come from the S3_BUCKET environment variable,
         # not be hardcoded. See config.env.example for configuration.
 
@@ -81,7 +82,10 @@ class S3Manager:
                 "Tagging": f"expiry-days={max_age_days}",
             },
         )
-        self.set_lifecycle_expiration(max_age_days)
+        # Only PUT the lifecycle rule when max_age_days actually changes
+        if self._lifecycle_days_set != max_age_days:
+            self.set_lifecycle_expiration(max_age_days)
+            self._lifecycle_days_set = max_age_days
         return key
 
     def set_lifecycle_expiration(self, max_age_days: int) -> None:

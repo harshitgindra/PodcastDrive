@@ -146,7 +146,11 @@ def search_feed_url_by_name(name: str) -> str:
             logger.warning("[PodcastDownloader] iTunes search result has no feedUrl for: %r", name)
             return ""
 
-        logger.info("[PodcastDownloader] Found feed URL for %r: %s", name, feed_url)
+        track_name = results[0].get("trackName") or results[0].get("collectionName", "")
+        logger.info(
+            "[PodcastDownloader] Found feed URL for %r → matched %r: %s",
+            name, track_name, feed_url,
+        )
         return feed_url
 
     except Exception as exc:
