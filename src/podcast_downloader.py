@@ -104,6 +104,51 @@ def resolve_feed_url(url: str) -> str:
         return url
 
 
+def search_feed_url_by_name(name: str) -> str:
+    """Search the iTunes Search API for a podcast by name and return its feed URL.
+
+    Uses ``https://itunes.apple.com/search?term=<name>&entity=podcast&limit=1``.
+
+    Args:
+        name: Human-readable podcast name (e.g. ``"9to5Mac Daily"``).
+
+    Returns:
+        The RSS feed URL of the best match, or an empty string if not found
+        or the search fails.
+    """
+    if not name:
+        return ""
+
+    term = urllib.parse.quote(name)
+    search_url = f"https://itunes.apple.com/search?term={term}&entity=podcast&limit=1"
+
+    logger.info("[PodcastDownloader] Searching iTunes for podcast: %r", name)
+    try:
+        req = urllib.request.Request(
+            search_url,
+            headers={"User-Agent": "PodcastDrive/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        results = data.get("results", [])
+        if not results:
+            logger.warning("[PodcastDownloader] iTunes search returned no results for: %r", name)
+            return ""
+
+        feed_url = results[0].get("feedUrl", "")
+        if not feed_url:
+            logger.warning("[PodcastDownloader] iTunes search result has no feedUrl for: %r", name)
+            return ""
+
+        logger.info("[PodcastDownloader] Found feed URL for %r: %s", name, feed_url)
+        return feed_url
+
+    except Exception as exc:
+        logger.warning("[PodcastDownloader] iTunes search failed for %r: %s", name, exc)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # RSS feed parsing
 # ---------------------------------------------------------------------------

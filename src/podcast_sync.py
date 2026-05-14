@@ -30,6 +30,7 @@ from podcast_downloader import (
     is_apple_podcasts_url,
     parse_episodes,
     resolve_feed_url,
+    search_feed_url_by_name,
 )
 from s3_manager import S3Manager
 
@@ -202,10 +203,32 @@ def process_podcast_feed(
         os.makedirs(tmp_dir, exist_ok=True)
 
         # ------------------------------------------------------------------
-        # Step 1: Resolve Apple Podcasts URL → real RSS feed URL
+        # Step 1: Resolve feed URL
+        #   1a. No URL → search iTunes by podcast name
+        #   1b. Apple Podcasts / iTunes URL → resolve to real RSS feed via lookup
         # ------------------------------------------------------------------
         feed_url = podcast.url
-        if is_apple_podcasts_url(feed_url):
+
+        if not feed_url:
+            # No URL configured — search iTunes by podcast name
+            logger.info(
+                "[PodcastSync] No URL for '%s' — searching iTunes by name", podcast.name
+            )
+            discovered = search_feed_url_by_name(podcast.name)
+            if not discovered:
+                logger.error(
+                    "[PodcastSync] Could not discover RSS feed for '%s' — skipping",
+                    podcast.name,
+                )
+                return {"slug": slug, "new_episodes": 0, "skipped": 0, "failed": 0}
+            feed_url = discovered
+            # Write the discovered URL back to Notion so future runs skip search
+            if not dry_run and provider and hasattr(provider, "update_url"):
+                provider.update_url(podcast, feed_url)
+                podcast.url = feed_url
+            logger.info("[PodcastSync] Discovered feed URL: %s", feed_url)
+
+        elif is_apple_podcasts_url(feed_url):
             resolved = resolve_feed_url(feed_url)
             if resolved != feed_url:
                 logger.info(

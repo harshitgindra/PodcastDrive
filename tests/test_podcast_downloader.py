@@ -22,6 +22,7 @@ from podcast_downloader import (
     is_apple_podcasts_url,
     parse_episodes,
     resolve_feed_url,
+    search_feed_url_by_name,
 )
 
 
@@ -302,3 +303,66 @@ class TestDownloadEpisode:
                 download_episode(
                     "https://example.com/ep.mp3", "ep001", str(tmp_path)
                 )
+
+
+# ---------------------------------------------------------------------------
+# search_feed_url_by_name
+# ---------------------------------------------------------------------------
+
+class TestSearchFeedUrlByName:
+    def _mock_response(self, data: dict) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(data).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
+
+    def test_returns_feed_url_on_match(self):
+        mock_resp = self._mock_response(
+            {"results": [{"feedUrl": "https://feeds.example.com/my-podcast.rss"}]}
+        )
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+            result = search_feed_url_by_name("My Podcast")
+        assert result == "https://feeds.example.com/my-podcast.rss"
+
+    def test_empty_name_returns_empty_string(self):
+        result = search_feed_url_by_name("")
+        assert result == ""
+
+    def test_no_results_returns_empty_string(self):
+        mock_resp = self._mock_response({"results": []})
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+            result = search_feed_url_by_name("Unknown Podcast XYZ")
+        assert result == ""
+
+    def test_result_has_no_feed_url_returns_empty_string(self):
+        mock_resp = self._mock_response({"results": [{"trackName": "No feed here"}]})
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+            result = search_feed_url_by_name("Some Podcast")
+        assert result == ""
+
+    def test_network_error_returns_empty_string(self):
+        with patch(
+            "podcast_downloader.urllib.request.urlopen",
+            side_effect=OSError("timeout"),
+        ):
+            result = search_feed_url_by_name("My Podcast")
+        assert result == ""
+
+    def test_name_is_url_encoded(self):
+        captured_urls = []
+
+        def fake_urlopen(req, **kwargs):
+            captured_urls.append(req.full_url)
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"results": []}).encode("utf-8")
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            return mock_resp
+
+        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+            search_feed_url_by_name("9to5Mac Daily")
+
+        assert captured_urls
+        # spaces and special chars should be URL-encoded
+        assert " " not in captured_urls[0]

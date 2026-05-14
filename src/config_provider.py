@@ -427,10 +427,6 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
             elif url_prop.get("type") == "url":
                 url = url_prop.get("url") or ""
 
-            if not url:
-                logger.warning("Skipping Notion entry with no URL: %s", name)
-                return None
-
             # Enabled (checkbox type)
             enabled = True
             enabled_prop = props.get("Enabled", {})
@@ -453,6 +449,12 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
                     name, source,
                 )
                 return None
+
+            # URL may be empty — process_podcast_feed will discover it via iTunes Search
+            if not url:
+                logger.info(
+                    "Notion entry '%s' has no URL — will search iTunes by name", name
+                )
 
             # Max Age Days (number type) — controls how far back to fetch episodes
             max_age_days = None

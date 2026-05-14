@@ -328,3 +328,65 @@ class TestProcessPodcastFeedMissingEnv:
         podcast = _make_podcast()
         with pytest.raises(ValueError, match="CLOUDFRONT_BASE"):
             process_podcast_feed(podcast)
+
+
+class TestProcessPodcastFeedEmptyUrl:
+    """Tests for the iTunes-by-name discovery path when podcast.url is empty."""
+
+    def test_empty_url_triggers_name_search(self):
+        podcast = _make_podcast(url="")
+        discovered_url = "https://feeds.example.com/discovered.rss"
+        feed_xml = b"<rss/>"
+
+        with (
+            patch("podcast_sync.search_feed_url_by_name", return_value=discovered_url) as mock_search,
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[]),
+        ):
+            result = process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        mock_search.assert_called_once_with(podcast.name)
+        assert result["new_episodes"] == 0
+
+    def test_empty_url_writes_back_to_notion(self):
+        podcast = _make_podcast(url="")
+        discovered_url = "https://feeds.example.com/discovered.rss"
+        feed_xml = b"<rss/>"
+        mock_provider = MagicMock()
+
+        with (
+            patch("podcast_sync.search_feed_url_by_name", return_value=discovered_url),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[]),
+        ):
+            process_podcast_feed(podcast, provider=mock_provider, dry_run=False)
+
+        mock_provider.update_url.assert_called_once_with(podcast, discovered_url)
+
+    def test_empty_url_no_dry_run_write_back(self):
+        """In dry_run mode, url write-back is skipped even when URL is discovered."""
+        podcast = _make_podcast(url="")
+        discovered_url = "https://feeds.example.com/discovered.rss"
+        feed_xml = b"<rss/>"
+        mock_provider = MagicMock()
+
+        with (
+            patch("podcast_sync.search_feed_url_by_name", return_value=discovered_url),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[]),
+            patch("podcast_sync.S3Manager") as MockS3,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            process_podcast_feed(podcast, provider=mock_provider, dry_run=True)
+
+        mock_provider.update_url.assert_not_called()
+
+    def test_empty_url_search_fails_returns_empty_result(self):
+        podcast = _make_podcast(url="")
+
+        with patch("podcast_sync.search_feed_url_by_name", return_value=""):
+            result = process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        assert result["new_episodes"] == 0
+        assert result["failed"] == 0
