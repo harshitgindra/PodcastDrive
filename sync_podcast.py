@@ -24,7 +24,6 @@ from differ import diff_episodes
 from downloader import DownloadError, download_and_convert
 from extractor import extract_playlist
 from logger_config import setup_logging
-from models import PlaylistMeta, VideoEntry
 from rss_generator import build_episode_metadata, generate_rss
 from s3_manager import S3Manager
 from utils import extract_playlist_id
@@ -81,6 +80,9 @@ def sync_playlist(
     s3 = S3Manager(bucket=bucket, playlist_id=playlist_id)
 
     try:
+        if dry_run:
+            logger.info("[DRY-RUN] No files will be downloaded, uploaded, or deleted.")
+
         # Step 1: Extract playlist metadata
         logger.info("Extracting playlist metadata...")
         playlist_meta, video_entries = extract_playlist(playlist_url)
@@ -102,6 +104,13 @@ def sync_playlist(
         # Step 4: Download and upload new episodes
         new_count = 0
         for i, video in enumerate(to_download, 1):
+            if dry_run:
+                logger.info(
+                    "[DRY-RUN] Would download: %s — %s",
+                    video.video_id, video.title,
+                )
+                new_count += 1
+                continue
             try:
                 logger.info(
                     "[%d/%d] Downloading: %s — %s",
@@ -120,6 +129,10 @@ def sync_playlist(
         # Step 5: Delete stale episodes
         cleaned_count = 0
         for video_id in to_delete:
+            if dry_run:
+                logger.info("[DRY-RUN] Would delete stale: %s", video_id)
+                cleaned_count += 1
+                continue
             try:
                 logger.info("Deleting stale: %s", video_id)
                 s3.delete_episode(video_id)
@@ -128,27 +141,30 @@ def sync_playlist(
                 logger.error("Failed to delete %s: %s", video_id, exc)
 
         # Step 6: Re-list S3 and generate RSS
-        final_keys = s3.list_existing_episodes()
-        episodes_for_feed = build_episode_metadata(
-            video_entries, final_keys, cloudfront_base, playlist_id, s3
-        )
-
-        rss_xml = generate_rss(
-            playlist_meta, episodes_for_feed, cloudfront_base, playlist_id
-        )
-        s3.upload_feed(rss_xml)
+        if dry_run:
+            logger.info("[DRY-RUN] Skipping RSS feed upload.")
+            final_keys = existing_keys  # use pre-run S3 state
+        else:
+            final_keys = s3.list_existing_episodes()
+            episodes_for_feed = build_episode_metadata(
+                video_entries, final_keys, cloudfront_base, playlist_id, s3
+            )
+            rss_xml = generate_rss(
+                playlist_meta, episodes_for_feed, cloudfront_base, playlist_id
+            )
+            s3.upload_feed(rss_xml)
 
         result = {
             "playlist_id": playlist_id,
             "new_episodes": new_count,
             "cleaned_episodes": cleaned_count,
-            "total_episodes": len(episodes_for_feed),
+            "total_episodes": len(final_keys),
             "feed_url": f"{cloudfront_base}/{playlist_id}/feed.xml",
         }
 
         logger.info(
             "Done: %d new, %d cleaned, %d total",
-            new_count, cleaned_count, len(episodes_for_feed),
+            new_count, cleaned_count, len(final_keys),
         )
         logger.info("Feed: %s", result["feed_url"])
 

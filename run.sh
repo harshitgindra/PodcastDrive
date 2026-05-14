@@ -164,7 +164,8 @@ for i, podcast in enumerate(enabled):
     print('=' * 50)
 
     try:
-        provider.update_status(podcast, 'Running')
+        if not $PY_DRY_RUN:
+            provider.update_status(podcast, 'Running')
         result = process_playlist(
             url,
             max_downloads=podcast.max_downloads,
@@ -178,10 +179,12 @@ for i, podcast in enumerate(enabled):
         playlist_id = result.get('playlist_id', '')
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
         feed_url = f'{cloudfront_base}/{playlist_id}/feed.xml' if playlist_id and cloudfront_base else ''
-        provider.update_status(podcast, 'Done')
-        provider.update_last_run(podcast, feed_url=feed_url)
+        if not $PY_DRY_RUN:
+            provider.update_status(podcast, 'Done')
+            provider.update_last_run(podcast, feed_url=feed_url)
     except Exception as e:
-        provider.update_status(podcast, 'Failed')
+        if not $PY_DRY_RUN:
+            provider.update_status(podcast, 'Failed')
         print(f'ERROR: {e}', file=sys.stderr)
     print()
 " || echo "ERROR: Failed processing podcasts"
