@@ -102,12 +102,21 @@ def process_playlist(
         candidates = []
         skipped_existing = 0
         skipped_no_duration = 0
+        skipped_upcoming = 0
+
+        _SKIP_STATUSES = {"is_upcoming", "is_live"}
 
         for v in video_entries:
             if len(candidates) >= max_downloads:
                 break
             if v.video_id in existing_keys:
                 skipped_existing += 1
+                continue
+            if v.live_status in _SKIP_STATUSES:
+                skipped_upcoming += 1
+                logger.debug(
+                    "[Step 3] Skipping %s — live_status=%r", v.video_id, v.live_status
+                )
                 continue
             if not v.duration or v.duration <= 0:
                 skipped_no_duration += 1
@@ -116,8 +125,8 @@ def process_playlist(
             candidates.append(v)
 
         logger.info(
-            "[Step 3] %d candidates to download (skipped %d existing, %d live streams)",
-            len(candidates), skipped_existing, skipped_no_duration,
+            "[Step 3] %d candidates to download (skipped %d existing, %d live streams, %d upcoming)",
+            len(candidates), skipped_existing, skipped_no_duration, skipped_upcoming,
         )
         for i, c in enumerate(candidates):
             logger.info("[Step 3]   %d. %s (duration=%ss)", i + 1, c.video_id, int(c.duration or 0))
@@ -125,6 +134,7 @@ def process_playlist(
         # --- Step 4: Download, upload, update feed after each ---
         new_count = 0
         skipped_old = 0
+        skipped_unavailable = 0
         failed_count = 0
 
         for i, video in enumerate(candidates):
@@ -138,6 +148,14 @@ def process_playlist(
                 logger.info("[Step 4] Extracting metadata for %s", video.video_id)
                 meta = extract_video_metadata(video.webpage_url)
 
+                if meta is None:
+                    skipped_unavailable += 1
+                    logger.info(
+                        "[Step 4] Skipping %s — video unavailable (deleted/private/region-blocked)",
+                        video.video_id,
+                    )
+                    continue
+
                 if meta:
                     video.upload_date = meta["upload_date"]
                     video.description = meta["description"]
@@ -146,6 +164,16 @@ def process_playlist(
                         video.thumbnail = meta["thumbnail"]
                     if meta.get("duration"):
                         video.duration = meta["duration"]
+
+                    # Skip if video is a future premiere or currently live
+                    meta_live_status = meta.get("live_status")
+                    if meta_live_status in _SKIP_STATUSES:
+                        skipped_upcoming += 1
+                        logger.info(
+                            "[Step 4] Skipping %s — not yet available (live_status=%r)",
+                            video.video_id, meta_live_status,
+                        )
+                        continue
 
                     # Skip if older than max_age_days
                     pub_date = parse_upload_date(video.upload_date)
@@ -194,8 +222,8 @@ def process_playlist(
                 logger.error("[Step 4] FAILED %s: %s", video.video_id, exc)
 
         logger.info(
-            "[Step 4] Download phase complete: %d new, %d skipped (old), %d failed",
-            new_count, skipped_old, failed_count,
+            "[Step 4] Download phase complete: %d new, %d skipped (old), %d unavailable, %d failed",
+            new_count, skipped_old, skipped_unavailable, failed_count,
         )
 
         # --- Step 5: Reconciliation ---

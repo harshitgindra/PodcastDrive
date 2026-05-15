@@ -27,6 +27,7 @@ class VideoEntry:
     thumbnail: str
     webpage_url: str
     playlist_index: int | None
+    live_status: str | None = None  # e.g. "is_upcoming", "is_live", "was_live", "not_live"
 
 
 @dataclass

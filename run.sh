@@ -120,12 +120,52 @@ if [ $# -gt 0 ]; then
         echo "Processing: $URL"
         echo "=========================================="
         "${VENV_PYTHON}" -c "
-import json
+import json, os, sys
 from logger_config import setup_logging
 setup_logging()
 from sync import process_playlist
-result = process_playlist('$URL', dry_run=$PY_DRY_RUN)
-print(json.dumps(result, indent=2))
+from config_provider import get_config_provider
+from utils import extract_playlist_id
+
+provider = get_config_provider()
+
+# Resolve the playlist_id from the URL so we can match it against Notion entries
+try:
+    playlist_id_for_lookup = extract_playlist_id('$URL')
+except Exception:
+    playlist_id_for_lookup = None
+
+# Try to find a matching Notion entry (silently skip if not found or provider unsupported)
+notion_podcast = None
+if not $PY_DRY_RUN and playlist_id_for_lookup and hasattr(provider, 'find_page_by_url'):
+    try:
+        notion_podcast = provider.find_page_by_url(playlist_id_for_lookup)
+    except Exception:
+        notion_podcast = None
+
+try:
+    if notion_podcast and not $PY_DRY_RUN:
+        provider.update_status(notion_podcast, 'Running')
+        provider.update_last_run(notion_podcast)
+
+    result = process_playlist('$URL', dry_run=$PY_DRY_RUN)
+    print(json.dumps(result, indent=2))
+
+    if notion_podcast and not $PY_DRY_RUN:
+        cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
+        pid = result.get('playlist_id', '')
+        feed_url = f'{cloudfront_base}/{pid}/feed.xml' if pid and cloudfront_base else ''
+        provider.update_status(notion_podcast, 'Done')
+        provider.update_last_run(notion_podcast, feed_url=feed_url)
+
+except Exception as e:
+    if notion_podcast and not $PY_DRY_RUN:
+        try:
+            provider.update_status(notion_podcast, 'Failed')
+            provider.update_last_run(notion_podcast)
+        except Exception:
+            pass
+    print(f'ERROR: {e}', file=sys.stderr)
 " || echo "ERROR: Failed processing $URL"
     done
 else
@@ -166,6 +206,7 @@ for i, podcast in enumerate(enabled):
     try:
         if not $PY_DRY_RUN:
             provider.update_status(podcast, 'Running')
+            provider.update_last_run(podcast)
         result = process_playlist(
             url,
             max_downloads=podcast.max_downloads,
@@ -185,6 +226,7 @@ for i, podcast in enumerate(enabled):
     except Exception as e:
         if not $PY_DRY_RUN:
             provider.update_status(podcast, 'Failed')
+            provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
     print()
 " || echo "ERROR: Failed processing YouTube podcasts"
@@ -214,6 +256,7 @@ for i, podcast in enumerate(enabled):
     try:
         if not $PY_DRY_RUN:
             provider.update_status(podcast, 'Running')
+            provider.update_last_run(podcast)
         result = process_podcast_feed(podcast, provider=provider, dry_run=$PY_DRY_RUN)
         print(json.dumps(result, indent=2))
 
@@ -227,6 +270,7 @@ for i, podcast in enumerate(enabled):
     except Exception as e:
         if not $PY_DRY_RUN:
             provider.update_status(podcast, 'Failed')
+            provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
     print()
 " || echo "ERROR: Failed processing RSS podcast feeds"

@@ -75,6 +75,7 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
                 thumbnail=thumbnail,
                 webpage_url=f"https://www.youtube.com/watch?v={video_id}",
                 playlist_index=entry.get("playlist_index") or (idx + 1),
+                live_status=entry.get("live_status"),
             )
         )
 
@@ -118,6 +119,7 @@ def extract_video_metadata(video_url: str) -> dict | None:
             "thumbnail": info.get("thumbnail") or "",
             "duration": info.get("duration"),
             "title": info.get("title") or "",
+            "live_status": info.get("live_status"),
         }
     except Exception as exc:
         logger.warning("Failed to extract metadata for %s: %s", video_url, exc)

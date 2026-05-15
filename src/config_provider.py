@@ -328,6 +328,25 @@ class NotionConfigProvider(ConfigProvider):
                 "Failed to update Notion status for %s: %s", podcast.name, exc
             )
 
+    def find_page_by_url(self, url: str) -> PodcastConfig | None:
+        """Look up a Notion page by its ``URL`` property value.
+
+        Args:
+            url: The playlist ID, channel handle, or URL to search for.
+
+        Returns:
+            A :class:`PodcastConfig` with ``page_id`` set if a matching
+            enabled page is found, otherwise ``None``.
+        """
+        try:
+            podcasts = self.get_podcasts()
+            for podcast in podcasts:
+                if podcast.url and podcast.url.strip() == url.strip():
+                    return podcast
+        except Exception as exc:
+            logger.warning("find_page_by_url failed for %r: %s", url, exc)
+        return None
+
     def update_last_run(self, podcast: PodcastConfig, feed_url: str = "") -> None:
         """Update ``LastUpdated`` (and optionally ``Podcast URL``) in Notion.
 

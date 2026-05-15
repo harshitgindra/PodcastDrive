@@ -346,6 +346,36 @@ Every run:
 
 YouTube rate-limits aggressive scraping. The tool includes a configurable delay between downloads (`SLEEP_BETWEEN_DOWNLOADS`, default 5 seconds). If you see "rate-limited" errors, wait an hour and try again.
 
+### launchd service exits immediately / yt-dlp not found
+
+If the launchd service fails with `FileNotFoundError: [Errno 2] No such file or directory: 'yt-dlp'` (visible in `logs/launchd.stderr`), the service is launching with a restricted PATH that doesn't include the virtual environment.
+
+Fix: add `.venv/bin` to the `PATH` in your plist (`~/Library/LaunchAgents/<your-label>.plist`):
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>PATH</key>
+    <string>/path/to/PodcastDrive/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+</dict>
+```
+
+Replace `/path/to/PodcastDrive` with the absolute path to your project directory (e.g. the output of `pwd` when run from the project root), and `<your-label>` with the `Label` value from your plist.
+
+Then reload the service:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/<your-label>.plist
+launchctl load   ~/Library/LaunchAgents/<your-label>.plist
+launchctl start  <your-label>
+```
+
+Verify it is running (the PID column should be non-zero):
+
+```bash
+launchctl list | grep podcasts
+```
+
 ### Format not available
 
 If you see "Requested format is not available" errors, ensure yt-dlp is up to date: `pip install --upgrade yt-dlp`.

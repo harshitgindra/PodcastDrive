@@ -551,3 +551,42 @@ class TestGetConfigProviderFactory:
             provider = get_config_provider()
             assert isinstance(provider, YamlConfigProvider)
             assert provider.path == "/custom/path/podcasts.yaml"
+
+
+# ---------------------------------------------------------------------------
+# NotionConfigProvider — find_page_by_url
+# ---------------------------------------------------------------------------
+
+class TestNotionFindPageByUrl:
+    def _make_provider(self):
+        with patch.dict(os.environ, {"NOTION_API_KEY": "key", "NOTION_DATABASE_ID": "db"}):
+            return NotionConfigProvider()
+
+    def test_returns_matching_podcast_by_url(self):
+        """find_page_by_url returns the PodcastConfig whose URL matches."""
+        provider = self._make_provider()
+        podcasts = [
+            PodcastConfig(name="Show A", url="https://youtube.com/playlist?list=PLA"),
+            PodcastConfig(name="Show B", url="https://youtube.com/playlist?list=PLB"),
+        ]
+        with patch.object(provider, "get_podcasts", return_value=podcasts):
+            result = provider.find_page_by_url("https://youtube.com/playlist?list=PLB")
+        assert result is not None
+        assert result.name == "Show B"
+
+    def test_returns_none_when_no_match(self):
+        """find_page_by_url returns None when no podcast URL matches."""
+        provider = self._make_provider()
+        podcasts = [
+            PodcastConfig(name="Show A", url="https://youtube.com/playlist?list=PLA"),
+        ]
+        with patch.object(provider, "get_podcasts", return_value=podcasts):
+            result = provider.find_page_by_url("https://youtube.com/playlist?list=UNKNOWN")
+        assert result is None
+
+    def test_returns_none_on_exception(self):
+        """find_page_by_url silently returns None when get_podcasts raises."""
+        provider = self._make_provider()
+        with patch.object(provider, "get_podcasts", side_effect=Exception("API error")):
+            result = provider.find_page_by_url("https://youtube.com/playlist?list=PLA")
+        assert result is None

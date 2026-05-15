@@ -546,3 +546,106 @@ class TestReconcile:
             _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
                        _make_playlist_meta())
             s3.delete_episode.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# process_playlist — live_status filtering (Step 3 & Step 4)
+# ---------------------------------------------------------------------------
+
+class TestLiveStatusFiltering:
+    """Tests for upcoming/live video filtering and unavailable video handling."""
+
+    def _base_env(self):
+        return {
+            "S3_BUCKET": "test-bucket",
+            "CLOUDFRONT_BASE": "https://cdn.example.com",
+            "MAX_DOWNLOADS_PER_RUN": "10",
+            "MAX_AGE_DAYS": "30",
+            "SLEEP_BETWEEN_DOWNLOADS": "0",
+        }
+
+    def _make_video_with_live_status(self, video_id="vid001", live_status=None):
+        return VideoEntry(
+            video_id=video_id,
+            title=f"Video {video_id}",
+            description="",
+            duration=300,
+            upload_date=_RECENT_DATE,
+            thumbnail="https://img.youtube.com/vi/vid001/0.jpg",
+            webpage_url=f"https://www.youtube.com/watch?v={video_id}",
+            playlist_index=1,
+            live_status=live_status,
+        )
+
+    def test_skips_is_upcoming_in_step3(self):
+        """Video with live_status='is_upcoming' should be filtered in Step 3 (no metadata call)."""
+        upcoming = self._make_video_with_live_status("vid001", live_status="is_upcoming")
+
+        with patch.dict("os.environ", self._base_env()), \
+             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [upcoming])), \
+             patch("sync.extract_video_metadata") as mock_meta, \
+             patch("sync.S3Manager", return_value=_make_s3_manager()), \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.build_episode_metadata", return_value=[]):
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+            # If filtered in Step 3, extract_video_metadata should NOT be called for this video
+            mock_meta.assert_not_called()
+
+    def test_skips_is_live_in_step3(self):
+        """Video with live_status='is_live' should be filtered in Step 3 (no metadata call)."""
+        live = self._make_video_with_live_status("vid002", live_status="is_live")
+
+        with patch.dict("os.environ", self._base_env()), \
+             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [live])), \
+             patch("sync.extract_video_metadata") as mock_meta, \
+             patch("sync.S3Manager", return_value=_make_s3_manager()), \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.build_episode_metadata", return_value=[]):
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+            mock_meta.assert_not_called()
+
+    def test_skips_is_upcoming_in_step4_metadata(self):
+        """Video passes Step 3 (no live_status) but metadata returns is_upcoming → skipped."""
+        video = _make_video("vid003")  # no live_status set — passes Step 3
+
+        meta = {
+            "id": "vid003",
+            "title": "Video vid003",
+            "description": "",
+            "duration": 300,
+            "upload_date": _RECENT_DATE,
+            "thumbnail": "https://img.youtube.com/vi/vid003/0.jpg",
+            "webpage_url": "https://www.youtube.com/watch?v=vid003",
+            "live_status": "is_upcoming",
+        }
+
+        s3 = _make_s3_manager()
+
+        with patch.dict("os.environ", self._base_env()), \
+             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [video])), \
+             patch("sync.extract_video_metadata", return_value=meta), \
+             patch("sync.S3Manager", return_value=s3), \
+             patch("sync.download_and_convert") as mock_dl, \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.build_episode_metadata", return_value=[]):
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+            # Download should NOT be called since video is still upcoming
+            mock_dl.assert_not_called()
+
+    def test_skips_none_metadata_counts_unavailable(self):
+        """extract_video_metadata returning None → video silently skipped, no download attempted."""
+        video = _make_video("vid004")  # passes Step 3
+
+        s3 = _make_s3_manager()
+
+        with patch.dict("os.environ", self._base_env()), \
+             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [video])), \
+             patch("sync.extract_video_metadata", return_value=None), \
+             patch("sync.S3Manager", return_value=s3), \
+             patch("sync.download_and_convert") as mock_dl, \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.build_episode_metadata", return_value=[]):
+            # Should not raise
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+            # No download attempted for unavailable video
+            mock_dl.assert_not_called()
