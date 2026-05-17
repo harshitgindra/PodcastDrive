@@ -19,6 +19,9 @@ Environment variables (all optional — sensible defaults provided):
                               (default: "us.anthropic.claude-sonnet-4-20250514-v1:0").
     TRANSCRIBE_POLL_INTERVAL – Seconds between Transcribe job status polls (default: 10).
     TRANSCRIBE_MAX_WAIT     – Maximum seconds to wait for a Transcribe job (default: 3600).
+    REMOVE_ADS_DRY_RUN      – Set to "true" to detect ads and log them without actually
+                              splicing the audio file (default: "false").  Useful for
+                              evaluating detection quality before enabling full removal.
 """
 
 from __future__ import annotations
@@ -339,13 +342,38 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
         logger.warning("[AdRemover] Failed to parse Bedrock JSON response: %s", exc)
         return []
 
-    # Validate structure
+    # Validate structure and apply minimum-length filter
+    _MIN_AD_SECONDS = 5.0  # segments shorter than this are likely false positives
     valid = []
     for seg in ad_segments:
         if isinstance(seg, dict) and "start" in seg and "end" in seg:
-            valid.append({"start": float(seg["start"]), "end": float(seg["end"])})
+            start = float(seg["start"])
+            end = float(seg["end"])
+            duration = end - start
+            if duration < _MIN_AD_SECONDS:
+                logger.warning(
+                    "[AdRemover] Skipping suspiciously short ad segment "
+                    "(%.1fs < %.1fs minimum): start=%.1f end=%.1f",
+                    duration, _MIN_AD_SECONDS, start, end,
+                )
+                continue
+            valid.append({"start": start, "end": end})
         else:
             logger.warning("[AdRemover] Ignoring malformed ad segment: %s", seg)
+
+    # Log the transcript text covered by each detected ad segment so it can be
+    # reviewed in logs without re-running, useful for prompt tuning.
+    if valid and segments:
+        for ad in valid:
+            covered = [
+                s["text"] for s in segments
+                if s["start"] >= ad["start"] - 5 and s["end"] <= ad["end"] + 5
+            ]
+            snippet = " ".join(covered)[:300]
+            logger.info(
+                "[AdRemover] Ad segment [%.1f–%.1f]: %s…",
+                ad["start"], ad["end"], snippet,
+            )
 
     logger.info("[AdRemover] Detected %d ad segment(s): %s", len(valid), valid)
     return valid
@@ -496,6 +524,10 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> str:
         logger.info("[AdRemover] REMOVE_ADS=false — skipping ad removal for %s", video_id)
         return mp3_path
 
+    dry_run = os.environ.get("REMOVE_ADS_DRY_RUN", "false").lower() in ("true", "1", "yes")
+    if dry_run:
+        logger.info("[AdRemover] REMOVE_ADS_DRY_RUN=true — will detect ads but skip splicing for %s", video_id)
+
     logger.info("[AdRemover] Starting ad removal for %s", video_id)
 
     try:
@@ -512,6 +544,14 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> str:
 
     if not ad_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
+        return mp3_path
+
+    if dry_run:
+        total_ad_secs = sum(s["end"] - s["start"] for s in ad_segments)
+        logger.info(
+            "[AdRemover] DRY-RUN: would remove %d ad segment(s) totalling %.1fs from %s — skipping splice",
+            len(ad_segments), total_ad_secs, video_id,
+        )
         return mp3_path
 
     cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")

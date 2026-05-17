@@ -341,6 +341,26 @@ class TestDetectAds:
         result = ad_remover.detect_ads([{"start": 0.0, "end": 5.0, "text": "ok"}])
         assert result == [{"start": 10.0, "end": 20.0}]
 
+    def test_filters_out_short_segments_below_minimum(self, monkeypatch):
+        """detect_ads drops segments shorter than the 5-second minimum."""
+        # 3-second segment should be dropped; 60-second should be kept
+        content = '[{"start": 10.0, "end": 13.0}, {"start": 60.0, "end": 120.0}]'
+        self._patch_bedrock(monkeypatch, content)
+        import ad_remover
+
+        result = ad_remover.detect_ads([{"start": 0.0, "end": 5.0, "text": "test"}])
+        assert len(result) == 1
+        assert result[0] == {"start": 60.0, "end": 120.0}
+
+    def test_keeps_segments_exactly_at_minimum_length(self, monkeypatch):
+        """detect_ads keeps segments that are exactly 5 seconds long."""
+        content = '[{"start": 10.0, "end": 15.0}]'
+        self._patch_bedrock(monkeypatch, content)
+        import ad_remover
+
+        result = ad_remover.detect_ads([{"start": 0.0, "end": 5.0, "text": "test"}])
+        assert result == [{"start": 10.0, "end": 15.0}]
+
     def test_uses_bedrock_model_id_env_var(self, monkeypatch):
         """BEDROCK_MODEL_ID env var is forwarded to bedrock.converse."""
         monkeypatch.setenv("BEDROCK_MODEL_ID", "amazon.titan-v2:0")
@@ -542,3 +562,54 @@ class TestRemoveAds:
         ad_remover.remove_ads("/ep.mp3", "my_video_id", str(tmp_path))
 
         mock_transcribe.assert_called_once_with("/ep.mp3", "my_video_id")
+
+    def test_dry_run_returns_original_without_splicing(self, monkeypatch, tmp_path):
+        """With REMOVE_ADS_DRY_RUN=true, ads are detected but splice is never called."""
+        monkeypatch.delenv("REMOVE_ADS", raising=False)
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "true")
+        import ad_remover
+
+        mock_splice = MagicMock()
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "ad copy"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
+        monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
+
+        result = ad_remover.remove_ads("/ep.mp3", "vid_dry", str(tmp_path))
+
+        assert result == "/ep.mp3"
+        mock_splice.assert_not_called()
+
+    def test_dry_run_with_no_ads_returns_original(self, monkeypatch, tmp_path):
+        """With REMOVE_ADS_DRY_RUN=true and no ads, returns original (same as non-dry-run)."""
+        monkeypatch.delenv("REMOVE_ADS", raising=False)
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "true")
+        import ad_remover
+
+        mock_splice = MagicMock()
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "clean"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
+        monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
+
+        result = ad_remover.remove_ads("/ep.mp3", "vid_dry_clean", str(tmp_path))
+
+        assert result == "/ep.mp3"
+        mock_splice.assert_not_called()
+
+    def test_dry_run_env_var_variants(self, monkeypatch, tmp_path):
+        """REMOVE_ADS_DRY_RUN accepts '1' and 'yes' in addition to 'true'."""
+        for val in ("1", "yes", "YES", "True"):
+            monkeypatch.delenv("REMOVE_ADS", raising=False)
+            monkeypatch.setenv("REMOVE_ADS_DRY_RUN", val)
+            # Reload module to pick up new env
+            import sys
+            sys.modules.pop("ad_remover", None)
+            import ad_remover
+
+            mock_splice = MagicMock()
+            monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "ad"}]))
+            monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
+            monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
+
+            result = ad_remover.remove_ads("/ep.mp3", f"vid_{val}", str(tmp_path))
+            assert result == "/ep.mp3", f"Expected original path for DRY_RUN={val!r}"
+            mock_splice.assert_not_called()
