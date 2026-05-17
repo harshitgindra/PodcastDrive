@@ -268,6 +268,7 @@ def build_episode_metadata(
     """
     entry_map = {e.video_id: e for e in video_entries}
     episodes: list[EpisodeMeta] = []
+    seen_titles: set[str] = set()
 
     for video_id in final_keys:
         entry = entry_map.get(video_id)
@@ -278,6 +279,18 @@ def build_episode_metadata(
                 video_id,
             )
             continue
+
+        # Deduplicate by normalised title to avoid showing the same episode
+        # twice when a video is re-uploaded with a new ID.
+        normalised_title = entry.title.strip().lower()
+        if normalised_title in seen_titles:
+            logger.warning(
+                "Duplicate title '%s' (video_id=%s) — skipping to avoid duplicate episode in feed",
+                entry.title,
+                video_id,
+            )
+            continue
+        seen_titles.add(normalised_title)
 
         s3_key = f"{playlist_id}/episodes/{video_id}.mp3"
         file_size = s3.get_object_size(s3_key)
@@ -302,5 +315,5 @@ def build_episode_metadata(
     # Sort by upload_date descending (newest first)
     episodes.sort(key=lambda e: e.upload_date, reverse=True)
 
-    logger.info("Built metadata for %d episodes", len(episodes))
+    logger.info("Built metadata for %d episodes (deduplicated from %d keys)", len(episodes), len(final_keys))
     return episodes

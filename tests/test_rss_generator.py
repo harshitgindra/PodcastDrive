@@ -510,3 +510,63 @@ class TestBuildEpisodeMetadata:
         )
 
         assert result == []
+
+    def test_deduplicates_by_title(self):
+        """Episodes with identical titles (different video_ids) are deduplicated."""
+        entries = [
+            VideoEntry(
+                video_id="v1", title="My Episode", description="", duration=100,
+                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=1,
+            ),
+            VideoEntry(
+                video_id="v2", title="My Episode", description="", duration=100,
+                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=2,
+            ),
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        result = build_episode_metadata(
+            entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert len(result) == 1
+
+    def test_deduplication_is_case_insensitive(self):
+        """Title deduplication normalises case before comparing."""
+        entries = [
+            VideoEntry(
+                video_id="v1", title="My Episode", description="", duration=100,
+                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=1,
+            ),
+            VideoEntry(
+                video_id="v2", title="MY EPISODE", description="", duration=100,
+                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=2,
+            ),
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        result = build_episode_metadata(
+            entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert len(result) == 1
+
+    def test_unique_titles_all_included(self):
+        """Episodes with distinct titles are all included."""
+        entries = [
+            VideoEntry(
+                video_id=f"v{i}", title=f"Episode {i}", description="", duration=100,
+                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=i,
+            )
+            for i in range(3)
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        result = build_episode_metadata(
+            entries, {"v0", "v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert len(result) == 3
