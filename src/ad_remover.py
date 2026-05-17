@@ -338,6 +338,21 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     if not ad_segments:
         raise ValueError("splice_audio called with empty ad_segments list")
 
+    # Pre-flight: verify the file exists and is non-trivially sized
+    try:
+        file_size = os.path.getsize(mp3_path)
+    except OSError as exc:
+        raise RuntimeError(
+            f"ffprobe aborted: cannot stat input file '{mp3_path}': {exc}"
+        ) from exc
+
+    logger.debug("[AdRemover] ffprobe input '%s' — size %d bytes", mp3_path, file_size)
+    if file_size < 1024:
+        raise RuntimeError(
+            f"ffprobe aborted: input file is suspiciously small ({file_size} bytes), "
+            f"likely corrupt or incomplete: '{mp3_path}'"
+        )
+
     # Probe total duration via ffprobe
     probe_cmd = [
         "ffprobe", "-v", "error",
@@ -347,9 +362,23 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     ]
     try:
         result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        if result.stderr.strip():
+            logger.debug("[AdRemover] ffprobe stderr (non-fatal): %s", result.stderr.strip())
         total_duration = float(result.stdout.strip())
+    except subprocess.CalledProcessError as exc:
+        stdout = (exc.stdout or "").strip()
+        stderr = (exc.stderr or "").strip()
+        raise RuntimeError(
+            f"ffprobe failed (exit {exc.returncode}):\n"
+            f"  stdout: {stdout!r}\n"
+            f"  stderr: {stderr!r}\n"
+            f"  cmd:    {' '.join(exc.cmd)}"
+        ) from exc
     except Exception as exc:
-        raise RuntimeError(f"ffprobe failed: {exc}") from exc
+        raise RuntimeError(
+            f"ffprobe error ({type(exc).__name__}): {exc} — "
+            f"file: '{mp3_path}'"
+        ) from exc
 
     # Sort ad segments and merge overlaps
     sorted_ads = sorted(ad_segments, key=lambda s: s["start"])

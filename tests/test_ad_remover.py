@@ -10,6 +10,7 @@ All external I/O is mocked:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -368,7 +369,9 @@ class TestSpliceAudio:
         """splice_audio invokes ffmpeg with the correct filter_complex."""
         import ad_remover
 
-        probe_result = MagicMock(stdout="600.0\n", returncode=0)
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
+        probe_result = MagicMock(stdout="600.0\n", returncode=0, stderr="")
         ffmpeg_result = MagicMock(returncode=0)
         run_calls = []
 
@@ -393,7 +396,9 @@ class TestSpliceAudio:
         """Overlapping ads are merged → correct number of keep intervals."""
         import ad_remover
 
-        probe_result = MagicMock(stdout="300.0\n", returncode=0)
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
+        probe_result = MagicMock(stdout="300.0\n", returncode=0, stderr="")
         run_calls = []
 
         def fake_run(cmd, **kwargs):
@@ -414,6 +419,7 @@ class TestSpliceAudio:
 
     def test_raises_on_ffprobe_failure(self, monkeypatch):
         import ad_remover
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
         monkeypatch.setattr(
             subprocess, "run",
             MagicMock(side_effect=subprocess.CalledProcessError(1, "ffprobe")),
@@ -424,7 +430,9 @@ class TestSpliceAudio:
     def test_raises_on_ffmpeg_failure(self, monkeypatch):
         import ad_remover
 
-        probe_result = MagicMock(stdout="300.0\n", returncode=0)
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
+        probe_result = MagicMock(stdout="300.0\n", returncode=0, stderr="")
 
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
@@ -439,9 +447,11 @@ class TestSpliceAudio:
     def test_raises_when_ads_cover_entire_file(self, monkeypatch):
         import ad_remover
 
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ffprobe":
-                return MagicMock(stdout="60.0\n")
+                return MagicMock(stdout="60.0\n", stderr="")
             return MagicMock()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
