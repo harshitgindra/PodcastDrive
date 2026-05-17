@@ -12,6 +12,7 @@ from rss_generator import (
     ITUNES_NS,
     _first_paragraph,
     _format_duration,
+    _validate_cloudfront_base,
     build_episode_metadata,
     generate_rss,
 )
@@ -103,6 +104,42 @@ class TestFirstParagraph:
 
     def test_strips_whitespace(self):
         assert _first_paragraph("  Hello  \n\nMore") == "Hello"
+
+
+# ---------------------------------------------------------------------------
+# _validate_cloudfront_base
+# ---------------------------------------------------------------------------
+
+
+class TestValidateCloudfrontBase:
+    def test_valid_url_passes(self):
+        _validate_cloudfront_base("https://cdn.example.com")
+
+    def test_empty_string_raises(self):
+        with pytest.raises(ValueError, match="empty"):
+            _validate_cloudfront_base("")
+
+    def test_http_raises(self):
+        with pytest.raises(ValueError, match="https://"):
+            _validate_cloudfront_base("http://cdn.example.com")
+
+    def test_missing_scheme_raises(self):
+        with pytest.raises(ValueError, match="https://"):
+            _validate_cloudfront_base("cdn.example.com")
+
+    def test_trailing_slash_raises(self):
+        with pytest.raises(ValueError, match="trailing slash"):
+            _validate_cloudfront_base("https://cdn.example.com/")
+
+    def test_generate_rss_raises_on_bad_cloudfront(self):
+        meta = _make_playlist_meta()
+        with pytest.raises(ValueError):
+            generate_rss(meta, [], "http://bad.example.com", PLAYLIST_ID)
+
+    def test_generate_rss_raises_on_trailing_slash(self):
+        meta = _make_playlist_meta()
+        with pytest.raises(ValueError):
+            generate_rss(meta, [], "https://cdn.example.com/", PLAYLIST_ID)
 
 
 # ---------------------------------------------------------------------------

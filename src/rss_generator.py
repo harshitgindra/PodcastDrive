@@ -56,6 +56,26 @@ def _first_paragraph(text: str) -> str:
     return parts[0].strip()
 
 
+def _validate_cloudfront_base(cloudfront_base: str) -> None:
+    """Validate that *cloudfront_base* looks like a usable HTTPS URL.
+
+    Raises:
+        ValueError: If the URL is empty, not HTTPS, or has a trailing slash.
+    """
+    if not cloudfront_base:
+        raise ValueError(
+            "cloudfront_base is empty — set the CLOUDFRONT_BASE environment variable"
+        )
+    if not cloudfront_base.startswith("https://"):
+        raise ValueError(
+            f"cloudfront_base must start with 'https://' (got: {cloudfront_base!r})"
+        )
+    if cloudfront_base.endswith("/"):
+        raise ValueError(
+            f"cloudfront_base must not have a trailing slash (got: {cloudfront_base!r})"
+        )
+
+
 def generate_rss(
     playlist_meta: PlaylistMeta,
     episodes: list[EpisodeMeta],
@@ -74,7 +94,12 @@ def generate_rss(
 
     Returns:
         Pretty-printed RSS XML string.
+
+    Raises:
+        ValueError: If *cloudfront_base* is malformed.
     """
+    _validate_cloudfront_base(cloudfront_base)
+
     rss = ET.Element("rss", version="2.0")
     # The xmlns:itunes attribute is added automatically by ET.register_namespace
     # when itunes-namespaced elements are serialized. No manual set needed.
