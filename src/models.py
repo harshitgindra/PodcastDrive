@@ -13,6 +13,7 @@ class PlaylistMeta:
     channel_url: str
     webpage_url: str
     playlist_id: str
+    thumbnail: str = ""  # Playlist-level artwork URL
 
 
 @dataclass

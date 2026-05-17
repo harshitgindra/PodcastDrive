@@ -40,6 +40,15 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
     if not title:
         title = "YouTube Playlist Podcast"
 
+    # Extract the best available playlist-level thumbnail
+    playlist_thumbnail = ""
+    thumbs = result.get("thumbnails") or []
+    if thumbs:
+        # yt-dlp lists thumbnails smallest-first; prefer the last (largest)
+        playlist_thumbnail = thumbs[-1].get("url", "")
+    if not playlist_thumbnail:
+        playlist_thumbnail = result.get("thumbnail") or ""
+
     playlist_meta = PlaylistMeta(
         title=title,
         description=result.get("description") or "",
@@ -47,6 +56,7 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
         channel_url=result.get("channel_url") or "",
         webpage_url=result.get("webpage_url") or "",
         playlist_id=playlist_id,
+        thumbnail=playlist_thumbnail,
     )
 
     entries = result.get("entries") or []

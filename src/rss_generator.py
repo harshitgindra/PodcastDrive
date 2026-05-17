@@ -123,14 +123,27 @@ def _add_channel_metadata(
         cloudfront_base: CloudFront base URL (unused here, kept for symmetry).
         playlist_id: Playlist ID (unused here, kept for symmetry).
     """
+    channel_link = meta.webpage_url or meta.channel_url
+
     ET.SubElement(channel, "title").text = meta.title
-    ET.SubElement(channel, "link").text = meta.webpage_url or meta.channel_url
+    ET.SubElement(channel, "link").text = channel_link
     ET.SubElement(channel, "description").text = meta.description or meta.title
     ET.SubElement(channel, "language").text = "en"
     ET.SubElement(channel, "generator").text = "yt-podcast-lambda"
 
     now = datetime.now(timezone.utc)
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(now)
+
+    # Determine best artwork URL: prefer playlist-level thumbnail, fall back
+    # to the first episode's thumbnail.
+    artwork_url = meta.thumbnail or (episodes[0].thumbnail if episodes else "")
+
+    # Standard RSS 2.0 <image> block (required by many non-iTunes podcast apps)
+    if artwork_url:
+        rss_image = ET.SubElement(channel, "image")
+        ET.SubElement(rss_image, "url").text = artwork_url
+        ET.SubElement(rss_image, "title").text = meta.title
+        ET.SubElement(rss_image, "link").text = channel_link
 
     # iTunes tags
     ET.SubElement(channel, f"{{{ITUNES_NS}}}author").text = meta.uploader or meta.title
@@ -140,10 +153,10 @@ def _add_channel_metadata(
     owner = ET.SubElement(channel, f"{{{ITUNES_NS}}}owner")
     ET.SubElement(owner, f"{{{ITUNES_NS}}}name").text = meta.uploader or meta.title
 
-    # Channel image from first episode thumbnail (if available)
-    if episodes and episodes[0].thumbnail:
+    # iTunes <itunes:image> — uses same resolved artwork URL
+    if artwork_url:
         img = ET.SubElement(channel, f"{{{ITUNES_NS}}}image")
-        img.set("href", episodes[0].thumbnail)
+        img.set("href", artwork_url)
 
 
 def _add_item(

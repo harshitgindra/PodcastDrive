@@ -32,6 +32,7 @@ def _make_playlist_meta(**overrides) -> PlaylistMeta:
         channel_url="https://youtube.com/c/test",
         webpage_url="https://youtube.com/playlist?list=PLtest123",
         playlist_id=PLAYLIST_ID,
+        thumbnail="",
     )
     defaults.update(overrides)
     return PlaylistMeta(**defaults)
@@ -236,6 +237,62 @@ class TestGenerateRssChannelMetadata:
         ns = {"itunes": ITUNES_NS}
         img = root.find(".//channel/itunes:image", ns)
         assert img is None
+
+    # --- Standard RSS 2.0 <image> element tests ---
+
+    def test_rss_image_element_present_with_playlist_thumbnail(self):
+        """Standard <image> block should be emitted when PlaylistMeta.thumbnail is set."""
+        meta = _make_playlist_meta(thumbnail="https://example.com/playlist_art.jpg")
+        xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        rss_img = root.find(".//channel/image")
+        assert rss_img is not None
+        assert rss_img.find("url").text == "https://example.com/playlist_art.jpg"
+        assert rss_img.find("title").text == meta.title
+        assert rss_img.find("link").text == meta.webpage_url
+
+    def test_rss_image_element_absent_when_no_artwork(self):
+        """Standard <image> block must NOT be emitted when there is no artwork at all."""
+        meta = _make_playlist_meta(thumbnail="")
+        xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        assert root.find(".//channel/image") is None
+
+    def test_playlist_thumbnail_preferred_over_episode_thumbnail(self):
+        """PlaylistMeta.thumbnail should be used in preference to episode thumbnail."""
+        meta = _make_playlist_meta(thumbnail="https://example.com/playlist_art.jpg")
+        ep = _make_episode(thumbnail="https://img.youtube.com/vi/vid001/0.jpg")
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        ns = {"itunes": ITUNES_NS}
+        # Both standard and itunes image should use the playlist-level thumbnail
+        rss_img = root.find(".//channel/image")
+        assert rss_img.find("url").text == "https://example.com/playlist_art.jpg"
+        itunes_img = root.find(".//channel/itunes:image", ns)
+        assert itunes_img.get("href") == "https://example.com/playlist_art.jpg"
+
+    def test_episode_thumbnail_fallback_when_no_playlist_thumbnail(self):
+        """Fall back to first episode thumbnail when PlaylistMeta.thumbnail is empty."""
+        meta = _make_playlist_meta(thumbnail="")
+        ep = _make_episode(thumbnail="https://img.youtube.com/vi/vid001/0.jpg")
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        ns = {"itunes": ITUNES_NS}
+        rss_img = root.find(".//channel/image")
+        assert rss_img is not None
+        assert rss_img.find("url").text == "https://img.youtube.com/vi/vid001/0.jpg"
+        itunes_img = root.find(".//channel/itunes:image", ns)
+        assert itunes_img.get("href") == "https://img.youtube.com/vi/vid001/0.jpg"
+
+    def test_itunes_image_uses_playlist_thumbnail_when_set(self):
+        """`<itunes:image>` should also reflect PlaylistMeta.thumbnail."""
+        meta = _make_playlist_meta(thumbnail="https://example.com/playlist_art.jpg")
+        xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        ns = {"itunes": ITUNES_NS}
+        img = root.find(".//channel/itunes:image", ns)
+        assert img is not None
+        assert img.get("href") == "https://example.com/playlist_art.jpg"
 
 
 # ---------------------------------------------------------------------------
