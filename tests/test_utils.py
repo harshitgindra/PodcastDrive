@@ -1,10 +1,93 @@
 """Unit tests for utility functions."""
 
+import time
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
-from utils import extract_playlist_id, parse_upload_date
+from utils import extract_playlist_id, parse_upload_date, retry_aws_call
+
+
+# ---------------------------------------------------------------------------
+# retry_aws_call
+# ---------------------------------------------------------------------------
+
+def _make_client_error(code: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": "test"}}, "TestOp")
+
+
+class TestRetryAwsCall:
+    def test_returns_value_on_first_success(self):
+        fn = MagicMock(return_value=42)
+        assert retry_aws_call(fn, max_attempts=3, base_delay=0) == 42
+        fn.assert_called_once()
+
+    def test_retries_on_throttling_and_succeeds(self):
+        fn = MagicMock(side_effect=[
+            _make_client_error("Throttling"),
+            _make_client_error("Throttling"),
+            "ok",
+        ])
+        with patch("time.sleep"):
+            result = retry_aws_call(fn, max_attempts=5, base_delay=0)
+        assert result == "ok"
+        assert fn.call_count == 3
+
+    def test_retries_on_service_unavailable(self):
+        fn = MagicMock(side_effect=[
+            _make_client_error("ServiceUnavailable"),
+            "done",
+        ])
+        with patch("time.sleep"):
+            result = retry_aws_call(fn, max_attempts=3, base_delay=0)
+        assert result == "done"
+        assert fn.call_count == 2
+
+    def test_raises_immediately_on_non_retryable_client_error(self):
+        fn = MagicMock(side_effect=_make_client_error("AccessDenied"))
+        with pytest.raises(ClientError) as exc_info:
+            retry_aws_call(fn, max_attempts=5, base_delay=0)
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+        fn.assert_called_once()  # no retry
+
+    def test_raises_after_exhausting_all_attempts(self):
+        fn = MagicMock(side_effect=_make_client_error("Throttling"))
+        with patch("time.sleep"):
+            with pytest.raises(ClientError) as exc_info:
+                retry_aws_call(fn, max_attempts=3, base_delay=0)
+        assert exc_info.value.response["Error"]["Code"] == "Throttling"
+        assert fn.call_count == 3
+
+    def test_retries_on_connection_error(self):
+        fn = MagicMock(side_effect=[ConnectionError("reset"), "value"])
+        with patch("time.sleep"):
+            result = retry_aws_call(fn, max_attempts=3, base_delay=0)
+        assert result == "value"
+        assert fn.call_count == 2
+
+    def test_max_delay_cap_is_respected(self):
+        """Sleep duration must never exceed max_delay."""
+        sleep_calls = []
+        fn = MagicMock(side_effect=[
+            _make_client_error("Throttling"),
+            _make_client_error("Throttling"),
+            _make_client_error("Throttling"),
+            "ok",
+        ])
+        with patch("time.sleep", side_effect=lambda t: sleep_calls.append(t)):
+            with patch("random.uniform", side_effect=lambda lo, hi: hi):
+                retry_aws_call(fn, max_attempts=5, base_delay=1.0, max_delay=4.0)
+        assert all(d <= 4.0 for d in sleep_calls), f"Sleep exceeded max_delay: {sleep_calls}"
+
+    def test_label_used_in_log(self, caplog):
+        import logging
+        fn = MagicMock(side_effect=[_make_client_error("Throttling"), "ok"])
+        with patch("time.sleep"):
+            with caplog.at_level(logging.WARNING, logger="utils"):
+                retry_aws_call(fn, max_attempts=3, base_delay=0, label="my.operation")
+        assert any("my.operation" in r.message for r in caplog.records)
 
 
 # --- extract_playlist_id tests ---

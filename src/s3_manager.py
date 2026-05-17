@@ -7,6 +7,8 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
+from utils import retry_aws_call
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +47,11 @@ class S3Manager:
         video_ids: set[str] = set()
 
         paginator = self.s3_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+        pages = retry_aws_call(
+            lambda: list(paginator.paginate(Bucket=self.bucket, Prefix=prefix)),
+            label="s3.list_objects_v2",
+        )
+        for page in pages:
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 filename = key.rsplit("/", 1)[-1]
@@ -73,14 +79,17 @@ class S3Manager:
         """
         key = f"{self.playlist_id}/episodes/{video_id}.mp3"
         logger.info("Uploading episode %s to s3://%s/%s", video_id, self.bucket, key)
-        self.s3_client.upload_file(
-            local_path,
-            self.bucket,
-            key,
-            ExtraArgs={
-                "ContentType": "audio/mpeg",
-                "Tagging": f"expiry-days={max_age_days}",
-            },
+        retry_aws_call(
+            lambda: self.s3_client.upload_file(
+                local_path,
+                self.bucket,
+                key,
+                ExtraArgs={
+                    "ContentType": "audio/mpeg",
+                    "Tagging": f"expiry-days={max_age_days}",
+                },
+            ),
+            label="s3.upload_file",
         )
         # Only PUT the lifecycle rule when max_age_days actually changes
         if self._lifecycle_days_set != max_age_days:
@@ -146,7 +155,10 @@ class S3Manager:
         """
         key = f"{self.playlist_id}/episodes/{video_id}.mp3"
         logger.info("Deleting episode %s from s3://%s/%s", video_id, self.bucket, key)
-        self.s3_client.delete_object(Bucket=self.bucket, Key=key)
+        retry_aws_call(
+            lambda: self.s3_client.delete_object(Bucket=self.bucket, Key=key),
+            label="s3.delete_object",
+        )
 
     def upload_feed(self, xml_content: str) -> str:
         """Upload the RSS feed XML to S3 and invalidate CloudFront cache.
@@ -159,12 +171,15 @@ class S3Manager:
         """
         key = f"{self.playlist_id}/feed.xml"
         logger.info("Uploading feed to s3://%s/%s", self.bucket, key)
-        self.s3_client.put_object(
-            Bucket=self.bucket,
-            Key=key,
-            Body=xml_content.encode("utf-8"),
-            ContentType="application/rss+xml",
-            CacheControl="max-age=300, s-maxage=60",
+        retry_aws_call(
+            lambda: self.s3_client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=xml_content.encode("utf-8"),
+                ContentType="application/rss+xml",
+                CacheControl="max-age=300, s-maxage=60",
+            ),
+            label="s3.put_object",
         )
 
         # Invalidate CloudFront cache for the feed
@@ -184,7 +199,10 @@ class S3Manager:
         Returns:
             The size of the object in bytes.
         """
-        response = self.s3_client.head_object(Bucket=self.bucket, Key=key)
+        response = retry_aws_call(
+            lambda: self.s3_client.head_object(Bucket=self.bucket, Key=key),
+            label="s3.head_object",
+        )
         return response["ContentLength"]
 
     def _invalidate_cloudfront(self, path: str) -> None:

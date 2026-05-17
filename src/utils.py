@@ -1,8 +1,86 @@
 """Utility functions for YouTube Playlist to Podcast."""
 
+import logging
 import re
+import time
 from datetime import datetime, timezone
+from typing import Callable, TypeVar
 from urllib.parse import parse_qs, urlparse
+
+_logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# AWS retry helper
+# ---------------------------------------------------------------------------
+
+#: Error codes that indicate a transient AWS service issue and are safe to retry.
+_RETRYABLE_CODES: frozenset[str] = frozenset({
+    "Throttling",
+    "ThrottlingException",
+    "RequestLimitExceeded",
+    "RequestThrottled",
+    "ProvisionedThroughputExceededException",
+    "TransactionInProgressException",
+    "ServiceUnavailable",
+    "InternalServerError",
+    "InternalFailure",
+    "RequestExpired",
+    "SlowDown",
+    "EC2ThrottledException",
+})
+
+_T = TypeVar("_T")
+
+
+def retry_aws_call(
+    fn: Callable[[], _T],
+    *,
+    max_attempts: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 32.0,
+    label: str = "",
+) -> _T:
+    """Call *fn* and retry on transient AWS / network errors with exponential back-off.
+
+    Uses full-jitter exponential back-off: ``sleep = min(max_delay, base_delay * 2**attempt)``.
+
+    Args:
+        fn:           Zero-argument callable that performs the AWS call.
+        max_attempts: Maximum number of total attempts (default: 5).
+        base_delay:   Initial delay in seconds (doubles each attempt, default: 1.0).
+        max_delay:    Cap on the sleep duration in seconds (default: 32.0).
+        label:        Short human-readable label for log messages (e.g. ``"s3.put_object"``).
+
+    Returns:
+        The return value of *fn* on success.
+
+    Raises:
+        The last exception if all attempts are exhausted.
+    """
+    import random
+    from botocore.exceptions import ClientError, EndpointResolutionError
+
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in _RETRYABLE_CODES:
+                raise  # non-transient — propagate immediately
+            last_exc = exc
+        except (ConnectionError, OSError, EndpointResolutionError) as exc:
+            last_exc = exc
+
+        delay = min(max_delay, base_delay * (2 ** attempt))
+        jitter = random.uniform(0, delay)
+        _logger.warning(
+            "Transient AWS error on %s (attempt %d/%d): %s — retrying in %.1fs",
+            label or getattr(fn, "__name__", repr(fn)), attempt + 1, max_attempts, last_exc, jitter,
+        )
+        time.sleep(jitter)
+
+    raise last_exc  # type: ignore[misc]
 
 
 def extract_playlist_id(url: str) -> str:

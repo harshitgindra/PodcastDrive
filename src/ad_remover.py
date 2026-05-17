@@ -38,6 +38,8 @@ import uuid
 import boto3
 import certifi
 
+from utils import retry_aws_call
+
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 logger = logging.getLogger(__name__)
@@ -86,7 +88,10 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     # 1. Upload audio to a temporary S3 key
     tmp_key = f"transcribe-tmp/{video_id}.mp3"
     logger.info("[AdRemover] Uploading %s to s3://%s/%s for transcription", mp3_path, bucket, tmp_key)
-    s3_client.upload_file(mp3_path, bucket, tmp_key)
+    retry_aws_call(
+        lambda: s3_client.upload_file(mp3_path, bucket, tmp_key),
+        label="s3.upload_file[transcribe-tmp]",
+    )
 
     media_uri = f"s3://{bucket}/{tmp_key}"
     # Transcribe job names only allow [A-Za-z0-9_-] — sanitize video_id
@@ -96,12 +101,15 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     try:
         # 2. Start the transcription job
         logger.info("[AdRemover] Starting Transcribe job %s", job_name)
-        transcribe_client.start_transcription_job(
-            TranscriptionJobName=job_name,
-            Media={"MediaFileUri": media_uri},
-            MediaFormat="mp3",
-            LanguageCode=language_code,
-            Settings={"ShowSpeakerLabels": False, "ChannelIdentification": False},
+        retry_aws_call(
+            lambda: transcribe_client.start_transcription_job(
+                TranscriptionJobName=job_name,
+                Media={"MediaFileUri": media_uri},
+                MediaFormat="mp3",
+                LanguageCode=language_code,
+                Settings={"ShowSpeakerLabels": False, "ChannelIdentification": False},
+            ),
+            label="transcribe.start_transcription_job",
         )
 
         # 3. Poll until complete
@@ -320,10 +328,13 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
     logger.info("[AdRemover] Sending transcript to Bedrock (model=%s, region=%s)", model_id, region)
 
     bedrock = boto3.client("bedrock-runtime", region_name=region)
-    response = bedrock.converse(
-        modelId=model_id,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"temperature": 0.0},
+    response = retry_aws_call(
+        lambda: bedrock.converse(
+            modelId=model_id,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"temperature": 0.0},
+        ),
+        label="bedrock.converse",
     )
 
     raw = response["output"]["message"]["content"][0]["text"]
