@@ -216,17 +216,48 @@ def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[di
 # ---------------------------------------------------------------------------
 
 _AD_DETECTION_PROMPT = """\
-You are an audio editor specialising in podcast ad removal.
+You are an expert podcast audio editor specialising in ad removal.
 
 Below is the word-level transcript of a podcast episode. Each line has the
 format:  [start_seconds - end_seconds]  text
 
-Your task is to identify every advertisement / sponsored segment. Return ONLY a
-valid JSON array where each element is an object with "start" and "end" keys
-(floating-point seconds). If there are no ads return an empty array [].
+## Your task
+Identify EVERY advertisement and sponsored segment, including host-read ads
+where the host personally delivers the ad copy in their own voice.
 
-Example output:
-[{{"start": 120.5, "end": 195.0}}, {{"start": 2310.0, "end": 2405.5}}]
+## Common ad signals to look for
+- Sponsor introductions: "brought to you by", "this episode is sponsored by",
+  "our sponsor", "a word from our sponsor", "thanks to X for supporting us",
+  "partnered with", "presented by"
+- Discount / promo language: "use code", "promo code", "get X% off",
+  "first month free", "free trial", "limited time offer", "sign up today",
+  "visit X dot com slash"
+- URL / website mentions in a promotional context: "dot com slash podcast",
+  website names followed by offers or calls to action
+- Price mentions: "for just $X", "starting at", "plans from"
+- Ad outros / transitions back to content: "now back to", "and we're back",
+  "alright let's get into it", "back to the show", "let's continue"
+
+## Rules
+1. When in doubt, INCLUDE the segment — it is better to trim a few extra
+   seconds of content than to leave an ad in.
+2. Extend each segment's start time back by 2 seconds and end time forward
+   by 2 seconds to avoid clipped transitions (but never below 0).
+3. If two ad segments are within 10 seconds of each other, merge them into
+   one continuous segment.
+4. Host-read ads blend naturally into the show's tone — look for the signals
+   above even when the voice and style match the rest of the episode.
+
+## Reasoning step (do NOT include in output)
+Before writing the JSON, briefly note each candidate segment and why you
+think it is an ad. Then output ONLY the final JSON array.
+
+## Output format
+Return ONLY a valid JSON array. Each element must have "start" and "end"
+keys as floating-point seconds. If there are no ads return [].
+
+Example:
+[{{"start": 118.5, "end": 197.0}}, {{"start": 2308.0, "end": 2407.5}}]
 
 Transcript:
 {transcript}
@@ -259,22 +290,26 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 
-    # Build transcript: keep first + last 30 min of segments to stay within
-    # Bedrock context window for very long episodes (ads are almost always
-    # near the start or end of the content).
+    # Build transcript for the prompt.
+    # For very long episodes we keep the start, middle, and end thirds so that
+    # mid-roll ads (common in shows like The Best One Yet) are never dropped.
     _MAX_TRANSCRIPT_CHARS = 60_000  # ~15k tokens, well within Claude Sonnet limits
     transcript_lines = "\n".join(
         f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in segments
     )
     if len(transcript_lines) > _MAX_TRANSCRIPT_CHARS:
-        half = _MAX_TRANSCRIPT_CHARS // 2
+        third = _MAX_TRANSCRIPT_CHARS // 3
+        mid_start = len(transcript_lines) // 2 - third // 2
+        mid_end = mid_start + third
         transcript_lines = (
-            transcript_lines[:half]
-            + "\n\n[... middle of episode truncated for brevity ...]\n\n"
-            + transcript_lines[-half:]
+            transcript_lines[:third]
+            + "\n\n[... early-middle section truncated ...]\n\n"
+            + transcript_lines[mid_start:mid_end]
+            + "\n\n[... late-middle section truncated ...]\n\n"
+            + transcript_lines[-third:]
         )
         logger.info(
-            "[AdRemover] Transcript truncated to ~%d chars for Bedrock prompt",
+            "[AdRemover] Transcript truncated to ~%d chars (start+middle+end) for Bedrock prompt",
             _MAX_TRANSCRIPT_CHARS,
         )
     prompt = _AD_DETECTION_PROMPT.format(transcript=transcript_lines)
