@@ -3,10 +3,17 @@
 Call ``setup_logging()`` once at application startup (in sync_podcast.py or
 any other entry point).  AWS Lambda already ships logs to CloudWatch, so the
 rotating file handler is only attached when running locally.
+
+Set ``LOG_FORMAT=json`` (env var) to emit structured JSON log lines instead of
+the default human-readable text format.  JSON lines include ``timestamp``,
+``level``, ``logger``, ``message``, plus any extra fields passed via
+``logging.LoggerAdapter`` or the ``extra=`` kwarg.
 """
 
+import json
 import logging
 import os
+from datetime import datetime, timezone
 from logging.handlers import TimedRotatingFileHandler
 
 # Detect Lambda environment — file logging is skipped there.
@@ -14,6 +21,47 @@ _IS_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-5s] [%(name)s] %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+class _JsonFormatter(logging.Formatter):
+    """Emit each log record as a single-line JSON object.
+
+    Standard fields emitted:
+        timestamp  – ISO-8601 UTC string
+        level      – log level name (INFO, ERROR, …)
+        logger     – logger name
+        message    – formatted log message
+
+    Any keys passed via ``extra=`` are merged into the top-level JSON object,
+    making it easy to add structured context (e.g. ``podcast_id``, ``video_id``).
+    """
+
+    _RESERVED = frozenset(
+        {
+            "args", "created", "exc_info", "exc_text", "filename", "funcName",
+            "levelname", "levelno", "lineno", "message", "module", "msecs",
+            "msg", "name", "pathname", "process", "processName", "relativeCreated",
+            "stack_info", "thread", "threadName",
+        }
+    )
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.message = record.getMessage()
+        doc: dict = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.message,
+        }
+        # Merge any extra fields that aren't standard LogRecord attributes
+        for key, value in record.__dict__.items():
+            if key not in self._RESERVED and not key.startswith("_"):
+                doc[key] = value
+
+        if record.exc_info:
+            doc["exc_info"] = self.formatException(record.exc_info)
+
+        return json.dumps(doc, default=str)
 
 
 def setup_logging(
@@ -32,11 +80,16 @@ def setup_logging(
         retention_days: How many daily log files to keep before rotating them
                         away.  Can also be set via the ``LOG_RETENTION_DAYS``
                         env var.
+
+    Environment variables:
+        LOG_FORMAT: Set to ``"json"`` to emit structured JSON log lines.
+                    Defaults to human-readable text.
     """
     # Allow env-var overrides so cron / launchd jobs can tune without code changes.
     log_level = os.environ.get("LOG_LEVEL", log_level).upper()
     retention_days = int(os.environ.get("LOG_RETENTION_DAYS", retention_days))
     log_dir = os.environ.get("LOG_DIR", log_dir)
+    use_json = os.environ.get("LOG_FORMAT", "").lower() == "json"
 
     numeric_level = getattr(logging, log_level, logging.INFO)
 
@@ -47,7 +100,11 @@ def setup_logging(
     if root_logger.handlers:
         return
 
-    formatter = logging.Formatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
+    formatter: logging.Formatter
+    if use_json:
+        formatter = _JsonFormatter()
+    else:
+        formatter = logging.Formatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
 
     # --- Console handler (always active) ---
     console_handler = logging.StreamHandler()
@@ -75,7 +132,8 @@ def setup_logging(
         root_logger.addHandler(file_handler)
 
         logging.getLogger(__name__).info(
-            "File logging enabled → %s (rotating daily, keeping %d days)",
+            "File logging enabled → %s (rotating daily, keeping %d days, format=%s)",
             log_file,
             retention_days,
+            "json" if use_json else "text",
         )
