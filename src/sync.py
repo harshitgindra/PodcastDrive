@@ -7,6 +7,7 @@ existing S3 state, download new episodes, generate RSS feed, and reconcile.
 import logging
 import os
 import shutil
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -83,11 +84,10 @@ def process_playlist(
 
     playlist_id = extract_playlist_id(playlist_url)
     s3 = S3Manager(bucket=bucket, playlist_id=playlist_id)
-    tmp_dir = f"/tmp/{playlist_id}"
+    tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{playlist_id}-")
     _run_start = time.monotonic()
 
     try:
-        os.makedirs(tmp_dir, exist_ok=True)
 
         # --- Step 1: Flat-extract playlist ---
         logger.info("[Step 1] Extracting playlist for %s", playlist_id)
@@ -210,15 +210,12 @@ def process_playlist(
                 os.remove(mp3_path)
                 new_count += 1
 
-                # Update feed after each successful download (atomic progress)
-                logger.info("[Step 4] Updating feed.xml after %s", video.video_id)
-                _rebuild_feed(s3, video_entries, cloudfront_base, playlist_id, playlist_meta)
                 logger.info("[Step 4] Done %s (%d downloaded so far)", video.video_id, new_count)
 
                 if sleep_between > 0 and (i + 1) < len(candidates):
                     time.sleep(sleep_between)
 
-            except (DownloadError, Exception) as exc:
+            except Exception as exc:
                 failed_count += 1
                 logger.error("[Step 4] FAILED %s: %s", video.video_id, exc)
 
@@ -272,6 +269,13 @@ def _rebuild_feed(
     )
     xml = generate_rss(playlist_meta, episodes, cloudfront_base, playlist_id)
     s3.upload_feed(xml)
+
+    if len(episodes) != len(final_keys):
+        logger.warning(
+            "[Feed] MISMATCH: feed=%d, S3=%d",
+            len(episodes), len(final_keys),
+        )
+
     return len(episodes)
 
 
@@ -296,7 +300,6 @@ def _reconcile(
     s3_keys = s3.list_existing_episodes()
     logger.info("[Reconcile] S3 has %d episodes", len(s3_keys))
 
-    # 1. Remove S3 files no longer in the playlist (orphans)
     playlist_ids = {v.video_id for v in video_entries}
     orphaned_files = s3_keys - playlist_ids
     for vid in orphaned_files:
@@ -309,21 +312,5 @@ def _reconcile(
     if orphaned_files:
         logger.info("[Reconcile] Deleted %d orphaned files", len(orphaned_files))
 
-    # 2. Rebuild feed from current S3 state
-    final_keys = s3.list_existing_episodes()
-    episodes = build_episode_metadata(
-        video_entries, final_keys, cloudfront_base, playlist_id, s3
-    )
-    xml = generate_rss(playlist_meta, episodes, cloudfront_base, playlist_id)
-    s3.upload_feed(xml)
-
-    logger.info(
-        "[Reconcile] Done. Feed has %d entries, S3 has %d files",
-        len(episodes), len(final_keys),
-    )
-
-    if len(episodes) != len(final_keys):
-        logger.warning(
-            "[Reconcile] MISMATCH: feed=%d, S3=%d",
-            len(episodes), len(final_keys),
-        )
+    ep_count = _rebuild_feed(s3, video_entries, cloudfront_base, playlist_id, playlist_meta)
+    logger.info("[Reconcile] Done. Feed has %d entries", ep_count)

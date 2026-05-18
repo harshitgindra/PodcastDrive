@@ -73,14 +73,39 @@ def retry_aws_call(
             last_exc = exc
 
         delay = min(max_delay, base_delay * (2 ** attempt))
-        jitter = random.uniform(0, delay)
+        jitter = random.uniform(0, delay * 0.5)
+        sleep_time = min(max_delay, delay + jitter)
         _logger.warning(
             "Transient AWS error on %s (attempt %d/%d): %s — retrying in %.1fs",
-            label or getattr(fn, "__name__", repr(fn)), attempt + 1, max_attempts, last_exc, jitter,
+            label or getattr(fn, "__name__", repr(fn)), attempt + 1, max_attempts, last_exc, sleep_time,
         )
-        time.sleep(jitter)
+        time.sleep(sleep_time)
 
     raise last_exc  # type: ignore[misc]
+
+
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9@._-]+$")
+
+
+def _validate_playlist_id(playlist_id: str) -> str:
+    """Validate that a playlist/channel ID contains only safe characters.
+
+    Prevents path traversal (e.g. ``../``) or other unsafe characters
+    from being used in S3 keys or filesystem paths.
+
+    Raises:
+        ValueError: If the ID contains unsafe characters.
+    """
+    if not playlist_id:
+        raise ValueError("Playlist ID is empty")
+    if not _SAFE_ID_RE.match(playlist_id):
+        raise ValueError(
+            f"Playlist ID contains unsafe characters: {playlist_id!r} "
+            "(only alphanumeric, @, ., _, - are allowed)"
+        )
+    if ".." in playlist_id:
+        raise ValueError(f"Playlist ID contains path traversal: {playlist_id!r}")
+    return playlist_id
 
 
 def extract_playlist_id(url: str) -> str:
@@ -102,11 +127,11 @@ def extract_playlist_id(url: str) -> str:
         The playlist or channel ID string.
 
     Raises:
-        ValueError: If no ID can be extracted.
+        ValueError: If no ID can be extracted or contains unsafe characters.
     """
     # Already a raw ID (no URL scheme)
     if not url.startswith("http"):
-        return url
+        return _validate_playlist_id(url)
 
     parsed = urlparse(url)
 
@@ -114,18 +139,18 @@ def extract_playlist_id(url: str) -> str:
     params = parse_qs(parsed.query)
     playlist_id = params.get("list", [None])[0]
     if playlist_id:
-        return playlist_id
+        return _validate_playlist_id(playlist_id)
 
     # Channel URL: /channel/UCxyz
     match = re.search(r"/channel/(UC[a-zA-Z0-9_-]+)", parsed.path)
     if match:
-        return match.group(1)
+        return _validate_playlist_id(match.group(1))
 
     # Handle URL: /@Handle or /@Handle/videos
     match = re.search(r"/@([a-zA-Z0-9_.-]+)", parsed.path)
     if match:
         # Use the handle as the ID — yt_dlp will resolve it
-        return f"@{match.group(1)}"
+        return _validate_playlist_id(f"@{match.group(1)}")
 
     raise ValueError(f"Could not extract playlist or channel ID from URL: {url}")
 
