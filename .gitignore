@@ -222,3 +222,6 @@ src/.pytest_cache/
 tests/.pytest_cache/
 logs/
 _LocalNotes.md
+.podcastdrive.lock
+/eval
+.DS_Store
