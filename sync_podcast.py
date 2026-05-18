@@ -20,7 +20,6 @@ import tempfile
 # Add src/ to the Python path so we can import the modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from differ import diff_episodes
 from downloader import DownloadError, download_and_convert
 from extractor import extract_playlist
 from logger_config import setup_logging
@@ -30,10 +29,16 @@ from utils import extract_playlist_id
 
 # Initialise logging once at startup.
 # Defaults can be overridden via LOG_DIR, LOG_LEVEL, LOG_RETENTION_DAYS env vars.
+def _safe_int(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
 setup_logging(
     log_dir=os.environ.get("LOG_DIR", os.path.join(os.path.dirname(__file__), "logs")),
     log_level=os.environ.get("LOG_LEVEL", "INFO"),
-    retention_days=int(os.environ.get("LOG_RETENTION_DAYS", "30")),
+    retention_days=_safe_int(os.environ.get("LOG_RETENTION_DAYS", "30"), 30),
 )
 logger = logging.getLogger(__name__)
 
@@ -74,9 +79,6 @@ def sync_playlist(
     # Use a temp directory for downloads
     tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{playlist_id}-")
 
-    # Set AWS region
-    os.environ["AWS_DEFAULT_REGION"] = region
-
     s3 = S3Manager(bucket=bucket, playlist_id=playlist_id)
 
     try:
@@ -92,10 +94,14 @@ def sync_playlist(
         existing_keys = s3.list_existing_episodes()
         logger.info("Found %d existing episodes in S3", len(existing_keys))
 
-        # Step 3: Diff
-        to_download, to_delete = diff_episodes(
-            video_entries, existing_keys, max_age_days=max_age_days
-        )
+        # Step 3: Diff — find new videos to download and stale ones to delete
+        from datetime import datetime, timedelta, timezone
+        from utils import parse_upload_date
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        playlist_video_ids = {v.video_id for v in video_entries}
+        to_download = [v for v in video_entries if v.video_id not in existing_keys]
+        to_delete = [vid for vid in existing_keys if vid not in playlist_video_ids]
         logger.info(
             "%d new to download, %d stale to delete",
             len(to_download), len(to_delete),
