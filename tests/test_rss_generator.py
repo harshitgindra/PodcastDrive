@@ -570,3 +570,103 @@ class TestBuildEpisodeMetadata:
         )
 
         assert len(result) == 3
+
+
+# ---------------------------------------------------------------------------
+# Property-based tests (hypothesis)
+# ---------------------------------------------------------------------------
+
+from hypothesis import given, settings, assume
+from hypothesis import strategies as st
+
+
+class TestFormatDurationProperty:
+    @given(st.integers(min_value=1, max_value=86400))
+    def test_always_contains_colon(self, seconds):
+        result = _format_duration(seconds)
+        assert ":" in result
+
+    @given(st.integers(min_value=1, max_value=86400))
+    def test_all_parts_are_numeric(self, seconds):
+        result = _format_duration(seconds)
+        parts = result.split(":")
+        for part in parts:
+            assert part.isdigit(), f"Non-numeric part {part!r} in {result!r}"
+
+    @given(st.integers(min_value=3600, max_value=86400))
+    def test_has_three_parts_for_one_hour_plus(self, seconds):
+        result = _format_duration(seconds)
+        assert len(result.split(":")) == 3
+
+    @given(st.integers(min_value=1, max_value=3599))
+    def test_has_two_parts_under_one_hour(self, seconds):
+        result = _format_duration(seconds)
+        assert len(result.split(":")) == 2
+
+    @given(st.one_of(st.none(), st.integers(max_value=0)))
+    def test_zero_or_none_returns_zero_zero(self, seconds):
+        assert _format_duration(seconds) == "0:00"
+
+
+class TestFirstParagraphProperty:
+    @given(st.text(max_size=200))
+    def test_result_is_prefix_of_input(self, text):
+        result = _first_paragraph(text)
+        # The result should always be a substring that starts from the beginning
+        assert text.startswith(result) or result == text.strip().split("\n\n")[0].strip()
+
+    @given(st.text(max_size=200))
+    def test_never_contains_double_newline(self, text):
+        result = _first_paragraph(text)
+        assert "\n\n" not in result
+
+    @given(st.text(max_size=50).filter(lambda t: "\n\n" not in t))
+    def test_text_without_double_newline_returns_stripped_text(self, text):
+        result = _first_paragraph(text)
+        assert result == text.strip()
+
+
+class TestGenerateRssProperty:
+    @given(
+        title=st.text(min_size=1, max_size=80, alphabet=st.characters(
+            blacklist_categories=("Cs", "Cc"), blacklist_characters="<>&\x00"
+        )),
+        n_episodes=st.integers(min_value=0, max_value=10),
+    )
+    @settings(max_examples=30)
+    def test_output_is_valid_xml(self, title, n_episodes):
+        from datetime import timedelta
+        meta = _make_playlist_meta(title=title)
+        episodes = [
+            _make_episode(video_id=f"v{i}", upload_date="20250601")
+            for i in range(n_episodes)
+        ]
+        xml_str = generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
+        # Should parse without error
+        root = ET.fromstring(xml_str)
+        assert root.tag == "rss"
+
+    @given(n_episodes=st.integers(min_value=0, max_value=15))
+    @settings(max_examples=20)
+    def test_episode_count_matches_items(self, n_episodes):
+        meta = _make_playlist_meta()
+        episodes = [
+            _make_episode(video_id=f"v{i}", upload_date="20250601")
+            for i in range(n_episodes)
+        ]
+        xml_str = generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        channel = root.find("channel")
+        items = channel.findall("item")
+        assert len(items) == n_episodes
+
+    @given(
+        video_id=st.text(min_size=1, max_size=20, alphabet="abcdefghijklmnopqrstuvwxyz0123456789"),
+        duration=st.integers(min_value=1, max_value=7200),
+    )
+    @settings(max_examples=30)
+    def test_enclosure_url_contains_video_id(self, video_id, duration):
+        meta = _make_playlist_meta()
+        ep = _make_episode(video_id=video_id, duration=duration)
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        assert video_id in xml_str
