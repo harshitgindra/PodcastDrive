@@ -56,11 +56,8 @@ done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 if [ "$DRY_RUN" = true ]; then
-    PY_DRY_RUN=True
     echo ">>> DRY-RUN mode: no files will be downloaded, uploaded, or deleted <<<"
     echo ""
-else
-    PY_DRY_RUN=False
 fi
 
 # --- Load config ---
@@ -84,6 +81,7 @@ fi
 
 VENV_PIP="${SCRIPT_DIR}/.venv/bin/pip"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python3"
+export PATH="${SCRIPT_DIR}/.venv/bin:$PATH"
 ok "Virtual environment ready"
 
 # Install dependencies if missing
@@ -114,11 +112,11 @@ export PODCASTS_YAML="${PODCASTS_YAML:-${SCRIPT_DIR}/podcasts.yaml}"
 export PYTHONPATH="${SCRIPT_DIR}/src"
 
 # --- Preflight checks ---
-"${VENV_PYTHON}" -c "
+PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
 import sys, os
-sys.path.insert(0, '$SCRIPT_DIR/src')
 from preflight import run_preflight
-run_preflight(dry_run=$PY_DRY_RUN)
+dry_run = os.environ.get('PODCAST_DRY_RUN', 'false') == 'true'
+run_preflight(dry_run=dry_run)
 " || exit 1
 
 if [ $# -gt 0 ]; then
@@ -138,7 +136,7 @@ if [ $# -gt 0 ]; then
         echo "=========================================="
         echo "Processing: $URL"
         echo "=========================================="
-        "${VENV_PYTHON}" -c "
+        PODCAST_URL="$URL" PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
 import json, os, sys
 from logger_config import setup_logging
 setup_logging()
@@ -147,30 +145,32 @@ from config_provider import get_config_provider
 from utils import extract_playlist_id
 
 provider = get_config_provider()
+url = os.environ['PODCAST_URL']
+dry_run = os.environ.get('PODCAST_DRY_RUN', 'false') == 'true'
 
 # Resolve the playlist_id from the URL so we can match it against Notion entries
 try:
-    playlist_id_for_lookup = extract_playlist_id('$URL')
+    playlist_id_for_lookup = extract_playlist_id(url)
 except Exception:
     playlist_id_for_lookup = None
 
 # Try to find a matching Notion entry (silently skip if not found or provider unsupported)
 notion_podcast = None
-if not $PY_DRY_RUN and playlist_id_for_lookup and hasattr(provider, 'find_page_by_url'):
+if not dry_run and playlist_id_for_lookup and hasattr(provider, 'find_page_by_url'):
     try:
         notion_podcast = provider.find_page_by_url(playlist_id_for_lookup)
     except Exception:
         notion_podcast = None
 
 try:
-    if notion_podcast and not $PY_DRY_RUN:
+    if notion_podcast and not dry_run:
         provider.update_status(notion_podcast, 'Running')
         provider.update_last_run(notion_podcast)
 
-    result = process_playlist('$URL', dry_run=$PY_DRY_RUN)
+    result = process_playlist(url, dry_run=dry_run)
     print(json.dumps(result, indent=2))
 
-    if notion_podcast and not $PY_DRY_RUN:
+    if notion_podcast and not dry_run:
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
         pid = result.get('playlist_id', '')
         feed_url = f'{cloudfront_base}/{pid}/feed.xml' if pid and cloudfront_base else ''
@@ -178,7 +178,7 @@ try:
         provider.update_last_run(notion_podcast, feed_url=feed_url)
 
 except Exception as e:
-    if notion_podcast and not $PY_DRY_RUN:
+    if notion_podcast and not dry_run:
         try:
             provider.update_status(notion_podcast, 'Failed')
             provider.update_last_run(notion_podcast)
@@ -189,7 +189,7 @@ except Exception as e:
     done
 else
     # --- Config mode: process all enabled podcasts from config provider ---
-    "${VENV_PYTHON}" -c "
+    PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
 import json, sys, os
 from logger_config import setup_logging
 setup_logging()
@@ -197,6 +197,8 @@ setup_logging()
 from config_provider import get_config_provider
 from sync import process_playlist
 from utils import extract_playlist_id
+
+dry_run = os.environ.get('PODCAST_DRY_RUN', 'false') == 'true'
 
 provider = get_config_provider()
 podcasts = provider.get_podcasts()
@@ -223,7 +225,7 @@ for i, podcast in enumerate(enabled):
     print('=' * 50)
 
     try:
-        if not $PY_DRY_RUN:
+        if not dry_run:
             provider.update_status(podcast, 'Running')
             provider.update_last_run(podcast)
         result = process_playlist(
@@ -231,7 +233,7 @@ for i, podcast in enumerate(enabled):
             max_downloads=podcast.max_downloads,
             max_age_days=podcast.max_age_days,
             sleep_between=podcast.sleep_between,
-            dry_run=$PY_DRY_RUN,
+            dry_run=dry_run,
         )
         print(json.dumps(result, indent=2))
 
@@ -239,11 +241,11 @@ for i, podcast in enumerate(enabled):
         playlist_id = result.get('playlist_id', '')
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
         feed_url = f'{cloudfront_base}/{playlist_id}/feed.xml' if playlist_id and cloudfront_base else ''
-        if not $PY_DRY_RUN:
+        if not dry_run:
             provider.update_status(podcast, 'Done')
             provider.update_last_run(podcast, feed_url=feed_url)
     except Exception as e:
-        if not $PY_DRY_RUN:
+        if not dry_run:
             provider.update_status(podcast, 'Failed')
             provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
@@ -251,13 +253,15 @@ for i, podcast in enumerate(enabled):
 " || echo "ERROR: Failed processing YouTube podcasts"
 
     # --- RSS Podcast feeds (Source=Podcast) ---
-    "${VENV_PYTHON}" -c "
+    PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
 import json, sys, os
 from logger_config import setup_logging
 setup_logging()
 
 from config_provider import get_podcast_config_provider
 from podcast_sync import process_podcast_feed
+
+dry_run = os.environ.get('PODCAST_DRY_RUN', 'false') == 'true'
 
 provider = get_podcast_config_provider()
 podcasts = provider.get_podcasts()
@@ -273,21 +277,21 @@ for i, podcast in enumerate(enabled):
     print('=' * 50)
 
     try:
-        if not $PY_DRY_RUN:
+        if not dry_run:
             provider.update_status(podcast, 'Running')
             provider.update_last_run(podcast)
-        result = process_podcast_feed(podcast, provider=provider, dry_run=$PY_DRY_RUN)
+        result = process_podcast_feed(podcast, provider=provider, dry_run=dry_run)
         print(json.dumps(result, indent=2))
 
         # Build feed URL and update Notion
         slug = result.get('slug', '')
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
         feed_url = f'{cloudfront_base}/{slug}/feed.xml' if slug and cloudfront_base else ''
-        if not $PY_DRY_RUN:
+        if not dry_run:
             provider.update_status(podcast, 'Done')
             provider.update_last_run(podcast, feed_url=feed_url)
     except Exception as e:
-        if not $PY_DRY_RUN:
+        if not dry_run:
             provider.update_status(podcast, 'Failed')
             provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
