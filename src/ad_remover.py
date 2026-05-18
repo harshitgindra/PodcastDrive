@@ -281,6 +281,15 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
     Uses the Bedrock Converse API with the model specified by
     ``BEDROCK_MODEL_ID`` (default: ``us.anthropic.claude-sonnet-4-20250514-v1:0``).
 
+    For transcripts that exceed ``AD_DETECT_MAX_CHARS``, the transcript is split
+    into overlapping chunks (overlap controlled by ``AD_DETECT_OVERLAP_SECS``,
+    default 60s). Each chunk is sent independently and results are merged with
+    deduplication.
+
+    Environment variables:
+        AD_DETECT_MAX_CHARS     – Max transcript chars per chunk (default: 60000).
+        AD_DETECT_OVERLAP_SECS  – Seconds of overlap between chunks (default: 60).
+
     Args:
         segments: List of transcript segment dicts as returned by
             :func:`transcribe_audio`.
@@ -300,80 +309,59 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
 
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+    max_chars = int(os.environ.get("AD_DETECT_MAX_CHARS", "60000"))
+    overlap_secs = float(os.environ.get("AD_DETECT_OVERLAP_SECS", "60"))
 
-    # Build transcript for the prompt.
-    # For very long episodes we keep the start, middle, and end thirds so that
-    # mid-roll ads (common in shows like The Best One Yet) are never dropped.
-    _MAX_TRANSCRIPT_CHARS = 60_000  # ~15k tokens, well within Claude Sonnet limits
-    transcript_lines = "\n".join(
-        f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in segments
+    chunks = _split_segments_into_chunks(segments, max_chars, overlap_secs)
+    logger.info(
+        "[AdRemover] Transcript split into %d chunk(s) (max_chars=%d, overlap=%.0fs)",
+        len(chunks), max_chars, overlap_secs,
     )
-    if len(transcript_lines) > _MAX_TRANSCRIPT_CHARS:
-        third = _MAX_TRANSCRIPT_CHARS // 3
-        mid_start = len(transcript_lines) // 2 - third // 2
-        mid_end = mid_start + third
-        transcript_lines = (
-            transcript_lines[:third]
-            + "\n\n[... early-middle section truncated ...]\n\n"
-            + transcript_lines[mid_start:mid_end]
-            + "\n\n[... late-middle section truncated ...]\n\n"
-            + transcript_lines[-third:]
-        )
-        logger.info(
-            "[AdRemover] Transcript truncated to ~%d chars (start+middle+end) for Bedrock prompt",
-            _MAX_TRANSCRIPT_CHARS,
-        )
-    prompt = _AD_DETECTION_PROMPT.format(transcript=transcript_lines)
-
-    logger.info("[AdRemover] Sending transcript to Bedrock (model=%s, region=%s)", model_id, region)
 
     bedrock = boto3.client("bedrock-runtime", region_name=region)
-    response = retry_aws_call(
-        lambda: bedrock.converse(
-            modelId=model_id,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"temperature": 0.0},
-        ),
-        label="bedrock.converse",
-    )
+    all_ads: list[AdSegment] = []
 
-    raw = response["output"]["message"]["content"][0]["text"]
-    logger.debug("[AdRemover] Bedrock raw response: %s", raw)
+    for i, chunk in enumerate(chunks):
+        transcript_lines = "\n".join(
+            f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in chunk
+        )
+        prompt = _AD_DETECTION_PROMPT.format(transcript=transcript_lines)
 
-    # Extract JSON array from the response (models sometimes add extra prose)
-    start_idx = raw.find("[")
-    end_idx = raw.rfind("]")
-    if start_idx == -1 or end_idx == -1:
-        logger.warning("[AdRemover] Bedrock response contained no JSON array — assuming no ads.")
-        return []
+        logger.info(
+            "[AdRemover] Sending chunk %d/%d to Bedrock (model=%s, segments=%d, chars=%d)",
+            i + 1, len(chunks), model_id, len(chunk), len(transcript_lines),
+        )
 
-    try:
-        ad_segments: list[AdSegment] = json.loads(raw[start_idx : end_idx + 1])
-    except json.JSONDecodeError as exc:
-        logger.warning("[AdRemover] Failed to parse Bedrock JSON response: %s", exc)
-        return []
+        response = retry_aws_call(
+            lambda p=prompt: bedrock.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": p}]}],
+                inferenceConfig={"temperature": 0.0},
+            ),
+            label=f"bedrock.converse[chunk-{i+1}]",
+        )
 
-    # Validate structure and apply minimum-length filter
-    _MIN_AD_SECONDS = 5.0  # segments shorter than this are likely false positives
+        raw = response["output"]["message"]["content"][0]["text"]
+        logger.debug("[AdRemover] Bedrock raw response (chunk %d): %s", i + 1, raw)
+
+        chunk_ads = _parse_ad_response(raw)
+        all_ads.extend(chunk_ads)
+
+    merged = _merge_overlapping_ads(all_ads)
+
+    _MIN_AD_SECONDS = 5.0
     valid = []
-    for seg in ad_segments:
-        if isinstance(seg, dict) and "start" in seg and "end" in seg:
-            start = float(seg["start"])
-            end = float(seg["end"])
-            duration = end - start
-            if duration < _MIN_AD_SECONDS:
-                logger.warning(
-                    "[AdRemover] Skipping suspiciously short ad segment "
-                    "(%.1fs < %.1fs minimum): start=%.1f end=%.1f",
-                    duration, _MIN_AD_SECONDS, start, end,
-                )
-                continue
-            valid.append({"start": start, "end": end})
-        else:
-            logger.warning("[AdRemover] Ignoring malformed ad segment: %s", seg)
+    for seg in merged:
+        duration = seg["end"] - seg["start"]
+        if duration < _MIN_AD_SECONDS:
+            logger.warning(
+                "[AdRemover] Skipping suspiciously short ad segment "
+                "(%.1fs < %.1fs minimum): start=%.1f end=%.1f",
+                duration, _MIN_AD_SECONDS, seg["start"], seg["end"],
+            )
+            continue
+        valid.append(seg)
 
-    # Log the transcript text covered by each detected ad segment so it can be
-    # reviewed in logs without re-running, useful for prompt tuning.
     if valid and segments:
         for ad in valid:
             covered = [
@@ -388,6 +376,102 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
 
     logger.info("[AdRemover] Detected %d ad segment(s): %s", len(valid), valid)
     return valid
+
+
+def _split_segments_into_chunks(
+    segments: list[dict], max_chars: int, overlap_secs: float
+) -> list[list[dict]]:
+    """Split transcript segments into chunks that fit within max_chars.
+
+    Each chunk overlaps with the next by at least *overlap_secs* worth of
+    segments so ads at chunk boundaries are seen by both chunks.
+    """
+    all_lines = [
+        (s, f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}") for s in segments
+    ]
+
+    total_chars = sum(len(line) + 1 for _, line in all_lines)
+    if total_chars <= max_chars:
+        return [segments]
+
+    chunks: list[list[dict]] = []
+    i = 0
+    while i < len(all_lines):
+        chunk_segments: list[dict] = []
+        char_count = 0
+
+        j = i
+        while j < len(all_lines):
+            line_len = len(all_lines[j][1]) + 1
+            if char_count + line_len > max_chars and chunk_segments:
+                break
+            chunk_segments.append(all_lines[j][0])
+            char_count += line_len
+            j += 1
+
+        chunks.append(chunk_segments)
+
+        if j >= len(all_lines):
+            break
+
+        # Walk back from j to find the overlap start point
+        overlap_start_time = all_lines[j][0]["start"] - overlap_secs
+        next_i = j
+        while next_i > i and all_lines[next_i - 1][0]["start"] >= overlap_start_time:
+            next_i -= 1
+
+        # Ensure forward progress
+        i = max(next_i, i + 1) if next_i <= i else next_i
+
+    return chunks
+
+
+def _parse_ad_response(raw: str) -> list[AdSegment]:
+    """Extract a JSON array of ad segments from a model response string."""
+    end_idx = raw.rfind("]")
+    if end_idx == -1:
+        logger.warning("[AdRemover] Bedrock response contained no JSON array — assuming no ads.")
+        return []
+
+    search_end = end_idx
+    while search_end >= 0:
+        start_idx = raw.rfind("[", 0, search_end)
+        if start_idx == -1:
+            break
+        candidate = raw[start_idx : end_idx + 1]
+        try:
+            result = json.loads(candidate)
+            if isinstance(result, list):
+                valid = []
+                for seg in result:
+                    if isinstance(seg, dict) and "start" in seg and "end" in seg:
+                        valid.append({"start": float(seg["start"]), "end": float(seg["end"])})
+                    else:
+                        logger.warning("[AdRemover] Ignoring malformed ad segment: %s", seg)
+                return valid
+        except json.JSONDecodeError:
+            pass
+        search_end = start_idx
+
+    logger.warning("[AdRemover] Could not extract valid JSON array from Bedrock response — assuming no ads.")
+    return []
+
+
+def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
+    """Merge overlapping or adjacent ad segments from multiple chunks."""
+    if not ads:
+        return []
+
+    sorted_ads = sorted(ads, key=lambda s: s["start"])
+    merged: list[AdSegment] = [{"start": sorted_ads[0]["start"], "end": sorted_ads[0]["end"]}]
+
+    for seg in sorted_ads[1:]:
+        if seg["start"] <= merged[-1]["end"] + 5:
+            merged[-1]["end"] = max(merged[-1]["end"], seg["end"])
+        else:
+            merged.append({"start": seg["start"], "end": seg["end"]})
+
+    return merged
 
 
 # ---------------------------------------------------------------------------
