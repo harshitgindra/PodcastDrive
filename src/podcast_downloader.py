@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -22,6 +23,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import certifi
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
@@ -184,8 +186,18 @@ def _parse_duration(raw: str) -> int:
         return 0
 
 
+_fetch_feed_attempt = retry(
+    retry=retry_if_exception_type((OSError, urllib.error.URLError, TimeoutError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    reraise=True,
+)
+
+
 def fetch_feed_xml(feed_url: str) -> bytes:
     """Download the RSS feed at *feed_url* and return raw bytes.
+
+    Retries up to 3 times on transient network errors.
 
     Args:
         feed_url: The URL of the RSS/Atom feed.
@@ -194,16 +206,23 @@ def fetch_feed_xml(feed_url: str) -> bytes:
         Raw feed bytes.
 
     Raises:
-        RuntimeError: If the HTTP request fails.
+        RuntimeError: If the HTTP request fails after all retries.
     """
-    logger.info("[PodcastDownloader] Fetching RSS feed: %s", feed_url)
-    try:
+
+    @_fetch_feed_attempt
+    def _attempt() -> bytes:
         req = urllib.request.Request(
             feed_url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
             return resp.read()
+
+    logger.info("[PodcastDownloader] Fetching RSS feed: %s", feed_url)
+    try:
+        return _attempt()
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Failed to fetch RSS feed {feed_url}: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"Failed to fetch RSS feed {feed_url}: {exc}") from exc
 
@@ -313,8 +332,18 @@ def episode_id_from_guid(guid: str, podcast_slug: str) -> str:
 # HTTP download
 # ---------------------------------------------------------------------------
 
+_download_retry = retry(
+    retry=retry_if_exception_type((OSError, urllib.error.URLError, TimeoutError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=5, max=60),
+    reraise=True,
+)
+
+
 def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
     """Download a podcast episode MP3 from *url* to *tmp_dir*.
+
+    Retries up to 3 times on transient network errors.
 
     Args:
         url:        Direct MP3 audio URL.
@@ -325,23 +354,29 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
         Local path to the downloaded file.
 
     Raises:
-        RuntimeError: If the download fails.
+        RuntimeError: If the download fails after all retries.
     """
     local_path = os.path.join(tmp_dir, f"{episode_id}.mp3")
     logger.info("[PodcastDownloader] Downloading episode %s from %s", episode_id, url)
 
-    try:
+    @_download_retry
+    def _attempt() -> None:
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=300, context=_SSL_CTX) as resp, open(local_path, "wb") as out:
             while True:
-                chunk = resp.read(1024 * 1024)  # 1 MiB
+                chunk = resp.read(1024 * 1024)
                 if not chunk:
                     break
                 out.write(chunk)
+
+    try:
+        _attempt()
     except Exception as exc:
+        if os.path.exists(local_path):
+            os.remove(local_path)
         raise RuntimeError(f"Failed to download episode {episode_id}: {exc}") from exc
 
     size_mb = os.path.getsize(local_path) / (1024 * 1024)
