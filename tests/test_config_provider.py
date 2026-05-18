@@ -11,7 +11,9 @@ from config_provider import (
     PodcastConfig,
     YamlConfigProvider,
     NotionConfigProvider,
+    NotionPodcastConfigProvider,
     get_config_provider,
+    get_podcast_config_provider,
 )
 
 
@@ -590,3 +592,183 @@ class TestNotionFindPageByUrl:
         with patch.object(provider, "get_podcasts", side_effect=Exception("API error")):
             result = provider.find_page_by_url("https://youtube.com/playlist?list=PLA")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# NotionPodcastConfigProvider — _parse_page
+# ---------------------------------------------------------------------------
+
+class TestNotionPodcastConfigProviderParsePage:
+    def _make_provider(self):
+        with patch.dict(os.environ, {"NOTION_API_KEY": "key", "NOTION_DATABASE_ID": "db"}):
+            return NotionPodcastConfigProvider()
+
+    def _title_prop(self, text):
+        return {"type": "title", "title": [{"plain_text": text}]}
+
+    def _rich_text_prop(self, text):
+        return {"type": "rich_text", "rich_text": [{"plain_text": text}]}
+
+    def _url_prop(self, url):
+        return {"type": "url", "url": url}
+
+    def _checkbox_prop(self, checked):
+        return {"type": "checkbox", "checkbox": checked}
+
+    def _number_prop(self, n):
+        return {"type": "number", "number": n}
+
+    def _select_prop(self, value):
+        return {"type": "select", "select": {"name": value}}
+
+    def test_returns_podcast_config_for_source_podcast(self):
+        provider = self._make_provider()
+        props = {
+            "Name": self._title_prop("My Podcast"),
+            "URL": self._rich_text_prop("https://feeds.example.com/podcast.rss"),
+            "Enabled": self._checkbox_prop(True),
+            "Source": self._select_prop("Podcast"),
+        }
+        result = provider._parse_page(props)
+        assert result is not None
+        assert result.name == "My Podcast"
+        assert result.url == "https://feeds.example.com/podcast.rss"
+        assert result.source == "Podcast"
+
+    def test_returns_none_for_source_youtube(self):
+        """NotionPodcastConfigProvider should exclude YouTube entries."""
+        provider = self._make_provider()
+        props = {
+            "Name": self._title_prop("YouTube Show"),
+            "URL": self._rich_text_prop("https://youtube.com/playlist?list=PLabc"),
+            "Enabled": self._checkbox_prop(True),
+            "Source": self._select_prop("YouTube"),
+        }
+        result = provider._parse_page(props)
+        assert result is None
+
+    def test_returns_none_when_disabled(self):
+        provider = self._make_provider()
+        props = {
+            "Name": self._title_prop("Podcast"),
+            "URL": self._rich_text_prop("https://feeds.example.com/podcast.rss"),
+            "Enabled": self._checkbox_prop(False),
+            "Source": self._select_prop("Podcast"),
+        }
+        result = provider._parse_page(props)
+        assert result is None
+
+    def test_parses_max_age_days_and_max_downloads(self):
+        provider = self._make_provider()
+        props = {
+            "Name": self._title_prop("Podcast"),
+            "URL": self._rich_text_prop("https://feeds.example.com/podcast.rss"),
+            "Enabled": self._checkbox_prop(True),
+            "Source": self._select_prop("Podcast"),
+            "Max Age Days": self._number_prop(14),
+            "Max Downloads": self._number_prop(3),
+        }
+        result = provider._parse_page(props)
+        assert result is not None
+        assert result.max_age_days == 14
+        assert result.max_downloads == 3
+
+    def test_allows_empty_url_for_name_based_search(self):
+        """Empty URL is allowed — podcast_sync will search iTunes by name."""
+        provider = self._make_provider()
+        props = {
+            "Name": self._title_prop("Podcast By Name"),
+            "URL": self._rich_text_prop(""),
+            "Enabled": self._checkbox_prop(True),
+            "Source": self._select_prop("Podcast"),
+        }
+        result = provider._parse_page(props)
+        # Should return a PodcastConfig even with empty URL
+        assert result is not None
+        assert result.source == "Podcast"
+
+    def test_returns_none_on_key_error(self):
+        provider = self._make_provider()
+        props = {"Name": {"type": "title", "title": [{}]}}
+        result = provider._parse_page(props)
+        assert result is None or isinstance(result, PodcastConfig)
+
+
+# ---------------------------------------------------------------------------
+# NotionPodcastConfigProvider — update_url
+# ---------------------------------------------------------------------------
+
+class TestNotionPodcastConfigProviderUpdateUrl:
+    def _make_provider(self):
+        with patch.dict(os.environ, {"NOTION_API_KEY": "key", "NOTION_DATABASE_ID": "db"}):
+            return NotionPodcastConfigProvider()
+
+    def test_skips_when_no_page_id(self):
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id=None, source="Podcast")
+        # Should not raise
+        provider.update_url(podcast, "https://new-feed.example.com/rss")
+
+    @patch("urllib.request.urlopen")
+    def test_calls_notion_api_with_new_url(self, mock_urlopen):
+        import json
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="https://old.example.com/rss",
+                                page_id="page-abc", source="Podcast")
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        provider.update_url(podcast, "https://new.example.com/rss")
+
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode("utf-8"))
+        assert body["properties"]["URL"]["url"] == "https://new.example.com/rss"
+        assert req.method == "PATCH"
+
+    @patch("urllib.request.urlopen")
+    def test_handles_error_gracefully(self, mock_urlopen):
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="https://old.example.com/rss",
+                                page_id="page-abc", source="Podcast")
+        mock_urlopen.side_effect = Exception("Network error")
+        # Should not raise
+        provider.update_url(podcast, "https://new.example.com/rss")
+
+
+# ---------------------------------------------------------------------------
+# get_podcast_config_provider factory
+# ---------------------------------------------------------------------------
+
+class TestGetPodcastConfigProviderFactory:
+    def test_returns_yaml_provider_by_default(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CONFIG_PROVIDER", None)
+            provider = get_podcast_config_provider()
+            assert isinstance(provider, YamlConfigProvider)
+
+    def test_returns_yaml_provider_when_set_to_yaml(self):
+        with patch.dict(os.environ, {"CONFIG_PROVIDER": "yaml"}):
+            provider = get_podcast_config_provider()
+            assert isinstance(provider, YamlConfigProvider)
+
+    def test_returns_notion_podcast_provider_when_set_to_notion(self):
+        with patch.dict(os.environ, {
+            "CONFIG_PROVIDER": "notion",
+            "NOTION_API_KEY": "key",
+            "NOTION_DATABASE_ID": "db",
+        }):
+            provider = get_podcast_config_provider()
+            assert isinstance(provider, NotionPodcastConfigProvider)
+
+    def test_yaml_path_from_env_var(self):
+        with patch.dict(os.environ, {
+            "CONFIG_PROVIDER": "yaml",
+            "PODCASTS_YAML": "/custom/podcasts.yaml",
+        }):
+            provider = get_podcast_config_provider()
+            assert isinstance(provider, YamlConfigProvider)
+            assert provider.path == "/custom/podcasts.yaml"

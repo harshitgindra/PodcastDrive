@@ -209,3 +209,72 @@ class TestSetupLogging:
                             h.close()
                             root.removeHandler(h)
                     root.handlers.extend(original_handlers)
+
+
+# ---------------------------------------------------------------------------
+# _JsonFormatter
+# ---------------------------------------------------------------------------
+
+class TestJsonFormatter:
+    def _get_formatter(self):
+        from logger_config import _JsonFormatter
+        return _JsonFormatter()
+
+    def test_format_returns_valid_json(self):
+        import json
+        formatter = self._get_formatter()
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="hello world",
+            args=(),
+            exc_info=None,
+        )
+        output = formatter.format(record)
+        doc = json.loads(output)
+        assert doc["message"] == "hello world"
+        assert doc["level"] == "INFO"
+        assert doc["logger"] == "test.logger"
+        assert "timestamp" in doc
+
+    def test_format_includes_exc_info(self):
+        import json
+        formatter = self._get_formatter()
+        try:
+            raise ValueError("test error")
+        except ValueError:
+            import sys
+            exc = sys.exc_info()
+
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="error occurred",
+            args=(),
+            exc_info=exc,
+        )
+        output = formatter.format(record)
+        doc = json.loads(output)
+        assert "exc_info" in doc
+        assert "ValueError" in doc["exc_info"]
+
+    def test_format_merges_extra_fields(self):
+        import json
+        formatter = self._get_formatter()
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="msg with extra",
+            args=(),
+            exc_info=None,
+        )
+        record.playlist_id = "PLtest"
+        output = formatter.format(record)
+        doc = json.loads(output)
+        assert doc.get("playlist_id") == "PLtest"
