@@ -613,3 +613,277 @@ class TestRemoveAds:
             result = ad_remover.remove_ads("/ep.mp3", f"vid_{val}", str(tmp_path))
             assert result == "/ep.mp3", f"Expected original path for DRY_RUN={val!r}"
             mock_splice.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _split_segments_into_chunks
+# ---------------------------------------------------------------------------
+
+class TestSplitSegmentsIntoChunks:
+    def test_single_chunk_when_under_limit(self):
+        """Returns one chunk when total transcript fits within max_chars."""
+        import ad_remover
+        segments = [
+            {"start": 0.0, "end": 10.0, "text": "Hello world"},
+            {"start": 11.0, "end": 20.0, "text": "Second segment"},
+        ]
+        chunks = ad_remover._split_segments_into_chunks(segments, max_chars=5000, overlap_secs=60)
+        assert len(chunks) == 1
+        assert chunks[0] == segments
+
+    def test_splits_into_multiple_chunks(self):
+        """Segments exceeding max_chars are split into multiple chunks."""
+        import ad_remover
+        segments = [
+            {"start": i * 10.0, "end": (i + 1) * 10.0, "text": "word " * 50}
+            for i in range(20)
+        ]
+        chunks = ad_remover._split_segments_into_chunks(segments, max_chars=2000, overlap_secs=30)
+        assert len(chunks) > 1
+        # All segments should be covered
+        all_starts = {s["start"] for chunk in chunks for s in chunk}
+        expected_starts = {s["start"] for s in segments}
+        assert expected_starts.issubset(all_starts)
+
+    def test_overlap_between_chunks(self):
+        """Adjacent chunks overlap by at least overlap_secs."""
+        import ad_remover
+        segments = [
+            {"start": i * 10.0, "end": (i + 1) * 10.0 - 1, "text": "x " * 30}
+            for i in range(50)
+        ]
+        chunks = ad_remover._split_segments_into_chunks(segments, max_chars=2000, overlap_secs=30)
+        assert len(chunks) > 1
+        for i in range(len(chunks) - 1):
+            end_of_current = chunks[i][-1]["end"]
+            start_of_next = chunks[i + 1][0]["start"]
+            # Next chunk should start before or near where current ends
+            assert start_of_next < end_of_current + 5, (
+                f"Chunk {i+1} ends at {end_of_current}, chunk {i+2} starts at {start_of_next}"
+            )
+
+    def test_empty_segments(self):
+        """Empty input returns a single empty chunk."""
+        import ad_remover
+        chunks = ad_remover._split_segments_into_chunks([], max_chars=5000, overlap_secs=60)
+        assert chunks == [[]]
+
+    def test_single_large_segment(self):
+        """A single segment larger than max_chars still produces one chunk."""
+        import ad_remover
+        segments = [{"start": 0.0, "end": 600.0, "text": "x" * 10000}]
+        chunks = ad_remover._split_segments_into_chunks(segments, max_chars=5000, overlap_secs=60)
+        assert len(chunks) == 1
+        assert chunks[0] == segments
+
+    def test_forward_progress_guaranteed(self):
+        """Chunker doesn't loop infinitely even with adversarial inputs."""
+        import ad_remover
+        # All segments are large and close together in time
+        segments = [
+            {"start": i * 2.0, "end": (i + 1) * 2.0, "text": "y" * 500}
+            for i in range(20)
+        ]
+        chunks = ad_remover._split_segments_into_chunks(segments, max_chars=1000, overlap_secs=100)
+        assert len(chunks) >= 1
+        # Should terminate (this test mainly checks no infinite loop)
+
+
+# ---------------------------------------------------------------------------
+# _parse_ad_response
+# ---------------------------------------------------------------------------
+
+class TestParseAdResponse:
+    def test_parses_clean_json(self):
+        """Parses a response that is just a JSON array."""
+        import ad_remover
+        raw = '[{"start": 10.0, "end": 60.0}]'
+        result = ad_remover._parse_ad_response(raw)
+        assert result == [{"start": 10.0, "end": 60.0}]
+
+    def test_parses_json_with_reasoning(self):
+        """Parses response with reasoning text containing brackets before JSON."""
+        import ad_remover
+        raw = (
+            "# Reasoning\n"
+            "1. **[177.8 - 308.5]**: NetSuite ad\n"
+            "2. **[786.8 - 843.4]**: Indeed ad\n\n"
+            '```json\n'
+            '[{"start": 175.8, "end": 310.5}, {"start": 784.8, "end": 845.4}]\n'
+            '```'
+        )
+        result = ad_remover._parse_ad_response(raw)
+        assert len(result) == 2
+        assert result[0] == {"start": 175.8, "end": 310.5}
+        assert result[1] == {"start": 784.8, "end": 845.4}
+
+    def test_returns_empty_on_no_brackets(self):
+        """Returns empty list when response has no brackets."""
+        import ad_remover
+        result = ad_remover._parse_ad_response("No ads found in this episode.")
+        assert result == []
+
+    def test_returns_empty_on_all_invalid_json(self):
+        """Returns empty list when all bracket pairs contain invalid JSON."""
+        import ad_remover
+        result = ad_remover._parse_ad_response("[not valid json] and [more bad]")
+        assert result == []
+
+    def test_filters_malformed_entries(self):
+        """Entries missing start/end are filtered out."""
+        import ad_remover
+        raw = '[{"start": 10.0, "end": 20.0}, {"bad": true}, "string"]'
+        result = ad_remover._parse_ad_response(raw)
+        assert result == [{"start": 10.0, "end": 20.0}]
+
+    def test_empty_array_response(self):
+        """Model returning [] means no ads."""
+        import ad_remover
+        result = ad_remover._parse_ad_response("[]")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _merge_overlapping_ads
+# ---------------------------------------------------------------------------
+
+class TestMergeOverlappingAds:
+    def test_non_overlapping_preserved(self):
+        """Non-overlapping segments remain separate."""
+        import ad_remover
+        ads = [{"start": 10.0, "end": 20.0}, {"start": 50.0, "end": 60.0}]
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert result == [{"start": 10.0, "end": 20.0}, {"start": 50.0, "end": 60.0}]
+
+    def test_overlapping_merged(self):
+        """Overlapping segments are merged into one."""
+        import ad_remover
+        ads = [{"start": 10.0, "end": 30.0}, {"start": 25.0, "end": 50.0}]
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert result == [{"start": 10.0, "end": 50.0}]
+
+    def test_adjacent_within_5s_merged(self):
+        """Segments within 5 seconds gap are merged."""
+        import ad_remover
+        ads = [{"start": 10.0, "end": 20.0}, {"start": 24.0, "end": 40.0}]
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert result == [{"start": 10.0, "end": 40.0}]
+
+    def test_not_merged_when_gap_exceeds_5s(self):
+        """Segments with > 5s gap remain separate."""
+        import ad_remover
+        ads = [{"start": 10.0, "end": 20.0}, {"start": 26.0, "end": 40.0}]
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert len(result) == 2
+
+    def test_unsorted_input(self):
+        """Handles unsorted input correctly."""
+        import ad_remover
+        ads = [{"start": 50.0, "end": 60.0}, {"start": 10.0, "end": 20.0}]
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert result[0]["start"] == 10.0
+        assert result[1]["start"] == 50.0
+
+    def test_empty_input(self):
+        """Empty list returns empty list."""
+        import ad_remover
+        assert ad_remover._merge_overlapping_ads([]) == []
+
+    def test_multiple_overlaps_chain(self):
+        """Chain of overlapping segments merge into one."""
+        import ad_remover
+        ads = [
+            {"start": 10.0, "end": 20.0},
+            {"start": 18.0, "end": 30.0},
+            {"start": 28.0, "end": 45.0},
+        ]
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert result == [{"start": 10.0, "end": 45.0}]
+
+    def test_duplicate_segments_from_chunk_overlap(self):
+        """Duplicate segments (same ad detected by two chunks) are merged."""
+        import ad_remover
+        ads = [
+            {"start": 175.8, "end": 310.5},
+            {"start": 176.0, "end": 309.0},  # duplicate from overlap
+            {"start": 784.8, "end": 912.0},
+        ]
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert len(result) == 2
+        assert result[0] == {"start": 175.8, "end": 310.5}
+        assert result[1] == {"start": 784.8, "end": 912.0}
+
+
+# ---------------------------------------------------------------------------
+# detect_ads chunking integration
+# ---------------------------------------------------------------------------
+
+class TestDetectAdsChunking:
+    def _patch_bedrock(self, monkeypatch, responses: list[str]):
+        """Patch bedrock to return different responses for each chunk call."""
+        bc = MagicMock()
+        bc.converse.side_effect = [
+            {"output": {"message": {"content": [{"text": r}]}}}
+            for r in responses
+        ]
+        import boto3 as _boto3
+        monkeypatch.setattr(_boto3, "client", lambda svc, **kw: bc)
+        return bc
+
+    def test_single_chunk_no_splitting(self, monkeypatch):
+        """Short transcripts use a single API call."""
+        self._patch_bedrock(monkeypatch, ['[{"start": 10.0, "end": 20.0}]'])
+        monkeypatch.setenv("AD_DETECT_MAX_CHARS", "50000")
+        import ad_remover
+        segments = [{"start": 0.0, "end": 5.0, "text": "short transcript"}]
+        result = ad_remover.detect_ads(segments)
+        assert result == [{"start": 10.0, "end": 20.0}]
+
+    def test_multiple_chunks_results_merged(self, monkeypatch):
+        """Results from multiple chunks are merged and deduplicated."""
+        # Each segment ~100 chars in formatted line. With max_chars=250, ~2 per chunk.
+        segments = [
+            {"start": 0.0, "end": 10.0, "text": "intro " * 15},
+            {"start": 10.0, "end": 20.0, "text": "ad one " * 15},
+            {"start": 100.0, "end": 110.0, "text": "content " * 15},
+            {"start": 110.0, "end": 120.0, "text": "ad two " * 15},
+        ]
+        import ad_remover
+        chunks = ad_remover._split_segments_into_chunks(segments, max_chars=250, overlap_secs=5)
+        assert len(chunks) >= 2, f"Expected multiple chunks, got {len(chunks)}"
+        responses = ['[]'] * len(chunks)
+        responses[0] = '[{"start": 10.0, "end": 20.0}]'
+        responses[-1] = '[{"start": 110.0, "end": 120.0}]'
+        self._patch_bedrock(monkeypatch, responses)
+        monkeypatch.setenv("AD_DETECT_MAX_CHARS", "250")
+        monkeypatch.setenv("AD_DETECT_OVERLAP_SECS", "5")
+        sys.modules.pop("ad_remover", None)
+        import ad_remover as ad_remover2
+
+        result = ad_remover2.detect_ads(segments)
+        assert len(result) == 2
+        assert result[0] == {"start": 10.0, "end": 20.0}
+        assert result[1] == {"start": 110.0, "end": 120.0}
+
+    def test_overlapping_chunk_results_deduplicated(self, monkeypatch):
+        """Same ad detected in two overlapping chunks is deduplicated."""
+        segments = [
+            {"start": 0.0, "end": 10.0, "text": "intro " * 15},
+            {"start": 40.0, "end": 60.0, "text": "this is an ad " * 10},
+            {"start": 70.0, "end": 80.0, "text": "back to content " * 10},
+            {"start": 80.0, "end": 90.0, "text": "outro content " * 10},
+        ]
+        import ad_remover
+        chunks = ad_remover._split_segments_into_chunks(segments, max_chars=250, overlap_secs=50)
+        assert len(chunks) >= 2, f"Expected multiple chunks, got {len(chunks)}"
+        # Both chunks detect the same ad
+        responses = ['[{"start": 40.0, "end": 60.0}]'] * len(chunks)
+        self._patch_bedrock(monkeypatch, responses)
+        monkeypatch.setenv("AD_DETECT_MAX_CHARS", "250")
+        monkeypatch.setenv("AD_DETECT_OVERLAP_SECS", "50")
+        sys.modules.pop("ad_remover", None)
+        import ad_remover as ad_remover2
+
+        result = ad_remover2.detect_ads(segments)
+        assert len(result) == 1
+        assert result[0] == {"start": 40.0, "end": 60.0}
