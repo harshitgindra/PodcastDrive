@@ -300,6 +300,29 @@ def _check_notion() -> None:
         _fail(f"Notion API call failed: {exc}")
 
 
+def _check_disk_space() -> None:
+    """Verify sufficient disk space is available in the temp directory."""
+    _section("Disk space")
+
+    import tempfile
+
+    tmp_dir = tempfile.gettempdir()
+    try:
+        stat = os.statvfs(tmp_dir)
+        free_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+        if free_gb < 1.0:
+            _fail(
+                f"Less than 1 GB free in {tmp_dir} ({free_gb:.2f} GB) — "
+                "downloads may fail. Free up disk space."
+            )
+        elif free_gb < 5.0:
+            _warn(f"Only {free_gb:.1f} GB free in {tmp_dir} — consider freeing space")
+        else:
+            _ok(f"Disk space in {tmp_dir}: {free_gb:.1f} GB free")
+    except OSError as exc:
+        _warn(f"Could not check disk space: {exc}")
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 
@@ -321,6 +344,8 @@ def run_preflight(dry_run: bool = False) -> None:
     _check_cloudfront(region)
     _check_yt_dlp()
     _check_ffmpeg()
+
+    _check_disk_space()
 
     config_provider = os.environ.get("CONFIG_PROVIDER", "yaml")
     if config_provider == "notion":
