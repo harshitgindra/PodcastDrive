@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import time
 from datetime import datetime, timezone
 from email.utils import format_datetime
@@ -199,7 +200,7 @@ def process_podcast_feed(
         max_episodes = int(env_val) if env_val else 5  # conservative default
 
     slug = _podcast_slug(podcast.name)
-    tmp_dir = f"/tmp/podcast-{slug}"
+    tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{slug}-")
     _run_start = time.monotonic()
 
     logger.info(
@@ -208,7 +209,6 @@ def process_podcast_feed(
     )
 
     try:
-        os.makedirs(tmp_dir, exist_ok=True)
 
         # ------------------------------------------------------------------
         # Step 1: Resolve feed URL
@@ -248,12 +248,18 @@ def process_podcast_feed(
                 feed_url = resolved
 
         # ------------------------------------------------------------------
-        # Step 2: Fetch and parse RSS feed
+        # Step 2: Fetch and parse RSS feed (parse once, filter in Python)
         # ------------------------------------------------------------------
         logger.info("[PodcastSync] Fetching RSS feed: %s", feed_url)
         feed_xml = fetch_feed_xml(feed_url)
-        episodes = parse_episodes(feed_xml, max_age_days=max_age_days)
-        logger.info("[PodcastSync] Feed has %d episodes (after age filter)", len(episodes))
+        all_feed_episodes = parse_episodes(feed_xml, max_age_days=None)
+        if max_age_days is not None:
+            from datetime import timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+            episodes = [ep for ep in all_feed_episodes if ep.pub_date >= cutoff]
+        else:
+            episodes = all_feed_episodes
+        logger.info("[PodcastSync] Feed has %d episodes (after age filter, %d total)", len(episodes), len(all_feed_episodes))
 
         if not episodes:
             logger.info("[PodcastSync] No episodes to process for '%s'", podcast.name)
@@ -366,10 +372,7 @@ def process_podcast_feed(
             # Collect all episodes currently in S3 for the feed
             all_existing_ids = s3.list_existing_episodes()
 
-            # Build id→EpisodeMeta from the FULL (unfiltered) feed so that
-            # episodes already in S3 that are older than max_age_days aren't
-            # silently dropped from the feed XML.
-            all_feed_episodes = parse_episodes(feed_xml, max_age_days=None)
+            # Build id→EpisodeMeta from the FULL (unfiltered) feed (already parsed above)
             id_to_ep: dict[str, EpisodeMeta] = {}
             for ep in all_feed_episodes:
                 eid = episode_id_from_guid(ep.guid, slug)
