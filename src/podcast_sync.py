@@ -405,18 +405,35 @@ def process_podcast_feed(
 
             if missing_from_manifest:
                 logger.info(
-                    "[PodcastSync] head_object fallback for %d episodes not in manifest",
+                    "[PodcastSync] metadata backfill for %d episodes not in manifest",
                     len(missing_from_manifest),
                 )
                 for eid in missing_from_manifest:
                     s3_key = f"{slug}/episodes/{eid}.mp3"
+                    entry: dict = manifest.setdefault(eid, {})
+
+                    # Backfill size via head_object
                     try:
                         size = s3.get_object_size(s3_key)
                         ep_sizes[eid] = size
-                        # Backfill manifest entry with just the size
-                        manifest.setdefault(eid, {})["size"] = size
+                        entry["size"] = size
                     except Exception:
                         ep_sizes[eid] = 0
+
+                    # Backfill episode metadata from the RSS feed (if available)
+                    if eid in id_to_ep and not entry.get("title"):
+                        ep_meta = id_to_ep[eid]
+                        entry.update({
+                            "title": ep_meta.title,
+                            "guid": ep_meta.guid,
+                            "pub_date": ep_meta.pub_date.isoformat(),
+                            "duration": ep_meta.duration,
+                        })
+                        logger.debug(
+                            "[PodcastSync] Backfilled metadata for %s: %s",
+                            eid, ep_meta.title,
+                        )
+
                 # Persist the backfilled manifest entries
                 s3.save_manifest(manifest)
 

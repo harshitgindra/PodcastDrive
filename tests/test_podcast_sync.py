@@ -471,3 +471,34 @@ class TestProcessPodcastFeedManifest:
         # get_object_size should NOT be called for the newly uploaded episode
         # (size was captured locally after upload)
         mock_s3.get_object_size.assert_not_called()
+
+    def test_backfill_stores_title_and_metadata_for_existing_episodes(self, tmp_path):
+        """Episodes in S3 but missing from manifest get title/guid/pub_date/duration backfilled."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "My Great Episode")
+        feed_xml = b"<rss/>"
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+        ):
+            mock_s3 = MockS3.return_value
+            # Episode already in S3, so it's skipped (not downloaded again)
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            # Manifest is empty — backfill should populate it
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.get_object_size.return_value = 5_000_000
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        # save_manifest called with the backfilled entry
+        mock_s3.save_manifest.assert_called()
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert "guid-1" in saved
+        assert saved["guid-1"]["title"] == "My Great Episode"
+        assert saved["guid-1"]["guid"] == "guid-1"
+        assert "pub_date" in saved["guid-1"]
+        assert saved["guid-1"]["duration"] == 300
