@@ -146,7 +146,8 @@ class TestProcessPlaylistHappyPath:
         videos = [_make_video("vid001")]
         result, _, _ = self._run(videos)
         assert set(result.keys()) == {
-            "playlist_id", "new_episodes", "skipped_old", "failed", "total_episodes"
+            "playlist_id", "new_episodes", "skipped_old", "failed", "total_episodes",
+            "elapsed_seconds",
         }
 
     def test_downloads_new_episode(self):
@@ -333,6 +334,7 @@ class TestProcessPlaylistSleep:
                  patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
                  patch("sync.extract_video_metadata", return_value={"upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": ""}), \
                  patch("sync.download_and_convert") as mock_dl, \
+                 patch("sync.remove_ads", side_effect=lambda p, *a, **kw: p), \
                  patch("sync.build_episode_metadata", return_value=[]), \
                  patch("sync.generate_rss", return_value="<rss/>"), \
                  patch("sync.time.sleep") as mock_sleep, \
@@ -360,6 +362,7 @@ class TestProcessPlaylistSleep:
                  patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
                  patch("sync.extract_video_metadata", return_value={"upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": ""}), \
                  patch("sync.download_and_convert") as mock_dl, \
+                 patch("sync.remove_ads", side_effect=lambda p, *a, **kw: p), \
                  patch("sync.build_episode_metadata", return_value=[]), \
                  patch("sync.generate_rss", return_value="<rss/>"), \
                  patch("sync.time.sleep") as mock_sleep, \

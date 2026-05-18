@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -199,6 +200,7 @@ def process_podcast_feed(
 
     slug = _podcast_slug(podcast.name)
     tmp_dir = f"/tmp/podcast-{slug}"
+    _run_start = time.monotonic()
 
     logger.info(
         "[PodcastSync] Starting '%s' (slug=%s, max_episodes=%s, max_age_days=%s, dry_run=%s)",
@@ -446,15 +448,17 @@ def process_podcast_feed(
             s3.upload_feed(xml_content)
             logger.info("[PodcastSync] feed.xml uploaded")
 
+        elapsed = time.monotonic() - _run_start
         logger.info(
-            "[PodcastSync] Done '%s': %d new, %d skipped, %d failed",
-            podcast.name, new_count, skipped, failed_count,
+            "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d elapsed=%.1fs",
+            slug, new_count, skipped, failed_count, elapsed,
         )
         return {
             "slug": slug,
             "new_episodes": new_count,
             "skipped": skipped,
             "failed": failed_count,
+            "elapsed_seconds": round(elapsed, 1),
         }
 
     finally:

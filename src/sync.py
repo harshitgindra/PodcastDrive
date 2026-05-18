@@ -84,6 +84,7 @@ def process_playlist(
     playlist_id = extract_playlist_id(playlist_url)
     s3 = S3Manager(bucket=bucket, playlist_id=playlist_id)
     tmp_dir = f"/tmp/{playlist_id}"
+    _run_start = time.monotonic()
 
     try:
         os.makedirs(tmp_dir, exist_ok=True)
@@ -237,9 +238,10 @@ def process_playlist(
             )
             final_keys = s3.list_existing_episodes()
 
+        elapsed = time.monotonic() - _run_start
         logger.info(
-            "=== DONE === %d new, %d skipped_old, %d failed, %d total in S3",
-            new_count, skipped_old, failed_count, len(final_keys),
+            "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d failed=%d total_s3=%d elapsed=%.1fs",
+            playlist_id, new_count, skipped_old, failed_count, len(final_keys), elapsed,
         )
 
         return {
@@ -248,6 +250,7 @@ def process_playlist(
             "skipped_old": skipped_old,
             "failed": failed_count,
             "total_episodes": len(final_keys),
+            "elapsed_seconds": round(elapsed, 1),
         }
 
     finally:
