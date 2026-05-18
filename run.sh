@@ -24,6 +24,25 @@ LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs}"
 mkdir -p "$LOG_DIR"
 export LOG_DIR
 
+# --- Lock file to prevent concurrent runs (#18) ---
+LOCK_FILE="${SCRIPT_DIR}/.podcastdrive.lock"
+
+cleanup() {
+    rm -f "$LOCK_FILE"
+}
+trap cleanup EXIT INT TERM
+
+if [ -f "$LOCK_FILE" ]; then
+    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+        fail "Another instance is running (PID $LOCK_PID). Remove $LOCK_FILE if stale."
+    else
+        warn "Stale lock file found (PID $LOCK_PID no longer running) — removing."
+        rm -f "$LOCK_FILE"
+    fi
+fi
+echo $$ > "$LOCK_FILE"
+
 # --- Parse --dry-run flag ---
 DRY_RUN=false
 ARGS=()
