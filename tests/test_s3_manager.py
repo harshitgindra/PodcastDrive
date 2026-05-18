@@ -303,6 +303,59 @@ class TestInvalidateCloudFront:
             manager._invalidate_cloudfront("/PLtest123/feed.xml")
 
 
+class TestManifest:
+    def test_load_manifest_returns_empty_when_missing(self, s3_manager):
+        result = s3_manager.load_manifest()
+        assert result == {}
+
+    def test_save_and_load_manifest_roundtrip(self, s3_manager):
+        manifest = {
+            "ep-001": {"size": 1234567, "title": "Episode 1", "duration": 1800},
+            "ep-002": {"size": 2345678, "title": "Episode 2", "duration": 2400},
+        }
+        s3_manager.save_manifest(manifest)
+        loaded = s3_manager.load_manifest()
+        assert loaded["ep-001"]["size"] == 1234567
+        assert loaded["ep-001"]["title"] == "Episode 1"
+        assert loaded["ep-002"]["size"] == 2345678
+
+    def test_save_manifest_stored_at_correct_key(self, s3_manager):
+        s3_manager.save_manifest({"ep-001": {"size": 100}})
+        expected_key = f"{PLAYLIST_ID}/manifest.json"
+        obj = s3_manager.s3_client.get_object(Bucket=BUCKET, Key=expected_key)
+        data = obj["Body"].read()
+        assert b"ep-001" in data
+
+    def test_load_manifest_returns_empty_on_corrupt_json(self, s3_manager):
+        key = f"{PLAYLIST_ID}/manifest.json"
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET, Key=key, Body=b"not valid json"
+        )
+        result = s3_manager.load_manifest()
+        assert result == {}
+
+    def test_load_manifest_returns_empty_on_non_dict_json(self, s3_manager):
+        key = f"{PLAYLIST_ID}/manifest.json"
+        s3_manager.s3_client.put_object(
+            Bucket=BUCKET, Key=key, Body=b'["not", "a", "dict"]'
+        )
+        result = s3_manager.load_manifest()
+        assert result == {}
+
+    def test_save_manifest_content_type_is_json(self, s3_manager):
+        s3_manager.save_manifest({"ep-001": {"size": 42}})
+        key = f"{PLAYLIST_ID}/manifest.json"
+        meta = s3_manager.s3_client.head_object(Bucket=BUCKET, Key=key)
+        assert meta["ContentType"] == "application/json"
+
+    def test_manifest_updated_after_overwrite(self, s3_manager):
+        s3_manager.save_manifest({"ep-001": {"size": 100}})
+        s3_manager.save_manifest({"ep-001": {"size": 999}, "ep-002": {"size": 50}})
+        loaded = s3_manager.load_manifest()
+        assert loaded["ep-001"]["size"] == 999
+        assert "ep-002" in loaded
+
+
 class TestPingOvercast:
     def test_skips_when_no_cloudfront_base(self):
         import os

@@ -390,3 +390,84 @@ class TestProcessPodcastFeedEmptyUrl:
 
         assert result["new_episodes"] == 0
         assert result["failed"] == 0
+
+
+class TestProcessPodcastFeedManifest:
+    """Verify manifest is loaded, updated, and saved during processing."""
+
+    def test_manifest_loaded_and_saved_on_new_episode(self, tmp_path):
+        """load_manifest is called once; save_manifest is called after upload."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=str(fake_mp3)),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        mock_s3.load_manifest.assert_called_once()
+        mock_s3.save_manifest.assert_called()
+
+    def test_manifest_not_saved_when_no_new_episodes(self):
+        """save_manifest is NOT called when all episodes already exist in S3."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+        ):
+            mock_s3 = MockS3.return_value
+            # Episode already in S3 → skipped, no download
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 100}}
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        mock_s3.save_manifest.assert_not_called()
+
+    def test_manifest_size_used_instead_of_head_object(self, tmp_path):
+        """When manifest has size for an episode, head_object is not called for it."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3" * 1000)
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=str(fake_mp3)),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            # Manifest already has size for the episode after upload
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        # get_object_size should NOT be called for the newly uploaded episode
+        # (size was captured locally after upload)
+        mock_s3.get_object_size.assert_not_called()

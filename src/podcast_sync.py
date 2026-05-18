@@ -296,7 +296,11 @@ def process_podcast_feed(
 
         # ------------------------------------------------------------------
         # Step 4: Download → remove ads → upload
+        # Load manifest once up-front; update it for each successful upload
+        # so we avoid per-episode head_object calls when building the feed.
         # ------------------------------------------------------------------
+        manifest = s3.load_manifest()
+
         new_count = 0
         failed_count = 0
         uploaded_pairs: list[tuple[EpisodeMeta, str]] = []
@@ -317,6 +321,20 @@ def process_podcast_feed(
                 logger.info("[PodcastSync] Uploading %s to S3", ep_id)
                 age_days = max_age_days if max_age_days else 30
                 s3.upload_episode(cleaned_path, ep_id, age_days)
+
+                # Record episode metadata in manifest (file size + episode info)
+                try:
+                    file_size = os.path.getsize(cleaned_path)
+                except OSError:
+                    file_size = 0
+                manifest[ep_id] = {
+                    "size": file_size,
+                    "title": ep.title,
+                    "guid": ep.guid,
+                    "pub_date": ep.pub_date.isoformat(),
+                    "duration": ep.duration,
+                }
+
                 if os.path.exists(cleaned_path):
                     os.remove(cleaned_path)
 
@@ -334,6 +352,10 @@ def process_podcast_feed(
                             os.remove(path)
                         except OSError:
                             pass
+
+        # Persist updated manifest after all uploads
+        if new_count > 0:
+            s3.save_manifest(manifest)
 
         # ------------------------------------------------------------------
         # Step 5: Rebuild feed.xml
@@ -371,14 +393,32 @@ def process_podcast_feed(
             else:
                 feed_episodes, feed_ep_ids = [], []
 
-            # Gather real file sizes from S3 for accurate enclosure lengths
+            # Use manifest for file sizes (avoids N head_object calls).
+            # Fall back to head_object only for episodes missing from manifest.
             ep_sizes: dict[str, int] = {}
+            missing_from_manifest: list[str] = []
             for eid in feed_ep_ids:
-                s3_key = f"{slug}/episodes/{eid}.mp3"
-                try:
-                    ep_sizes[eid] = s3.get_object_size(s3_key)
-                except Exception:
-                    ep_sizes[eid] = 0
+                if eid in manifest and "size" in manifest[eid]:
+                    ep_sizes[eid] = manifest[eid]["size"]
+                else:
+                    missing_from_manifest.append(eid)
+
+            if missing_from_manifest:
+                logger.info(
+                    "[PodcastSync] head_object fallback for %d episodes not in manifest",
+                    len(missing_from_manifest),
+                )
+                for eid in missing_from_manifest:
+                    s3_key = f"{slug}/episodes/{eid}.mp3"
+                    try:
+                        size = s3.get_object_size(s3_key)
+                        ep_sizes[eid] = size
+                        # Backfill manifest entry with just the size
+                        manifest.setdefault(eid, {})["size"] = size
+                    except Exception:
+                        ep_sizes[eid] = 0
+                # Persist the backfilled manifest entries
+                s3.save_manifest(manifest)
 
             logger.info(
                 "[PodcastSync] Generating feed.xml with %d episodes", len(feed_episodes)

@@ -1,5 +1,6 @@
 """S3 storage and CloudFront invalidation for YouTube Playlist to Podcast."""
 
+import json
 import logging
 import os
 import time
@@ -204,6 +205,65 @@ class S3Manager:
             label="s3.head_object",
         )
         return response["ContentLength"]
+
+    def load_manifest(self) -> dict:
+        """Load the episode manifest from S3.
+
+        The manifest is stored at ``{playlist_id}/manifest.json`` and maps
+        each ``episode_id`` to a dict with at minimum a ``"size"`` key (bytes).
+        Additional fields (``title``, ``pub_date``, ``guid``, ``duration``) may
+        be present for future use.
+
+        Returns:
+            Dict mapping ``episode_id`` → metadata dict.  Returns ``{}`` if the
+            manifest does not yet exist (first run) or cannot be parsed.
+        """
+        key = f"{self.playlist_id}/manifest.json"
+        try:
+            response = retry_aws_call(
+                lambda: self.s3_client.get_object(Bucket=self.bucket, Key=key),
+                label="s3.get_object[manifest]",
+            )
+            data = json.loads(response["Body"].read().decode("utf-8"))
+            if isinstance(data, dict):
+                logger.debug("[S3Manager] Loaded manifest with %d entries", len(data))
+                return data
+            logger.warning("[S3Manager] manifest.json is not a dict — ignoring")
+            return {}
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                logger.debug("[S3Manager] No manifest found — starting fresh")
+                return {}
+            logger.warning("[S3Manager] Could not load manifest: %s", exc)
+            return {}
+        except Exception as exc:
+            logger.warning("[S3Manager] Could not load manifest: %s", exc)
+            return {}
+
+    def save_manifest(self, manifest: dict) -> None:
+        """Persist the episode manifest to S3.
+
+        Writes the manifest as pretty-printed JSON to
+        ``{playlist_id}/manifest.json``.
+
+        Args:
+            manifest: Dict mapping ``episode_id`` → metadata dict.
+        """
+        key = f"{self.playlist_id}/manifest.json"
+        body = json.dumps(manifest, indent=2, default=str).encode("utf-8")
+        try:
+            retry_aws_call(
+                lambda: self.s3_client.put_object(
+                    Bucket=self.bucket,
+                    Key=key,
+                    Body=body,
+                    ContentType="application/json",
+                ),
+                label="s3.put_object[manifest]",
+            )
+            logger.debug("[S3Manager] Manifest saved (%d entries)", len(manifest))
+        except Exception as exc:
+            logger.warning("[S3Manager] Could not save manifest: %s", exc)
 
     def _invalidate_cloudfront(self, path: str) -> None:
         """Create a CloudFront invalidation for the given path.
