@@ -224,10 +224,6 @@ class NotionConfigProvider(ConfigProvider):
             elif url_prop.get("type") == "url":
                 url = url_prop.get("url") or ""
 
-            if not url:
-                logger.warning("Skipping Notion entry with no URL: %s", name)
-                return None
-
             # Enabled (checkbox type)
             enabled = True
             enabled_prop = props.get("Enabled", {})
@@ -245,12 +241,18 @@ class NotionConfigProvider(ConfigProvider):
                 logger.debug("Skipping Notion entry '%s': disabled", name)
                 return None
 
-            # Filter: skip non-YouTube sources (absent Source also excluded)
+            # Filter: skip non-YouTube sources BEFORE checking URL so that
+            # Podcast-sourced entries (which intentionally have no URL until
+            # iTunes lookup resolves one) don't trigger a spurious warning.
             if source != "YouTube":
                 logger.debug(
                     "Skipping Notion entry '%s': source=%r (expected 'YouTube')",
                     name, source,
                 )
+                return None
+
+            if not url:
+                logger.warning("Skipping YouTube entry with no URL: %s", name)
                 return None
 
             # Max Downloads (number type)
