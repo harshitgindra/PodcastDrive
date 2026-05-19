@@ -225,3 +225,5 @@ _LocalNotes.md
 .podcastdrive.lock
 /eval
 .DS_Store
+.claude/
+.cline/
