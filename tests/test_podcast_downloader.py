@@ -20,6 +20,7 @@ from podcast_downloader import (
     episode_id_from_guid,
     fetch_feed_xml,
     is_apple_podcasts_url,
+    parse_channel_thumbnail,
     parse_episodes,
     resolve_feed_url,
     search_feed_url_by_name,
@@ -163,6 +164,15 @@ class TestFetchFeedXml:
             with pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
                 fetch_feed_xml("https://feeds.example.com/rss")
 
+    def test_non_network_exception_raises_runtime_error(self):
+        """Covers the generic `except Exception` branch (line 227-228)."""
+        with patch(
+            "podcast_downloader.urllib.request.urlopen",
+            side_effect=ValueError("unexpected error"),
+        ):
+            with pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
+                fetch_feed_xml("https://feeds.example.com/rss")
+
 
 # ---------------------------------------------------------------------------
 # parse_episodes
@@ -206,6 +216,46 @@ _FEED_EMPTY_CHANNEL = b"""<?xml version="1.0"?>
 </rss>"""
 
 
+_FEED_NO_CHANNEL = b"""<?xml version="1.0"?>
+<rss version="2.0"></rss>"""
+
+_FEED_ENCLOSURE_EMPTY_URL = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Bad Enclosure</title>
+      <guid>guid-bad-enc</guid>
+      <enclosure url="" length="0" type="audio/mpeg"/>
+      <pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>"""
+
+_FEED_BAD_PUBDATE = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Bad Date Episode</title>
+      <guid>guid-bad-date</guid>
+      <enclosure url="https://example.com/ep.mp3" length="1000" type="audio/mpeg"/>
+      <pubDate>not a valid date</pubDate>
+    </item>
+  </channel>
+</rss>"""
+
+_FEED_NAIVE_PUBDATE = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Naive Date Episode</title>
+      <guid>guid-naive-date</guid>
+      <enclosure url="https://example.com/ep.mp3" length="1000" type="audio/mpeg"/>
+      <pubDate>Mon, 01 Jan 2024 12:00:00</pubDate>
+    </item>
+  </channel>
+</rss>"""
+
+
 class TestParseEpisodes:
     def test_parses_all_episodes(self):
         episodes = parse_episodes(_SAMPLE_FEED)
@@ -226,6 +276,30 @@ class TestParseEpisodes:
     def test_empty_channel(self):
         episodes = parse_episodes(_FEED_EMPTY_CHANNEL)
         assert len(episodes) == 0
+
+    def test_no_channel_element_returns_empty(self):
+        """Covers line 287: channel is None → return []."""
+        episodes = parse_episodes(_FEED_NO_CHANNEL)
+        assert len(episodes) == 0
+
+    def test_skips_enclosure_with_empty_url(self):
+        """Covers line 306: enclosure url is empty string → skip item."""
+        episodes = parse_episodes(_FEED_ENCLOSURE_EMPTY_URL)
+        assert len(episodes) == 0
+
+    def test_bad_pubdate_falls_back_to_now(self):
+        """Covers lines 322-324: unparseable pubDate → fallback to datetime.now."""
+        before = datetime.now(timezone.utc)
+        episodes = parse_episodes(_FEED_BAD_PUBDATE)
+        after = datetime.now(timezone.utc)
+        assert len(episodes) == 1
+        assert before <= episodes[0].pub_date <= after
+
+    def test_naive_pubdate_gets_utc_timezone(self):
+        """Covers line 322: timezone-naive date gets UTC applied."""
+        episodes = parse_episodes(_FEED_NAIVE_PUBDATE)
+        assert len(episodes) == 1
+        assert episodes[0].pub_date.tzinfo is not None
 
     def test_invalid_xml_raises_runtime_error(self):
         with pytest.raises(RuntimeError, match="Failed to parse RSS XML"):
@@ -304,6 +378,24 @@ class TestDownloadEpisode:
                     "https://example.com/ep.mp3", "ep001", str(tmp_path)
                 )
 
+    def test_partial_file_removed_on_download_failure(self, tmp_path):
+        """Covers line 432: partial file is deleted when download raises."""
+        partial = tmp_path / "ep001.mp3"
+
+        def fake_urlopen(req, **kwargs):
+            # Write a partial file then raise to simulate a mid-download failure
+            partial.write_bytes(b"partial")
+            raise OSError("connection reset")
+
+        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+            with pytest.raises(RuntimeError, match="Failed to download episode"):
+                download_episode(
+                    "https://example.com/ep.mp3", "ep001", str(tmp_path)
+                )
+
+        # Partial file must have been cleaned up
+        assert not partial.exists()
+
 
 # ---------------------------------------------------------------------------
 # search_feed_url_by_name
@@ -366,3 +458,115 @@ class TestSearchFeedUrlByName:
         assert captured_urls
         # spaces and special chars should be URL-encoded
         assert " " not in captured_urls[0]
+
+
+# ---------------------------------------------------------------------------
+# parse_channel_thumbnail
+# ---------------------------------------------------------------------------
+
+_FEED_ITUNES_IMAGE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Test Podcast</title>
+    <itunes:image href="https://example.com/artwork.jpg"/>
+  </channel>
+</rss>"""
+
+_FEED_RSS_IMAGE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Podcast</title>
+    <image>
+      <url>https://example.com/cover.jpg</url>
+      <title>Test Podcast</title>
+      <link>https://example.com</link>
+    </image>
+  </channel>
+</rss>"""
+
+_FEED_BOTH_IMAGES = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <itunes:image href="https://example.com/itunes-art.jpg"/>
+    <image>
+      <url>https://example.com/rss-art.jpg</url>
+    </image>
+  </channel>
+</rss>"""
+
+_FEED_NO_IMAGE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>No Image Podcast</title>
+  </channel>
+</rss>"""
+
+
+class TestParseChannelThumbnail:
+    def test_itunes_image_href(self):
+        url = parse_channel_thumbnail(_FEED_ITUNES_IMAGE)
+        assert url == "https://example.com/artwork.jpg"
+
+    def test_rss_image_url_element(self):
+        url = parse_channel_thumbnail(_FEED_RSS_IMAGE)
+        assert url == "https://example.com/cover.jpg"
+
+    def test_itunes_image_preferred_over_rss_image(self):
+        # When both are present, itunes:image should win
+        url = parse_channel_thumbnail(_FEED_BOTH_IMAGES)
+        assert url == "https://example.com/itunes-art.jpg"
+
+    def test_no_image_returns_empty_string(self):
+        url = parse_channel_thumbnail(_FEED_NO_IMAGE)
+        assert url == ""
+
+    def test_invalid_xml_returns_empty_string(self):
+        url = parse_channel_thumbnail(b"<not valid xml")
+        assert url == ""
+
+    def test_no_channel_returns_empty_string(self):
+        url = parse_channel_thumbnail(b"<rss version='2.0'></rss>")
+        assert url == ""
+
+
+# ---------------------------------------------------------------------------
+# parse_episodes — thumbnail extraction
+# ---------------------------------------------------------------------------
+
+_FEED_WITH_ITEM_IMAGE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Art Podcast</title>
+    <itunes:image href="https://example.com/channel-art.jpg"/>
+    <item>
+      <title>Episode with own art</title>
+      <guid>ep-own-art</guid>
+      <enclosure url="https://example.com/ep1.mp3" length="1000" type="audio/mpeg"/>
+      <pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>
+      <itunes:image href="https://example.com/ep-art.jpg"/>
+    </item>
+    <item>
+      <title>Episode without art</title>
+      <guid>ep-no-art</guid>
+      <enclosure url="https://example.com/ep2.mp3" length="2000" type="audio/mpeg"/>
+      <pubDate>Tue, 02 Jan 2024 00:00:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>"""
+
+
+class TestParseEpisodesThumbnails:
+    def test_episode_with_own_itunes_image(self):
+        episodes = parse_episodes(_FEED_WITH_ITEM_IMAGE)
+        ep = next(e for e in episodes if e.guid == "ep-own-art")
+        assert ep.thumbnail == "https://example.com/ep-art.jpg"
+
+    def test_episode_without_art_falls_back_to_channel_thumbnail(self):
+        episodes = parse_episodes(_FEED_WITH_ITEM_IMAGE)
+        ep = next(e for e in episodes if e.guid == "ep-no-art")
+        assert ep.thumbnail == "https://example.com/channel-art.jpg"
+
+    def test_no_thumbnail_field_is_empty_string_when_no_channel_art(self):
+        episodes = parse_episodes(_SAMPLE_FEED)  # _SAMPLE_FEED has no images
+        for ep in episodes:
+            assert ep.thumbnail == ""

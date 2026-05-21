@@ -400,3 +400,144 @@ class TestPingOvercast:
                 with unittest.mock.patch("urllib.request.urlopen", side_effect=Exception("timeout")):
                     # Should not raise
                     manager._ping_overcast()
+
+
+class TestResetPodcast:
+    """Tests for S3Manager.reset_podcast()."""
+
+    def _make_manager(self, conn):
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager.s3_client = conn
+        return manager
+
+    def _upload_episodes(self, conn, video_ids):
+        for vid in video_ids:
+            conn.put_object(
+                Bucket=BUCKET,
+                Key=f"{PLAYLIST_ID}/episodes/{vid}.mp3",
+                Body=b"audio",
+            )
+
+    def _upload_feed(self, conn):
+        conn.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/feed.xml",
+            Body=b"<rss/>",
+        )
+
+    def _upload_manifest(self, conn):
+        conn.put_object(
+            Bucket=BUCKET,
+            Key=f"{PLAYLIST_ID}/manifest.json",
+            Body=b"{}",
+        )
+
+    def _key_exists(self, conn, key):
+        try:
+            conn.head_object(Bucket=BUCKET, Key=key)
+            return True
+        except Exception:
+            return False
+
+    def test_returns_correct_counts(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            self._upload_episodes(conn, ["vid1", "vid2", "vid3"])
+            self._upload_feed(conn)
+            self._upload_manifest(conn)
+
+            manager = self._make_manager(conn)
+            result = manager.reset_podcast()
+
+            assert result["episodes_deleted"] == 3
+            assert result["feed_deleted"] is True
+            assert result["manifest_deleted"] is True
+
+    def test_episodes_are_deleted(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            self._upload_episodes(conn, ["vid1", "vid2"])
+
+            manager = self._make_manager(conn)
+            manager.reset_podcast()
+
+            assert not self._key_exists(conn, f"{PLAYLIST_ID}/episodes/vid1.mp3")
+            assert not self._key_exists(conn, f"{PLAYLIST_ID}/episodes/vid2.mp3")
+
+    def test_feed_xml_is_deleted(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            self._upload_feed(conn)
+
+            manager = self._make_manager(conn)
+            manager.reset_podcast()
+
+            assert not self._key_exists(conn, f"{PLAYLIST_ID}/feed.xml")
+
+    def test_manifest_json_is_deleted(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            self._upload_manifest(conn)
+
+            manager = self._make_manager(conn)
+            manager.reset_podcast()
+
+            assert not self._key_exists(conn, f"{PLAYLIST_ID}/manifest.json")
+
+    def test_empty_bucket_returns_zero_episodes(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+
+            manager = self._make_manager(conn)
+            result = manager.reset_podcast()
+
+            assert result["episodes_deleted"] == 0
+
+    def test_other_playlist_episodes_are_not_deleted(self):
+        other_playlist = "PLother456"
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            # Upload to the target playlist
+            self._upload_episodes(conn, ["vid1"])
+            # Upload to a different playlist
+            conn.put_object(
+                Bucket=BUCKET,
+                Key=f"{other_playlist}/episodes/other_vid.mp3",
+                Body=b"audio",
+            )
+
+            manager = self._make_manager(conn)
+            manager.reset_podcast()
+
+            # Other playlist episode should still exist
+            assert self._key_exists(conn, f"{other_playlist}/episodes/other_vid.mp3")
+            # This playlist episode should be gone
+            assert not self._key_exists(conn, f"{PLAYLIST_ID}/episodes/vid1.mp3")
+
+    def test_no_feed_returns_false(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            # No feed uploaded
+
+            manager = self._make_manager(conn)
+            result = manager.reset_podcast()
+
+            # delete_object on a non-existent key is a no-op in S3 — still reports deleted
+            assert result["feed_deleted"] is True
+
+    def test_no_manifest_returns_false(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+
+            manager = self._make_manager(conn)
+            result = manager.reset_podcast()
+
+            assert result["manifest_deleted"] is True

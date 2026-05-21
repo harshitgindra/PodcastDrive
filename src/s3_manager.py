@@ -297,6 +297,84 @@ class S3Manager:
         except Exception as exc:
             logger.warning("CloudFront invalidation failed for %s: %s", path, exc)
 
+    def reset_podcast(self) -> dict:
+        """Delete all episodes, feed.xml, and manifest.json for this podcast.
+
+        Removes:
+        - All ``{playlist_id}/episodes/*.mp3`` objects
+        - ``{playlist_id}/feed.xml``
+        - ``{playlist_id}/manifest.json``
+
+        Uses paginated batch deletes (up to 1,000 keys per request) for
+        efficiency.
+
+        Returns:
+            dict with keys ``episodes_deleted``, ``feed_deleted``,
+            ``manifest_deleted``.
+        """
+        episodes_deleted = 0
+        feed_deleted = False
+        manifest_deleted = False
+
+        # --- Delete all episode MP3s ---
+        episodes_prefix = f"{self.playlist_id}/episodes/"
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        pages = retry_aws_call(
+            lambda: list(paginator.paginate(Bucket=self.bucket, Prefix=episodes_prefix)),
+            label="s3.list_objects_v2[reset]",
+        )
+        for page in pages:
+            objects = page.get("Contents", [])
+            if not objects:
+                continue
+            delete_keys = [{"Key": obj["Key"]} for obj in objects]
+            retry_aws_call(
+                lambda keys=delete_keys: self.s3_client.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={"Objects": keys, "Quiet": True},
+                ),
+                label="s3.delete_objects[reset-episodes]",
+            )
+            episodes_deleted += len(delete_keys)
+            logger.info(
+                "[S3Manager] Deleted %d episode(s) from %s",
+                len(delete_keys), episodes_prefix,
+            )
+
+        # --- Delete feed.xml ---
+        feed_key = f"{self.playlist_id}/feed.xml"
+        try:
+            retry_aws_call(
+                lambda: self.s3_client.delete_object(Bucket=self.bucket, Key=feed_key),
+                label="s3.delete_object[reset-feed]",
+            )
+            feed_deleted = True
+            logger.info("[S3Manager] Deleted feed: %s", feed_key)
+        except Exception as exc:
+            logger.warning("[S3Manager] Could not delete feed %s: %s", feed_key, exc)
+
+        # --- Delete manifest.json ---
+        manifest_key = f"{self.playlist_id}/manifest.json"
+        try:
+            retry_aws_call(
+                lambda: self.s3_client.delete_object(Bucket=self.bucket, Key=manifest_key),
+                label="s3.delete_object[reset-manifest]",
+            )
+            manifest_deleted = True
+            logger.info("[S3Manager] Deleted manifest: %s", manifest_key)
+        except Exception as exc:
+            logger.warning("[S3Manager] Could not delete manifest %s: %s", manifest_key, exc)
+
+        logger.info(
+            "[S3Manager] Reset complete for '%s': %d episodes, feed=%s, manifest=%s",
+            self.playlist_id, episodes_deleted, feed_deleted, manifest_deleted,
+        )
+        return {
+            "episodes_deleted": episodes_deleted,
+            "feed_deleted": feed_deleted,
+            "manifest_deleted": manifest_deleted,
+        }
+
     def _ping_overcast(self) -> None:
         """Ping Overcast to trigger an immediate feed crawl.
 

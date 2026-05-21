@@ -43,6 +43,7 @@ class EpisodeMeta:
     pub_date: datetime
     guid: str
     duration: int = 0  # seconds, 0 if unknown
+    thumbnail: str = ""  # Episode artwork URL (from itunes:image)
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +228,45 @@ def fetch_feed_xml(feed_url: str) -> bytes:
         raise RuntimeError(f"Failed to fetch RSS feed {feed_url}: {exc}") from exc
 
 
+def parse_channel_thumbnail(feed_xml: bytes) -> str:
+    """Extract the channel-level artwork URL from an RSS feed.
+
+    Checks (in order of preference):
+    1. ``<itunes:image href="...">`` inside ``<channel>``
+    2. ``<image><url>...</url></image>`` inside ``<channel>``
+
+    Args:
+        feed_xml: Raw bytes of the RSS feed.
+
+    Returns:
+        Artwork URL string, or ``""`` if none found.
+    """
+    try:
+        root = ET.fromstring(feed_xml)
+    except ET.ParseError:
+        return ""
+
+    channel = root.find("channel")
+    if channel is None:
+        return ""
+
+    # 1. <itunes:image href="...">
+    itunes_img = channel.find("itunes:image", _NS)
+    if itunes_img is not None:
+        href = itunes_img.get("href", "")
+        if href:
+            return href
+
+    # 2. Standard RSS <image><url>...</url></image>
+    rss_image = channel.find("image")
+    if rss_image is not None:
+        url_el = rss_image.find("url")
+        if url_el is not None and url_el.text:
+            return url_el.text.strip()
+
+    return ""
+
+
 def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[EpisodeMeta]:
     """Parse RSS *feed_xml* bytes and return a list of :class:`EpisodeMeta`.
 
@@ -250,6 +290,9 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
     if max_age_days is not None:
         from datetime import timedelta
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
+    # Channel-level thumbnail used as fallback for episodes without their own art
+    channel_thumbnail = parse_channel_thumbnail(feed_xml)
 
     episodes: list[EpisodeMeta] = []
 
@@ -289,12 +332,22 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
         duration_el = item.find("itunes:duration", _NS)
         duration = _parse_duration(duration_el.text if duration_el is not None else "")
 
+        # Episode artwork: prefer per-item <itunes:image href="...">,
+        # fall back to channel-level thumbnail so every episode has art.
+        thumbnail = ""
+        item_img = item.find("itunes:image", _NS)
+        if item_img is not None:
+            thumbnail = item_img.get("href", "")
+        if not thumbnail:
+            thumbnail = channel_thumbnail
+
         episodes.append(EpisodeMeta(
             title=title,
             url=audio_url,
             pub_date=pub_date,
             guid=guid,
             duration=duration,
+            thumbnail=thumbnail,
         ))
 
     logger.info("[PodcastDownloader] Parsed %d episodes from feed", len(episodes))
