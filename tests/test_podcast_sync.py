@@ -69,13 +69,14 @@ class TestFormatDuration:
 # ---------------------------------------------------------------------------
 
 class TestBuildPodcastFeedXml:
-    def _make_episode(self, title="Ep 1", guid="guid-1", duration=300):
+    def _make_episode(self, title="Ep 1", guid="guid-1", duration=300, thumbnail=""):
         return EpisodeMeta(
             title=title,
             url="https://example.com/ep.mp3",
             pub_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
             guid=guid,
             duration=duration,
+            thumbnail=thumbnail,
         )
 
     def test_returns_xml_string(self):
@@ -99,6 +100,66 @@ class TestBuildPodcastFeedXml:
         xml = _build_podcast_feed_xml(podcast, [], [], "https://cdn.example.com", "empty-pod")
         assert "<item>" not in xml
         assert "Empty Pod" in xml
+
+    def test_channel_thumbnail_in_itunes_image(self):
+        podcast = PodcastConfig(name="Art Pod", url="https://feeds.example.com/rss", source="Podcast")
+        eps = [self._make_episode()]
+        ids = ["ep-001"]
+        xml = _build_podcast_feed_xml(
+            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            channel_thumbnail="https://example.com/channel-art.jpg",
+        )
+        assert "https://example.com/channel-art.jpg" in xml
+        # Should appear in both RSS <image> block and itunes:image
+        assert xml.count("https://example.com/channel-art.jpg") >= 2
+
+    def test_channel_thumbnail_in_rss_image_block(self):
+        podcast = PodcastConfig(name="Art Pod", url="https://feeds.example.com/rss", source="Podcast")
+        eps = [self._make_episode()]
+        ids = ["ep-001"]
+        xml = _build_podcast_feed_xml(
+            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            channel_thumbnail="https://example.com/channel-art.jpg",
+        )
+        assert "<image>" in xml
+        assert "<url>https://example.com/channel-art.jpg</url>" in xml
+
+    def test_no_image_when_no_thumbnail(self):
+        podcast = PodcastConfig(name="No Art Pod", url="https://feeds.example.com/rss", source="Podcast")
+        xml = _build_podcast_feed_xml(podcast, [], [], "https://cdn.example.com", "no-art-pod")
+        assert "<image>" not in xml
+        assert "itunes:image" not in xml
+
+    def test_episode_thumbnail_in_item(self):
+        podcast = PodcastConfig(name="Art Pod", url="https://feeds.example.com/rss", source="Podcast")
+        eps = [self._make_episode(thumbnail="https://example.com/ep-art.jpg")]
+        ids = ["ep-001"]
+        xml = _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "art-pod")
+        assert "https://example.com/ep-art.jpg" in xml
+
+    def test_episode_falls_back_to_channel_thumbnail(self):
+        """Episode with no thumbnail should use the channel thumbnail in its item."""
+        podcast = PodcastConfig(name="Art Pod", url="https://feeds.example.com/rss", source="Podcast")
+        # Episode has no own thumbnail
+        eps = [self._make_episode(thumbnail="")]
+        ids = ["ep-001"]
+        xml = _build_podcast_feed_xml(
+            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            channel_thumbnail="https://example.com/channel-art.jpg",
+        )
+        # channel thumbnail should appear in the item (episode fallback)
+        assert "https://example.com/channel-art.jpg" in xml
+
+    def test_episode_own_thumbnail_not_overridden_by_channel(self):
+        """Episode with its own thumbnail should use it, not the channel art."""
+        podcast = PodcastConfig(name="Art Pod", url="https://feeds.example.com/rss", source="Podcast")
+        eps = [self._make_episode(thumbnail="https://example.com/ep-specific.jpg")]
+        ids = ["ep-001"]
+        xml = _build_podcast_feed_xml(
+            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            channel_thumbnail="https://example.com/channel-art.jpg",
+        )
+        assert "https://example.com/ep-specific.jpg" in xml
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +257,7 @@ class TestProcessPodcastFeedLive:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -263,7 +324,7 @@ class TestProcessPodcastFeedLive:
             patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", side_effect=fake_download),
-            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td: p),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td: (p, [])),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -392,6 +453,195 @@ class TestProcessPodcastFeedEmptyUrl:
         assert result["failed"] == 0
 
 
+class TestProcessPodcastFeedEnvDefaults:
+    """Covers env-var fallback paths for max_age_days and max_episodes."""
+
+    def test_max_age_days_read_from_env_when_podcast_has_none(self, monkeypatch, tmp_path):
+        """Covers lines 221-222: podcast.max_age_days is None → read MAX_AGE_DAYS env."""
+        monkeypatch.setenv("MAX_AGE_DAYS", "30")
+        podcast = _make_podcast(max_age_days=None, max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["new_episodes"] == 1
+
+    def test_max_episodes_read_from_env_when_podcast_has_none(self, monkeypatch, tmp_path):
+        """Covers lines 226-227: podcast.max_downloads is None → read PODCAST_MAX_EPISODES env."""
+        monkeypatch.setenv("PODCAST_MAX_EPISODES", "2")
+        podcast = _make_podcast(max_downloads=None)
+        episodes = [_make_episode_meta(f"guid-{i}", f"Ep {i}") for i in range(5)]
+        feed_xml = b"<rss/>"
+
+        def fake_download(url, ep_id, tmp):
+            path = os.path.join(tmp, f"{ep_id}.mp3")
+            open(path, "wb").write(b"ID3")
+            return path
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=episodes),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", side_effect=fake_download),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td: (p, [])),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["new_episodes"] == 2
+
+    def test_max_age_days_none_uses_all_feed_episodes(self):
+        """Covers line 288: max_age_days=None → episodes = all_feed_episodes (no filter)."""
+        podcast = _make_podcast(max_age_days=None, max_downloads=10)
+        episodes = [_make_episode_meta(f"guid-{i}", f"Ep {i}") for i in range(3)]
+        feed_xml = b"<rss/>"
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=episodes),
+            patch("podcast_sync.S3Manager") as MockS3,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            result = process_podcast_feed(podcast, dry_run=True)
+
+        assert result["new_episodes"] == 3
+
+
+class TestProcessPodcastFeedEdgeCases:
+    """Covers edge-case execution paths inside process_podcast_feed."""
+
+    def test_ad_removal_produces_different_file_original_deleted(self, tmp_path):
+        """Covers line 354: cleaned_path != original_path → original removed."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+
+        original = tmp_path / "guid-1.mp3"
+        cleaned = tmp_path / "guid-1_clean.mp3"
+        original.write_bytes(b"ID3_original")
+        cleaned.write_bytes(b"ID3_clean")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(original)),
+            patch("podcast_sync.remove_ads", return_value=(str(cleaned), [])),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        # Original should have been deleted when ad removal produced a separate file
+        assert not original.exists()
+        assert result["new_episodes"] == 1
+
+    def test_getsize_oserror_falls_back_to_zero(self, tmp_path):
+        """Covers lines 363-364: OSError on getsize after upload → file_size=0."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
+            patch("podcast_sync.os.path.getsize", side_effect=OSError("no file")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["new_episodes"] == 1
+        # Manifest should record size=0 when getsize fails
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert saved["guid-1"]["size"] == 0
+
+    def test_partial_file_oserror_during_cleanup_is_swallowed(self, tmp_path):
+        """Covers lines 386-389: OSError when removing partial file is silently ignored."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+
+        # Make the partial file exist so the cleanup branch is reached
+        partial = tmp_path / "guid-1.mp3"
+        partial.write_bytes(b"partial")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(partial)),
+            patch("podcast_sync.remove_ads", side_effect=RuntimeError("ad removal failed")),
+            patch("podcast_sync.os.remove", side_effect=OSError("permission denied")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            # Should not raise despite OSError in cleanup
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["failed"] == 1
+
+    def test_backfill_get_object_size_raises_uses_zero(self, tmp_path):
+        """Covers lines 452-453: get_object_size raises during backfill → ep_sizes[eid]=0."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = {}
+            # Make get_object_size raise to exercise the except branch
+            mock_s3.get_object_size.side_effect = RuntimeError("S3 error")
+
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        # feed should still be generated with size=0 for the episode
+        mock_s3.upload_feed.assert_called_once()
+        assert result["skipped"] == 1
+
+
 class TestProcessPodcastFeedManifest:
     """Verify manifest is loaded, updated, and saved during processing."""
 
@@ -410,7 +660,7 @@ class TestProcessPodcastFeedManifest:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -458,7 +708,7 @@ class TestProcessPodcastFeedManifest:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()

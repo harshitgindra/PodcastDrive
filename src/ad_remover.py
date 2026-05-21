@@ -595,7 +595,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> str:
+def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> tuple[str, list[AdSegment]]:
     """Run the full ad-removal pipeline on *mp3_path*.
 
     Steps:
@@ -612,12 +612,14 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> str:
         tmp_dir:  Temporary directory to write the cleaned file into.
 
     Returns:
-        Path to the cleaned audio file, or *mp3_path* if ad removal was skipped
-        or failed.
+        A tuple of ``(cleaned_path, ad_segments)`` where *cleaned_path* is the
+        path to the cleaned audio file (or the original *mp3_path* if ad removal
+        was skipped or failed), and *ad_segments* is the list of detected ad
+        intervals (empty list when none were found or removal was skipped).
     """
     if os.environ.get("REMOVE_ADS", "true").lower() in ("false", "0", "no"):
         logger.info("[AdRemover] REMOVE_ADS=false — skipping ad removal for %s", video_id)
-        return mp3_path
+        return mp3_path, []
 
     dry_run = os.environ.get("REMOVE_ADS_DRY_RUN", "false").lower() in ("true", "1", "yes")
     if dry_run:
@@ -629,17 +631,17 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> str:
         segments = transcribe_audio(mp3_path, video_id)
     except Exception as exc:
         logger.error("[AdRemover] Transcription failed for %s: %s — using original file", video_id, exc)
-        return mp3_path
+        return mp3_path, []
 
     try:
         ad_segments = detect_ads(segments)
     except Exception as exc:
         logger.error("[AdRemover] Ad detection failed for %s: %s — using original file", video_id, exc)
-        return mp3_path
+        return mp3_path, []
 
     if not ad_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
-        return mp3_path
+        return mp3_path, []
 
     if dry_run:
         total_ad_secs = sum(s["end"] - s["start"] for s in ad_segments)
@@ -647,14 +649,14 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> str:
             "[AdRemover] DRY-RUN: would remove %d ad segment(s) totalling %.1fs from %s — skipping splice",
             len(ad_segments), total_ad_secs, video_id,
         )
-        return mp3_path
+        return mp3_path, ad_segments
 
     cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
     try:
         splice_audio(mp3_path, ad_segments, cleaned_path)
     except Exception as exc:
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
-        return mp3_path
+        return mp3_path, ad_segments
 
     logger.info("[AdRemover] Ad removal complete for %s → %s", video_id, cleaned_path)
-    return cleaned_path
+    return cleaned_path, ad_segments

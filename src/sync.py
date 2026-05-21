@@ -202,7 +202,21 @@ def process_playlist(
 
                 # Remove ads (falls back to original file on failure)
                 logger.info("[Step 4] Running ad removal for %s", video.video_id)
-                mp3_path = remove_ads(mp3_path, video.video_id, tmp_dir)
+                original_mp3 = mp3_path
+                mp3_path, ad_segments = remove_ads(mp3_path, video.video_id, tmp_dir)
+
+                # Evaluate ad removal quality on the cleaned file (opt-in via env var)
+                if mp3_path != original_mp3:
+                    try:
+                        from ad_evaluator import evaluate_ad_removal
+                        evaluate_ad_removal(
+                            cleaned_mp3=mp3_path,
+                            episode_id=video.video_id,
+                            slug=playlist_id,
+                            original_ad_segments=ad_segments,
+                        )
+                    except Exception as eval_exc:
+                        logger.warning("[Step 4] Ad evaluation failed for %s: %s", video.video_id, eval_exc)
 
                 # Upload to S3 (lifecycle expiration is set automatically)
                 logger.info("[Step 4] Uploading %s to S3", video.video_id)

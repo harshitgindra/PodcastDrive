@@ -30,6 +30,7 @@ from podcast_downloader import (
     episode_id_from_guid,
     fetch_feed_xml,
     is_apple_podcasts_url,
+    parse_channel_thumbnail,
     parse_episodes,
     resolve_feed_url,
     search_feed_url_by_name,
@@ -87,17 +88,21 @@ def _build_podcast_feed_xml(
     cloudfront_base: str,
     slug: str,
     ep_sizes: dict[str, int] | None = None,
+    channel_thumbnail: str = "",
 ) -> str:
     """Generate a minimal RSS 2.0 feed for *podcast* from cleaned episode list.
 
     Args:
-        podcast:         Podcast configuration (name, url).
-        episodes:        EpisodeMeta objects for episodes in the feed.
-        episode_ids:     Parallel list of stable S3 episode IDs.
-        cloudfront_base: CloudFront distribution base URL (no trailing slash).
-        slug:            S3 folder slug for this podcast.
-        ep_sizes:        Optional dict mapping episode_id → file size in bytes
-                         for accurate ``<enclosure length>`` values.
+        podcast:           Podcast configuration (name, url).
+        episodes:          EpisodeMeta objects for episodes in the feed.
+        episode_ids:       Parallel list of stable S3 episode IDs.
+        cloudfront_base:   CloudFront distribution base URL (no trailing slash).
+        slug:              S3 folder slug for this podcast.
+        ep_sizes:          Optional dict mapping episode_id → file size in bytes
+                           for accurate ``<enclosure length>`` values.
+        channel_thumbnail: Artwork URL for the channel-level ``<itunes:image>``
+                           and RSS ``<image>`` elements.  Falls back to the first
+                           episode's thumbnail when empty.
 
     Returns:
         Pretty-printed RSS XML string.
@@ -106,6 +111,9 @@ def _build_podcast_feed_xml(
 
     if ep_sizes is None:
         ep_sizes = {}
+
+    # Resolve best artwork: explicit channel thumbnail → first episode thumbnail
+    artwork_url = channel_thumbnail or (episodes[0].thumbnail if episodes else "")
 
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
@@ -118,8 +126,21 @@ def _build_podcast_feed_xml(
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(
         datetime.now(timezone.utc)
     )
+
+    # Standard RSS 2.0 <image> block (required by many non-iTunes podcast apps)
+    if artwork_url:
+        rss_image = ET.SubElement(channel, "image")
+        ET.SubElement(rss_image, "url").text = artwork_url
+        ET.SubElement(rss_image, "title").text = podcast.name
+        ET.SubElement(rss_image, "link").text = podcast.url
+
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}author").text = podcast.name
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}explicit").text = "no"
+
+    # iTunes channel artwork
+    if artwork_url:
+        img_el = ET.SubElement(channel, f"{{{_ITUNES_NS}}}image")
+        img_el.set("href", artwork_url)
 
     for ep, ep_id in zip(episodes, episode_ids):
         item = ET.SubElement(channel, "item")
@@ -140,6 +161,12 @@ def _build_podcast_feed_xml(
             ep.duration
         )
         ET.SubElement(item, f"{{{_ITUNES_NS}}}explicit").text = "no"
+
+        # Per-episode artwork (falls back to channel artwork if episode has none)
+        ep_thumbnail = ep.thumbnail or artwork_url
+        if ep_thumbnail:
+            ep_img = ET.SubElement(item, f"{{{_ITUNES_NS}}}image")
+            ep_img.set("href", ep_thumbnail)
 
     rough = ET.tostring(rss, encoding="unicode", xml_declaration=False)
     dom = parseString(rough)
@@ -320,7 +347,20 @@ def process_podcast_feed(
                 original_path = download_episode(ep.url, ep_id, tmp_dir)
 
                 logger.info("[PodcastSync] Running ad removal for %s", ep_id)
-                cleaned_path = remove_ads(original_path, ep_id, tmp_dir)
+                cleaned_path, ad_segments = remove_ads(original_path, ep_id, tmp_dir)
+
+                # Evaluate ad removal quality on the cleaned file (opt-in via env var)
+                if cleaned_path != original_path:
+                    try:
+                        from ad_evaluator import evaluate_ad_removal
+                        evaluate_ad_removal(
+                            cleaned_mp3=cleaned_path,
+                            episode_id=ep_id,
+                            slug=slug,
+                            original_ad_segments=ad_segments,
+                        )
+                    except Exception as eval_exc:
+                        logger.warning("[PodcastSync] Ad evaluation failed for %s: %s", ep_id, eval_exc)
 
                 # Clean up the original if ad removal produced a separate file
                 if cleaned_path != original_path and os.path.exists(original_path):
@@ -445,8 +485,10 @@ def process_podcast_feed(
             logger.info(
                 "[PodcastSync] Generating feed.xml with %d episodes", len(feed_episodes)
             )
+            channel_thumbnail = parse_channel_thumbnail(feed_xml)
             xml_content = _build_podcast_feed_xml(
-                podcast, feed_episodes, feed_ep_ids, cloudfront_base, slug, ep_sizes
+                podcast, feed_episodes, feed_ep_ids, cloudfront_base, slug, ep_sizes,
+                channel_thumbnail=channel_thumbnail,
             )
             s3.upload_feed(xml_content)
             logger.info("[PodcastSync] feed.xml uploaded")

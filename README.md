@@ -47,6 +47,15 @@ The ad-removal pipeline runs automatically for both YouTube and RSS episodes:
 
 Set `REMOVE_ADS=false` to disable ad removal entirely.
 
+#### Ad removal evaluation (opt-in)
+
+Set `EVALUATE_AD_REMOVAL=true` to enable post-clean quality checking. After each episode is cleaned, the evaluator re-runs Transcribe + Bedrock on the cleaned file and classifies any residual ads as:
+
+- **`partial`** — residual within 10 s of an original segment boundary (trim miss)
+- **`missed`** — residual far from all original segments (full detection gap)
+
+A JSON report with improvement proposals is written to `reports/{slug}/{episode_id}_eval.json`. Evaluation failures never block the sync.
+
 ---
 
 ## Project structure
@@ -57,6 +66,7 @@ Set `REMOVE_ADS=false` to disable ad removal entirely.
 │   ├── podcast_sync.py         # RSS podcast pipeline orchestrator
 │   ├── podcast_downloader.py   # RSS feed fetcher, iTunes URL resolver, MP3 downloader
 │   ├── ad_remover.py           # Ad removal (Transcribe → Bedrock → FFmpeg)
+│   ├── ad_evaluator.py         # Ad removal quality evaluator (opt-in, EVALUATE_AD_REMOVAL=true)
 │   ├── extractor.py            # YouTube playlist/video metadata extraction
 │   ├── downloader.py           # YouTube audio download + FFmpeg MP3 conversion
 │   ├── config_provider.py      # Podcast subscription config (YAML or Notion)
@@ -66,7 +76,8 @@ Set `REMOVE_ADS=false` to disable ad removal entirely.
 │   ├── models.py               # Data models (PlaylistMeta, VideoEntry, EpisodeMeta)
 │   ├── logger_config.py        # Logging setup (rotating file + console)
 │   └── utils.py                # Utility functions (URL parsing, date parsing)
-├── tests/                      # Test suite (366 tests)
+├── tests/                      # Test suite (531 tests)
+├── reports/                    # Ad-removal evaluation JSON reports (EVALUATE_AD_REMOVAL=true)
 ├── requirements.txt            # Python dependencies
 ├── run.sh                      # Local run script (loads config.env, manages venv)
 ├── config.env.example          # Configuration template (copy to config.env)
@@ -153,6 +164,8 @@ cp config.env.example config.env
 | `BEDROCK_MODEL_ID` | | `us.anthropic.claude-sonnet-4-20250514-v1:0` | Bedrock model ID for ad-segment detection |
 | `TRANSCRIBE_POLL_INTERVAL` | | `10` | Seconds between Transcribe job status polls |
 | `TRANSCRIBE_MAX_WAIT` | | `3600` | Max seconds to wait for a Transcribe job before giving up |
+| `EVALUATE_AD_REMOVAL` | | `false` | Set to `true` to re-transcribe cleaned episodes and check for residual ads. Writes a JSON report to `reports/{slug}/{episode_id}_eval.json`. Disabled by default to avoid extra AWS costs. |
+| `EVAL_REPORTS_DIR` | | `reports` | Local directory where ad-removal evaluation JSON reports are written |
 | **Config Provider** | | | |
 | `CONFIG_PROVIDER` | | `yaml` | Config source: `yaml` or `notion` |
 | `PODCASTS_YAML` | | `podcasts.yaml` | Path to YAML subscriptions file (when `CONFIG_PROVIDER=yaml`) |

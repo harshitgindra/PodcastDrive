@@ -488,32 +488,32 @@ class TestRemoveAds:
     def test_returns_original_when_disabled(self, monkeypatch):
         monkeypatch.setenv("REMOVE_ADS", "false")
         import ad_remover
-        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp") == "/ep.mp3"
+        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_when_disabled_zero(self, monkeypatch):
         monkeypatch.setenv("REMOVE_ADS", "0")
         import ad_remover
-        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp") == "/ep.mp3"
+        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_on_transcription_failure(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
         monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(side_effect=RuntimeError("boom")))
-        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp") == "/ep.mp3"
+        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_on_ad_detection_failure(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
         monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "x"}]))
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(side_effect=ConnectionError("no bedrock")))
-        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp") == "/ep.mp3"
+        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_when_no_ads(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
         monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "clean"}]))
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
-        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp") == "/ep.mp3"
+        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_on_splice_failure(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
@@ -521,7 +521,7 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "ad"}]))
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 0.2, "end": 0.8}]))
         monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(side_effect=RuntimeError("ffmpeg gone")))
-        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp") == "/ep.mp3"
+        assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_cleaned_path_on_success(self, monkeypatch, tmp_path):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
@@ -532,7 +532,7 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 0.2, "end": 0.8}]))
         monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(return_value=None))
 
-        result = ad_remover.remove_ads("/ep.mp3", "vid123", tmp_dir)
+        result, _segs = ad_remover.remove_ads("/ep.mp3", "vid123", tmp_dir)
         assert result == os.path.join(tmp_dir, "vid123_clean.mp3")
 
     def test_calls_splice_with_correct_args(self, monkeypatch, tmp_path):
@@ -574,7 +574,7 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
         monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
-        result = ad_remover.remove_ads("/ep.mp3", "vid_dry", str(tmp_path))
+        result, _segs = ad_remover.remove_ads("/ep.mp3", "vid_dry", str(tmp_path))
 
         assert result == "/ep.mp3"
         mock_splice.assert_not_called()
@@ -590,7 +590,7 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
         monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
-        result = ad_remover.remove_ads("/ep.mp3", "vid_dry_clean", str(tmp_path))
+        result, _segs = ad_remover.remove_ads("/ep.mp3", "vid_dry_clean", str(tmp_path))
 
         assert result == "/ep.mp3"
         mock_splice.assert_not_called()
@@ -610,7 +610,7 @@ class TestRemoveAds:
             monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
             monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
-            result = ad_remover.remove_ads("/ep.mp3", f"vid_{val}", str(tmp_path))
+            result, _segs = ad_remover.remove_ads("/ep.mp3", f"vid_{val}", str(tmp_path))
             assert result == "/ep.mp3", f"Expected original path for DRY_RUN={val!r}"
             mock_splice.assert_not_called()
 
