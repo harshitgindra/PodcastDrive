@@ -5,6 +5,8 @@
 #   ./run.sh --dry-run                          # preview all from config (no writes)
 #   ./run.sh <playlist_id_or_url> [...]         # process specific playlists
 #   ./run.sh --dry-run <playlist_id_or_url> [...] # preview specific playlists
+#   ./run.sh --reset                            # delete all S3 data for enabled podcasts (prompts)
+#   ./run.sh --reset --force                    # same, skip confirmation prompt
 
 set -euo pipefail
 
@@ -43,12 +45,18 @@ if [ -f "$LOCK_FILE" ]; then
 fi
 echo $$ > "$LOCK_FILE"
 
-# --- Parse --dry-run flag ---
+# --- Parse flags: --dry-run, --reset, --force ---
 DRY_RUN=false
+RESET=false
+FORCE=false
 ARGS=()
 for arg in "$@"; do
     if [[ "$arg" == "--dry-run" ]]; then
         DRY_RUN=true
+    elif [[ "$arg" == "--reset" ]]; then
+        RESET=true
+    elif [[ "$arg" == "--force" ]]; then
+        FORCE=true
     else
         ARGS+=("$arg")
     fi
@@ -110,6 +118,23 @@ export SLEEP_BETWEEN_DOWNLOADS="${SLEEP_BETWEEN_DOWNLOADS:-5}"
 export CONFIG_PROVIDER="${CONFIG_PROVIDER:-yaml}"
 export PODCASTS_YAML="${PODCASTS_YAML:-${SCRIPT_DIR}/podcasts.yaml}"
 export PYTHONPATH="${SCRIPT_DIR}/src"
+
+# --- Reset mode: wipe all S3 data for enabled podcasts then exit ---
+if [ "$RESET" = true ]; then
+    FORCE_FLAG=""
+    if [ "$FORCE" = true ]; then
+        FORCE_FLAG="--force"
+    fi
+    PODCAST_DRY_RUN="false" "${VENV_PYTHON}" -c "
+import sys, os
+from logger_config import setup_logging
+setup_logging()
+from reset import run_reset
+force = '--force' in sys.argv[1:]
+sys.exit(run_reset(force=force))
+" ${FORCE_FLAG}
+    exit $?
+fi
 
 # --- Preflight checks ---
 PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
