@@ -402,8 +402,8 @@ where the host personally delivers the ad copy in their own voice.
    clearly promotional with a call-to-action. If a segment is ambiguous, leave it out.
 2. Extend each segment's start time back by 2 seconds and end time forward
    by 2 seconds to avoid clipped transitions (but never below 0).
-3. If two ad segments are within 30 seconds of each other, merge them into
-   one continuous segment.
+3. Return each ad break as a separate segment. Do NOT merge adjacent ad breaks —
+   the code will handle merging. Keeping them separate lets each be verified independently.
 4. Host-read ads blend naturally into the show's tone — look for the signals
    above even when the voice and style match the rest of the episode.
 5. A single ad segment should rarely exceed 3 minutes (180 seconds). If you find

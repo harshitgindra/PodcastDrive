@@ -257,13 +257,15 @@ class TestMergeGapReduced:
         assert len(result) == 1
         assert result[0]["end"] == 25.0
 
-    def test_prompt_uses_30s_merge_rule(self):
-        """The detection prompt now says 30 seconds, not 10 seconds."""
+    def test_prompt_delegates_merging_to_code(self):
+        """Prompt tells model to return separate segments; code handles merging."""
         import importlib, ad_remover
         importlib.reload(ad_remover)
         prompt = ad_remover._AD_DETECTION_PROMPT
-        assert "30 seconds" in prompt, "Prompt should say '30 seconds' for merge rule"
-        assert "10 seconds" not in prompt, "Old '10 seconds' merge rule should be removed"
+        # Model should NOT merge — code does it with a calibrated 2s threshold
+        assert "Do NOT merge" in prompt, "Prompt should instruct model not to merge segments"
+        assert "within 30 seconds" not in prompt, "Conflicting 30s merge rule must be absent"
+        assert "the code will handle merging" in prompt
 
     def test_prompt_no_longer_says_when_in_doubt_include(self):
         """Aggressive 'When in doubt, INCLUDE' rule removed from prompt."""
