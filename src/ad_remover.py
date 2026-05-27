@@ -183,10 +183,9 @@ def _snap_to_silence_boundary(
                 best_dist = dist
                 best_time = candidate
             elif dist == best_dist:
-                # Tie-break: prefer earlier for starts, later for ends
-                if prefer_earlier and candidate < best_time:
-                    best_time = candidate
-                elif not prefer_earlier and candidate > best_time:
+                if (prefer_earlier and candidate < best_time) or (
+                    not prefer_earlier and candidate > best_time
+                ):
                     best_time = candidate
     return best_time
 
