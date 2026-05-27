@@ -15,8 +15,13 @@ Environment variables (all optional — sensible defaults provided):
                               (re-uses the existing podcast bucket).
     AWS_DEFAULT_REGION      – AWS region for Transcribe and Bedrock clients.
     TRANSCRIBE_LANGUAGE_CODE – BCP-47 language code passed to Transcribe (default: "en-US").
-    BEDROCK_MODEL_ID        – Bedrock model ID for ad detection
-                              (default: "us.anthropic.claude-sonnet-4-20250514-v1:0").
+    BEDROCK_MODEL_ID        – Bedrock model ID for ad-segment verification (second-pass
+                              confirmation of long segments).  Defaults to Claude Sonnet for
+                              accuracy (default: "us.anthropic.claude-sonnet-4-20250514-v1:0").
+    BEDROCK_DETECT_MODEL_ID – Bedrock model ID for first-pass ad detection across all chunks.
+                              Defaults to BEDROCK_MODEL_ID when not set.  Set to a cheaper
+                              model (e.g. Claude Haiku) to reduce per-episode detection cost
+                              while keeping Sonnet for the more critical verification step.
     TRANSCRIBE_POLL_INTERVAL – Seconds between Transcribe job status polls (default: 10).
     TRANSCRIBE_MAX_WAIT     – Maximum seconds to wait for a Transcribe job (default: 3600).
     REMOVE_ADS_DRY_RUN      – Set to "true" to detect ads and log them without actually
@@ -559,7 +564,10 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
         return []
 
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+    # BEDROCK_DETECT_MODEL_ID overrides BEDROCK_MODEL_ID for detection (first-pass).
+    # Use a cheaper model here (e.g. Haiku) and keep Sonnet for verification.
+    _default_model = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+    model_id = os.environ.get("BEDROCK_DETECT_MODEL_ID", _default_model)
     max_chars = int(os.environ.get("AD_DETECT_MAX_CHARS", "60000"))
     overlap_secs = float(os.environ.get("AD_DETECT_OVERLAP_SECS", "60"))
 

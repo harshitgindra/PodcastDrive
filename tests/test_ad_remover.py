@@ -1085,3 +1085,50 @@ class TestSpliceAudioEdgeCases:
 
         with pytest.raises(RuntimeError, match="ffprobe error"):
             ad_remover.splice_audio("/in.mp3", [{"start": 10.0, "end": 50.0}], "/out.mp3")
+
+
+class TestBedrockModelTiering:
+    """BEDROCK_DETECT_MODEL_ID allows cheaper model for detection vs verification."""
+
+    def test_detect_uses_detect_model_id_when_set(self, monkeypatch):
+        """BEDROCK_DETECT_MODEL_ID is used by detect_ads when set."""
+        import ad_remover
+        monkeypatch.setenv("BEDROCK_DETECT_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251015-v1:0")
+        monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+
+        called_model_ids = []
+
+        def fake_converse(**kwargs):
+            called_model_ids.append(kwargs["modelId"])
+            return {"output": {"message": {"content": [{"text": "[]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda *a, **kw: mock_client))
+
+        segments = [{"start": 0.0, "end": 30.0, "text": "hello world"}]
+        ad_remover.detect_ads(segments)
+
+        assert called_model_ids, "Bedrock should have been called"
+        assert called_model_ids[0] == "us.anthropic.claude-haiku-4-5-20251015-v1:0"
+
+    def test_detect_falls_back_to_bedrock_model_id_when_detect_not_set(self, monkeypatch):
+        """detect_ads uses BEDROCK_MODEL_ID when BEDROCK_DETECT_MODEL_ID is absent."""
+        import ad_remover
+        monkeypatch.delenv("BEDROCK_DETECT_MODEL_ID", raising=False)
+        monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+
+        called_model_ids = []
+
+        def fake_converse(**kwargs):
+            called_model_ids.append(kwargs["modelId"])
+            return {"output": {"message": {"content": [{"text": "[]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda *a, **kw: mock_client))
+
+        segments = [{"start": 0.0, "end": 30.0, "text": "hello world"}]
+        ad_remover.detect_ads(segments)
+
+        assert called_model_ids[0] == "us.anthropic.claude-sonnet-4-20250514-v1:0"
