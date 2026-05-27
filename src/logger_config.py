@@ -52,11 +52,11 @@ class _JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "message": record.message,
+            **{
+                k: v for k, v in record.__dict__.items()
+                if k not in self._RESERVED and not k.startswith("_")
+            },
         }
-        # Merge any extra fields that aren't standard LogRecord attributes
-        for key, value in record.__dict__.items():
-            if key not in self._RESERVED and not key.startswith("_"):
-                doc[key] = value
 
         if record.exc_info:
             doc["exc_info"] = self.formatException(record.exc_info)
