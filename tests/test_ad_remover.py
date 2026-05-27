@@ -1401,3 +1401,86 @@ class TestLoudnorm:
         self._splice(monkeypatch, "false", cmd)
         fc = " ".join(cmd)
         assert "loudnorm" not in fc, "loudnorm filter should be absent when disabled"
+
+
+class TestAdSegmentsCache:
+    """_load_ad_segments_cache, _save_ad_segments_cache, and remove_ads cache integration."""
+
+    def test_load_returns_none_on_miss(self):
+        """Cache MISS returns None."""
+        import ad_remover
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": ""}}, "GetObject"
+        )
+        result = ad_remover._load_ad_segments_cache(mock_s3, "bucket", "ep1")
+        assert result is None
+
+    def test_load_returns_cached_segments_on_hit(self):
+        """Cache HIT returns the stored ad_segments list."""
+        import ad_remover, json
+
+        expected = [{"start": 10.0, "end": 50.0}]
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(read=lambda: json.dumps(expected).encode())
+        }
+        result = ad_remover._load_ad_segments_cache(mock_s3, "bucket", "ep1")
+        assert result == expected
+
+    def test_save_writes_correct_key(self):
+        """_save_ad_segments_cache stores data at the expected S3 key."""
+        import ad_remover, json
+
+        mock_s3 = MagicMock()
+        segs = [{"start": 5.0, "end": 30.0}]
+        ad_remover._save_ad_segments_cache(mock_s3, "bucket", "ep1", segs)
+
+        mock_s3.put_object.assert_called_once()
+        call_kwargs = mock_s3.put_object.call_args[1]
+        # Key should end with _ads.json
+        assert call_kwargs["Key"].endswith("_ads.json")
+        assert json.loads(call_kwargs["Body"].decode()) == segs
+
+    def test_remove_ads_uses_cached_segments_skipping_transcribe_and_detect(self, monkeypatch, tmp_path):
+        """remove_ads returns from ad-segments cache without calling Transcribe or Bedrock."""
+        import ad_remover, json
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("AD_SNAP_TO_SILENCE", "false")
+
+        src = tmp_path / "episode.mp3"
+        src.write_bytes(b"X" * 5000)
+
+        cached_ads = [{"start": 10.0, "end": 50.0}]
+
+        # S3: get_object returns ad-segments cache; put_object (from transcript) is irrelevant
+        def fake_get_object(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=lambda: json.dumps(cached_ads).encode())}
+            raise Exception("not called for transcript in this path")
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = fake_get_object
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda *a, **kw: mock_s3))
+
+        # splice_audio is called with the cached segments
+        spliced_calls = []
+        def fake_splice(mp3_path, segs, out_path):
+            spliced_calls.append(segs)
+            # create the output file so the path exists
+            import pathlib
+            pathlib.Path(out_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a: (_ for _ in ()).throw(AssertionError("should not transcribe")))
+
+        result_path, result_segs = ad_remover.remove_ads(str(src), "ep_cached", str(tmp_path))
+
+        assert spliced_calls, "splice_audio should have been called"
+        assert spliced_calls[0] == cached_ads
+        assert result_segs == cached_ads

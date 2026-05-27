@@ -302,6 +302,46 @@ def _save_transcript_cache(s3_client, bucket: str, video_id: str, segments: list
         logger.warning("[AdRemover] Could not save transcript cache for %s: %s", video_id, exc)
 
 
+def _load_ad_segments_cache(s3_client, bucket: str, video_id: str) -> list[AdSegment] | None:
+    """Try to load cached detected ad-segments from S3.
+
+    Stored alongside the transcript cache at ``transcribe-cache/{video_id}_ads.json``.
+    Returns ``None`` on miss or error so the caller falls back to a real Bedrock call.
+    """
+    from botocore.exceptions import ClientError
+
+    key = _transcript_cache_key(video_id).replace(".json", "_ads.json")
+    try:
+        resp = s3_client.get_object(Bucket=bucket, Key=key)
+        data = json.loads(resp["Body"].read().decode("utf-8"))
+        if isinstance(data, list):
+            logger.info(
+                "[AdRemover] Ad-segments cache HIT for %s (%d segments) — skipping Bedrock detection",
+                video_id, len(data),
+            )
+            return data
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code not in ("NoSuchKey", "404"):
+            logger.debug("[AdRemover] Ad-segments cache error for %s (%s): %s", video_id, code, exc)
+    except Exception as exc:
+        logger.debug("[AdRemover] Ad-segments cache load failed for %s: %s", video_id, exc)
+    return None
+
+
+def _save_ad_segments_cache(s3_client, bucket: str, video_id: str, ad_segments: list[AdSegment]) -> None:
+    """Persist detected ad-segments to S3 for future reuse."""
+    key = _transcript_cache_key(video_id).replace(".json", "_ads.json")
+    try:
+        body = json.dumps(ad_segments).encode("utf-8")
+        s3_client.put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+        )
+        logger.debug("[AdRemover] Ad-segments cache saved for %s", video_id)
+    except Exception as exc:
+        logger.warning("[AdRemover] Could not save ad-segments cache for %s: %s", video_id, exc)
+
+
 def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     """Upload *mp3_path* to S3 and transcribe it with AWS Transcribe.
 
@@ -1036,6 +1076,44 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> tuple[str, list[Ad
 
     logger.info("[AdRemover] Starting ad removal for %s", video_id)
 
+    # Check ad-segments cache first (requires transcript cache to be enabled too).
+    # If both transcript and ad-segments are cached, skip Transcribe + Bedrock entirely.
+    cache_enabled = os.environ.get("TRANSCRIBE_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
+    use_cache = cache_enabled and not video_id.startswith("eval-")
+    ad_segments: list[AdSegment] = []
+    segments: list[dict] = []
+
+    if use_cache:
+        bucket = os.environ.get("S3_BUCKET", "")
+        if bucket:
+            region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            _s3 = boto3.client("s3", region_name=region)
+            cached_ads = _load_ad_segments_cache(_s3, bucket, video_id)
+            if cached_ads is not None:
+                ad_segments = cached_ads
+                # Skip transcription + detection — jump straight to snap + splice
+                logger.info("[AdRemover] Using cached ad-segments for %s — skipping Transcribe+Bedrock", video_id)
+                if not ad_segments:
+                    logger.info("[AdRemover] Cached ad-segments empty (no ads) for %s — using original file", video_id)
+                    return mp3_path, []
+                if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
+                    ad_segments = snap_ad_boundaries(ad_segments, mp3_path)
+                if dry_run:
+                    total_ad_secs = sum(s["end"] - s["start"] for s in ad_segments)
+                    logger.info(
+                        "[AdRemover] DRY-RUN: would remove %d cached ad segment(s) totalling %.1fs from %s",
+                        len(ad_segments), total_ad_secs, video_id,
+                    )
+                    return mp3_path, ad_segments
+                cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
+                try:
+                    splice_audio(mp3_path, ad_segments, cleaned_path)
+                except Exception as exc:
+                    logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
+                    return mp3_path, ad_segments
+                logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
+                return cleaned_path, ad_segments
+
     try:
         segments = transcribe_audio(mp3_path, video_id)
     except Exception as exc:
@@ -1047,6 +1125,14 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> tuple[str, list[Ad
     except Exception as exc:
         logger.error("[AdRemover] Ad detection failed for %s: %s — using original file", video_id, exc)
         return mp3_path, []
+
+    # Save detection result to cache so retries (after splice failure) skip Bedrock
+    if use_cache:
+        bucket = os.environ.get("S3_BUCKET", "")
+        if bucket:
+            region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            _s3 = boto3.client("s3", region_name=region)
+            _save_ad_segments_cache(_s3, bucket, video_id, ad_segments)
 
     if not ad_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
