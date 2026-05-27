@@ -61,6 +61,7 @@ Environment variables (all optional — sensible defaults provided):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -575,19 +576,12 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
                         w_idx + 1, len(windows), len(w_segs), w_start,
                     )
                 finally:
-                    # Clean up temp clip file and cloud resources
-                    try:
+                    with contextlib.suppress(OSError):
                         os.remove(w_tmp_path)
-                    except OSError:
-                        pass
-                    try:
+                    with contextlib.suppress(Exception):
                         s3_client.delete_object(Bucket=bucket, Key=w_key)
-                    except Exception:
-                        pass
-                    try:
+                    with contextlib.suppress(Exception):
                         transcribe_client.delete_transcription_job(TranscriptionJobName=w_job)
-                    except Exception:
-                        pass
 
             # Sort merged segments by start time
             all_segments.sort(key=lambda s: s["start"])

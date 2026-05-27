@@ -7,6 +7,7 @@ Transient download failures (network timeouts, rate limiting) are
 retried automatically with exponential back-off via ``tenacity``.
 """
 
+import contextlib
 import glob
 import logging
 import os
@@ -138,12 +139,9 @@ def download_and_convert(
     try:
         _ydl_download(ydl_opts, video_url, tmp_dir, video_id)
     except DownloadError:
-        # Clean up partial MP3 if it exists
         if os.path.exists(mp3_path):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(mp3_path)
-            except OSError:
-                pass
         raise
 
     # Clean up intermediate files (webm, opus, m4a, etc.)
@@ -156,10 +154,8 @@ def download_and_convert(
         )
 
     if os.path.getsize(mp3_path) == 0:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(mp3_path)
-        except OSError:
-            pass
         raise DownloadError(
             f"MP3 file is empty after conversion: {mp3_path}"
         )

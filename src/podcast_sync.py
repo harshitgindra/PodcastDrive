@@ -18,6 +18,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -397,12 +398,9 @@ def process_podcast_feed(
 
             except Exception as exc:
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
-                for path in [original_path]:
-                    if path and os.path.exists(path):
-                        try:
-                            os.remove(path)
-                        except OSError:
-                            pass
+                if original_path and os.path.exists(original_path):
+                    with contextlib.suppress(OSError):
+                        os.remove(original_path)
                 return {"ok": False, "ep_id": ep_id, "error": exc}
 
         workers = int(os.environ.get("PODCAST_EPISODE_WORKERS", "1"))
