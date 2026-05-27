@@ -324,7 +324,7 @@ class TestProcessPodcastFeedLive:
             patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", side_effect=fake_download),
-            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td: (p, [])),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [])),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -500,7 +500,7 @@ class TestProcessPodcastFeedEnvDefaults:
             patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", side_effect=fake_download),
-            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td: (p, [])),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [])),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
