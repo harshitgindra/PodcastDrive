@@ -1305,3 +1305,99 @@ class TestTranscriptCache:
         ad_remover.transcribe_audio("/fake.mp3", "ep_no_cache")
         # Cache get_object must not have been called
         mock_s3.get_object.assert_not_called()
+
+
+class TestDirectionalSnap:
+    """_snap_to_silence_boundary respects prefer_earlier for start vs end snapping."""
+
+    def _snap(self, time, silences, window=3.0, prefer_earlier=False):
+        import ad_remover
+        return ad_remover._snap_to_silence_boundary(time, silences, window, prefer_earlier)
+
+    def test_prefer_earlier_breaks_tie_towards_earlier_candidate(self):
+        """Two equidistant silence boundaries: prefer_earlier=True picks the earlier one.
+        silence A: end=97 (dist 3 from 100); silence B: start=103 (dist 3 from 100).
+        """
+        silences = [
+            {"start": 94.0, "end": 97.0},   # end at 97.0 — 3s before target
+            {"start": 103.0, "end": 106.0},  # start at 103.0 — 3s after target
+        ]
+        result = self._snap(100.0, silences, window=3.0, prefer_earlier=True)
+        assert result == 97.0, "prefer_earlier should pick 97.0 over 103.0 on a tie"
+
+    def test_prefer_later_breaks_tie_towards_later_candidate(self):
+        """Two equidistant silence boundaries: prefer_earlier=False picks the later one."""
+        silences = [
+            {"start": 94.0, "end": 97.0},
+            {"start": 103.0, "end": 106.0},
+        ]
+        result = self._snap(100.0, silences, window=3.0, prefer_earlier=False)
+        assert result == 103.0, "prefer_later should pick 103.0 over 97.0 on a tie"
+
+    def test_snap_ad_boundaries_uses_prefer_earlier_for_start(self, monkeypatch):
+        """snap_ad_boundaries snaps starts with prefer_earlier=True.
+        Two equidistant silence boundaries — start should pick the earlier one.
+        """
+        import ad_remover
+
+        silences = [
+            {"start": 94.0, "end": 97.0},   # end=97.0 — 3s before start at 100
+            {"start": 103.0, "end": 106.0},  # start=103.0 — 3s after start at 100
+        ]
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda *a, **kw: silences)
+
+        result = ad_remover.snap_ad_boundaries(
+            [{"start": 100.0, "end": 200.0}], "/fake.mp3"
+        )
+        # Start should snap to 97.0 (earlier) not 103.0 (later)
+        assert result[0]["start"] == 97.0
+
+    def test_snap_ad_boundaries_uses_prefer_later_for_end(self, monkeypatch):
+        """snap_ad_boundaries snaps ends with prefer_earlier=False.
+        Two equidistant silence boundaries — end should pick the later one.
+        """
+        import ad_remover
+
+        silences = [
+            {"start": 194.0, "end": 197.0},  # end=197.0 — 3s before end at 200
+            {"start": 203.0, "end": 206.0},  # start=203.0 — 3s after end at 200
+        ]
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda *a, **kw: silences)
+
+        result = ad_remover.snap_ad_boundaries(
+            [{"start": 10.0, "end": 200.0}], "/fake.mp3"
+        )
+        # End should snap to 203.0 (later) not 197.0 (earlier)
+        assert result[0]["end"] == 203.0
+
+
+class TestLoudnorm:
+    """SPLICE_LOUDNORM controls loudnorm filter in ffmpeg command."""
+
+    def _splice(self, monkeypatch, loudnorm_env, capture_cmd):
+        import ad_remover
+        monkeypatch.setenv("SPLICE_LOUDNORM", loudnorm_env)
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
+        def fake_run(cmd, **kwargs):
+            capture_cmd.extend(cmd)
+            if cmd[0] == "ffprobe":
+                return MagicMock(stdout="300.0\n", stderr="", returncode=0)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        ad_remover.splice_audio("/in.mp3", [{"start": 10.0, "end": 50.0}], "/out.mp3")
+
+    def test_loudnorm_filter_included_by_default(self, monkeypatch):
+        """loudnorm=true adds loudnorm filter to filter_complex."""
+        cmd = []
+        self._splice(monkeypatch, "true", cmd)
+        fc = " ".join(cmd)
+        assert "loudnorm" in fc, "loudnorm filter should appear in ffmpeg command"
+
+    def test_loudnorm_filter_excluded_when_disabled(self, monkeypatch):
+        """SPLICE_LOUDNORM=false omits the loudnorm filter."""
+        cmd = []
+        self._splice(monkeypatch, "false", cmd)
+        fc = " ".join(cmd)
+        assert "loudnorm" not in fc, "loudnorm filter should be absent when disabled"

@@ -43,6 +43,10 @@ Environment variables (all optional — sensible defaults provided):
                                subsequent runs, eliminating repeated transcription costs for
                                reprocessed episodes.
     TRANSCRIBE_CACHE_PREFIX  – S3 key prefix for cached transcripts (default: "transcribe-cache").
+    SPLICE_LOUDNORM         – Set to "false" to disable EBU R128 loudness normalisation after
+                              splicing (default: "true").  Loudnorm equalises loudness across
+                              all kept intervals so volume discontinuities at cut points are
+                              inaudible.  Adds ~10-20% to ffmpeg processing time.
 """
 
 from __future__ import annotations
@@ -137,20 +141,42 @@ def _snap_to_silence_boundary(
     time: float,
     silences: list[dict],
     window: float = 3.0,
+    prefer_earlier: bool = False,
 ) -> float:
     """Return the silence boundary nearest to *time* within ±*window* seconds.
 
     If no silence boundary falls within the window, *time* is returned unchanged.
-    Considers both the start and end of every silence interval as candidates.
+
+    Args:
+        time:           Timestamp to snap (seconds).
+        silences:       Silence interval list from :func:`detect_silence`.
+        window:         Max distance (seconds) to move the boundary.
+        prefer_earlier: When ``True``, break ties in favour of earlier candidates.
+                        Use for segment **starts** — snapping earlier avoids cutting
+                        into the content just before the ad begins.
+                        When ``False`` (default), ties favour later candidates,
+                        which is correct for segment **ends** — snapping later avoids
+                        clipping the ad outro.
+
+    Returns:
+        Nearest silence boundary within *window*, or *time* if none found.
     """
     best_time = time
     best_dist = float("inf")
     for silence in silences:
         for candidate in (silence["start"], silence["end"]):
             dist = abs(candidate - time)
-            if dist < best_dist and dist <= window:
+            if dist > window:
+                continue
+            if dist < best_dist:
                 best_dist = dist
                 best_time = candidate
+            elif dist == best_dist:
+                # Tie-break: prefer earlier for starts, later for ends
+                if prefer_earlier and candidate < best_time:
+                    best_time = candidate
+                elif not prefer_earlier and candidate > best_time:
+                    best_time = candidate
     return best_time
 
 
@@ -190,8 +216,10 @@ def snap_ad_boundaries(
     _MIN_AD = 5.0
     snapped: list[AdSegment] = []
     for seg in ad_segments:
-        new_start = _snap_to_silence_boundary(seg["start"], silences, snap_window)
-        new_end = _snap_to_silence_boundary(seg["end"], silences, snap_window)
+        # Snap start earlier (prefer_earlier=True): avoids cutting into content before ad
+        # Snap end later (prefer_earlier=False): avoids clipping the ad outro
+        new_start = _snap_to_silence_boundary(seg["start"], silences, snap_window, prefer_earlier=True)
+        new_end = _snap_to_silence_boundary(seg["end"], silences, snap_window, prefer_earlier=False)
         if new_end - new_start < _MIN_AD:
             logger.warning(
                 "[AdRemover] Silence snap would shrink [%.1f–%.1f] to %.1fs — keeping original",
@@ -932,13 +960,24 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
 
     logger.info("[AdRemover] Keep intervals (%d): %s", len(keep), keep)
 
-    # Build ffmpeg atrim + concat filter_complex
+    # Build ffmpeg atrim + concat + optional loudnorm filter_complex.
+    # loudnorm (EBU R128) equalises loudness across all keep intervals so that
+    # volume discontinuities at cut points are inaudible.
+    loudnorm = os.environ.get("SPLICE_LOUDNORM", "true").lower() not in ("false", "0", "no")
     filter_parts = [
         f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{i}]"
         for i, (start, end) in enumerate(keep)
     ]
     inputs = "".join(f"[a{i}]" for i in range(len(keep)))
-    filter_complex = ";".join(filter_parts) + f";{inputs}concat=n={len(keep)}:v=0:a=1[out]"
+    concat_out = "concat_out"
+    filter_complex = (
+        ";".join(filter_parts)
+        + f";{inputs}concat=n={len(keep)}:v=0:a=1[{concat_out}]"
+    )
+    if loudnorm:
+        filter_complex += f";[{concat_out}]loudnorm=I=-16:TP=-1.5:LRA=11[out]"
+    else:
+        filter_complex = filter_complex.replace(f"[{concat_out}]", "[out]", 1)
 
     cmd = [
         "ffmpeg", "-y",

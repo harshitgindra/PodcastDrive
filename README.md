@@ -184,7 +184,8 @@ cp config.env.example config.env
 | `TRANSCRIBE_MAX_WAIT` | | `3600` | Max seconds to wait for a Transcribe job before giving up |
 | `MAX_AD_SEGMENT_SECS` | | `180` | Segments longer than this are treated as false positives and skipped — legitimate ads rarely exceed 3 minutes |
 | `AD_VERIFY_THRESHOLD_SECS` | | `90` | Segments longer than this trigger a second Bedrock confirmation call before cutting — set to `0` to verify every segment, or a large number to skip verification |
-| `AD_SNAP_TO_SILENCE` | | `true` | Snap cut boundaries to the nearest silence gap within ±3 s for cleaner audio transitions |
+| `AD_SNAP_TO_SILENCE` | | `true` | Snap cut boundaries to the nearest silence gap within ±3 s for cleaner audio transitions. Segment **starts** snap to the earlier candidate (avoids cutting into content); **ends** snap to the later candidate (avoids clipping the ad outro) |
+| `SPLICE_LOUDNORM` | | `true` | Apply EBU R128 loudness normalisation (ffmpeg `loudnorm` filter) after splicing to equalise volume across all kept intervals. Set to `false` to skip (saves ~10–20% ffmpeg time) |
 | `EVALUATE_AD_REMOVAL` | | `false` | Set to `true` to re-transcribe cleaned episodes and check for residual ads. Writes a JSON report to `reports/{slug}/{episode_id}_eval.json`. Disabled by default to avoid extra AWS costs. |
 | `EVAL_REPORTS_DIR` | | `reports` | Local directory where ad-removal evaluation JSON reports are written |
 | **Config Provider** | | | |
