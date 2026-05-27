@@ -173,6 +173,7 @@ cp config.env.example config.env
 | `SLEEP_BETWEEN_DOWNLOADS` | | `5` | Seconds to wait between downloads (rate-limit avoidance) |
 | **RSS Podcasts** | | | |
 | `PODCAST_MAX_EPISODES` | | `5` | Max new episodes to download per RSS podcast per run |
+| `PODCAST_EPISODE_WORKERS` | | `1` | Number of episodes to process in parallel per podcast (download → transcribe → clean → upload). Set to `3` for a significant speed improvement — all steps are IO-bound so workers spend most time waiting, not competing for CPU. Higher values increase S3/Transcribe API concurrency. |
 | **Ad Removal** | | | |
 | `REMOVE_ADS` | | `true` | Set to `false` to disable ad removal entirely |
 | `REMOVE_ADS_DRY_RUN` | | `false` | Set to `true` to detect and log ad segments without cutting the audio — useful for evaluating detection quality before enabling full removal |

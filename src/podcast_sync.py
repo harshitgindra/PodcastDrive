@@ -4,9 +4,16 @@ Orchestrates the full pipeline for ``Source=Podcast`` Notion entries:
   1. Resolve Apple Podcasts / iTunes URLs → real RSS feed URL (write-back).
   2. Fetch and parse the RSS feed.
   3. Diff episodes against existing S3 objects.
-  4. Download new episodes, remove ads, upload to S3.
+  4. Download new episodes, remove ads, upload to S3 (parallel, see PODCAST_EPISODE_WORKERS).
   5. Generate and upload ``feed.xml``.
   6. Update Notion status / last-run timestamp.
+
+Environment variables:
+    PODCAST_EPISODE_WORKERS – Number of episodes to process in parallel (default: 1 —
+                              sequential, original behaviour).  Set to 3 for typical use;
+                              download + Transcribe + Bedrock are all IO-bound so workers
+                              spend most of their time waiting, not competing for CPU.
+                              Higher values increase S3/Transcribe concurrency.
 """
 
 from __future__ import annotations
@@ -16,7 +23,9 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -331,17 +340,24 @@ def process_podcast_feed(
 
         # ------------------------------------------------------------------
         # Step 4: Download → remove ads → upload
-        # Load manifest once up-front; update it for each successful upload
-        # so we avoid per-episode head_object calls when building the feed.
+        # Episodes are processed in a thread pool (PODCAST_EPISODE_WORKERS).
+        # Workers are IO-bound (download, Transcribe, Bedrock) so even workers=3
+        # yields significant throughput gains with minimal resource cost.
+        # Manifest updates are serialised with a lock.
         # ------------------------------------------------------------------
         manifest = s3.load_manifest()
+        manifest_lock = threading.Lock()
 
         new_count = 0
         failed_count = 0
         uploaded_pairs: list[tuple[EpisodeMeta, str]] = []
 
-        for ep, ep_id in candidates:
-            logger.info("[PodcastSync] Processing episode: %s (%s)", ep.title, ep_id)
+        age_days = max_age_days if max_age_days else 30
+
+        def _process_episode(ep: EpisodeMeta, ep_id: str) -> dict:
+            """Download, clean, and upload one episode.  Returns a result dict."""
+            # Each thread gets its own S3Manager to avoid sharing the boto3 client.
+            thread_s3 = S3Manager(bucket=bucket, playlist_id=slug)
             original_path = None
             try:
                 original_path = download_episode(ep.url, ep_id, tmp_dir)
@@ -367,39 +383,52 @@ def process_podcast_feed(
                     os.remove(original_path)
 
                 logger.info("[PodcastSync] Uploading %s to S3", ep_id)
-                age_days = max_age_days if max_age_days else 30
-                s3.upload_episode(cleaned_path, ep_id, age_days)
+                thread_s3.upload_episode(cleaned_path, ep_id, age_days)
 
-                # Record episode metadata in manifest (file size + episode info)
                 try:
                     file_size = os.path.getsize(cleaned_path)
                 except OSError:
                     file_size = 0
-                manifest[ep_id] = {
-                    "size": file_size,
-                    "title": ep.title,
-                    "guid": ep.guid,
-                    "pub_date": ep.pub_date.isoformat(),
-                    "duration": ep.duration,
-                }
 
                 if os.path.exists(cleaned_path):
                     os.remove(cleaned_path)
 
-                new_count += 1
-                uploaded_pairs.append((ep, ep_id))
                 logger.info("[PodcastSync] Done: %s", ep_id)
+                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size}
 
             except Exception as exc:
-                failed_count += 1
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
-                # Best-effort cleanup of any partial file
                 for path in [original_path]:
                     if path and os.path.exists(path):
                         try:
                             os.remove(path)
                         except OSError:
                             pass
+                return {"ok": False, "ep_id": ep_id, "error": exc}
+
+        workers = int(os.environ.get("PODCAST_EPISODE_WORKERS", "1"))
+        workers = max(1, min(workers, len(candidates)))  # clamp to [1, n_candidates]
+        logger.info("[PodcastSync] Processing %d candidate(s) with %d worker(s)", len(candidates), workers)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_process_episode, ep, ep_id): (ep, ep_id) for ep, ep_id in candidates}
+            for future in as_completed(futures):
+                result = future.result()
+                if result["ok"]:
+                    with manifest_lock:
+                        ep, ep_id = result["ep"], result["ep_id"]
+                        manifest[ep_id] = {
+                            "size": result["file_size"],
+                            "title": ep.title,
+                            "guid": ep.guid,
+                            "pub_date": ep.pub_date.isoformat(),
+                            "duration": ep.duration,
+                        }
+                        new_count += 1
+                        uploaded_pairs.append((ep, ep_id))
+                else:
+                    with manifest_lock:
+                        failed_count += 1
 
         # Persist updated manifest after all uploads
         if new_count > 0:
