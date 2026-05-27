@@ -24,6 +24,7 @@ class PodcastConfig:
     sleep_between: int | None = None
     page_id: str | None = None  # Notion page ID (for write-back)
     source: str = "YouTube"  # "YouTube" or "Podcast"
+    ad_hints: str = ""  # Free-text hints for the Bedrock ad-detection prompt (e.g. typical ad patterns)
 
 
 class ConfigProvider(ABC):
@@ -102,6 +103,7 @@ class YamlConfigProvider(ConfigProvider):
                 max_downloads=entry.get("max_downloads", defaults.get("max_downloads")),
                 max_age_days=entry.get("max_age_days", defaults.get("max_age_days")),
                 sleep_between=entry.get("sleep_between", defaults.get("sleep_between")),
+                ad_hints=entry.get("ad_hints", defaults.get("ad_hints", "")),
             ))
 
         logger.info("Loaded %d podcasts from %s", len(podcasts), self.path)

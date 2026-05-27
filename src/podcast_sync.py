@@ -363,7 +363,7 @@ def process_podcast_feed(
                 original_path = download_episode(ep.url, ep_id, tmp_dir)
 
                 logger.info("[PodcastSync] Running ad removal for %s", ep_id)
-                cleaned_path, ad_segments = remove_ads(original_path, ep_id, tmp_dir)
+                cleaned_path, ad_segments = remove_ads(original_path, ep_id, tmp_dir, ad_hints=podcast.ad_hints)
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if cleaned_path != original_path:

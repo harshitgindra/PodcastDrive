@@ -17,6 +17,9 @@ podcasts:
   - name: My Favourite Podcast
     url: PLxxxxxxxxxxxxxxxxxxxxxxxxxxxx01
     enabled: true
+    # Optional free-text hints about known ad patterns for this podcast.
+    # Injected into the Bedrock detection prompt to improve ad identification.
+    # ad_hints: "Ads always open with 'This episode is brought to you by' and end with a promo code."
 
   - name: Another Great Show
     url: PLxxxxxxxxxxxxxxxxxxxxxxxxxxxx02

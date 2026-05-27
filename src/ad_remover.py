@@ -47,6 +47,16 @@ Environment variables (all optional — sensible defaults provided):
                               splicing (default: "true").  Loudnorm equalises loudness across
                               all kept intervals so volume discontinuities at cut points are
                               inaudible.  Adds ~10-20% to ffmpeg processing time.
+    AD_TRANSCRIBE_WINDOWS   – Comma-separated list of ``start:end`` time ranges (in seconds)
+                              to transcribe, instead of the full audio file.  Either bound can
+                              use the token ``end`` (meaning the total duration) or ``end-N``
+                              (meaning total duration minus N seconds).  Example::
+
+                                  AD_TRANSCRIBE_WINDOWS=0:300,end-600:end
+
+                              transcribes only the first 5 minutes and the last 10 minutes —
+                              useful for podcasts where ads only appear near the beginning and
+                              end.  When not set (default) the entire file is transcribed.
 """
 
 from __future__ import annotations
@@ -342,6 +352,118 @@ def _save_ad_segments_cache(s3_client, bucket: str, video_id: str, ad_segments: 
         logger.warning("[AdRemover] Could not save ad-segments cache for %s: %s", video_id, exc)
 
 
+
+# ---------------------------------------------------------------------------
+# Fix #5 – Selective transcription windows (AD_TRANSCRIBE_WINDOWS)
+# ---------------------------------------------------------------------------
+
+def _get_audio_duration(mp3_path: str) -> float:
+    """Return the duration of *mp3_path* in seconds using ffprobe.
+
+    Returns ``0.0`` if ffprobe fails so callers can fall back gracefully.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", mp3_path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(result.stdout.strip())
+    except Exception as exc:
+        logger.warning("[AdRemover] ffprobe duration check failed: %s", exc)
+        return 0.0
+
+
+def _parse_transcribe_windows(raw: str, duration: float) -> list[tuple[float, float]]:
+    """Parse ``AD_TRANSCRIBE_WINDOWS`` into a list of ``(start_sec, end_sec)`` tuples.
+
+    Format: comma-separated ranges, each ``start:end`` where either value may be
+    ``end`` (meaning *duration*) or ``end-N`` (meaning *duration − N*).
+
+    Example::
+
+        "0:300,end-600:end"   → [(0.0, 300.0), (duration-600, duration)]
+
+    Invalid ranges are skipped with a warning.  Returns an empty list when
+    *raw* is empty/blank — the caller treats this as "transcribe everything".
+
+    Args:
+        raw:      The raw env-var string.
+        duration: Total audio duration in seconds (used to resolve ``end`` tokens).
+
+    Returns:
+        List of ``(start, end)`` tuples, clamped to ``[0, duration]``.
+    """
+    if not raw or not raw.strip():
+        return []
+
+    windows: list[tuple[float, float]] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            logger.warning("[AdRemover] Ignoring invalid AD_TRANSCRIBE_WINDOWS entry: %r", part)
+            continue
+        start_raw, end_raw = part.split(":", 1)
+        try:
+            def _resolve(token: str, total: float) -> float:
+                token = token.strip().lower()
+                if token == "end":
+                    return total
+                if token.startswith("end-"):
+                    return max(0.0, total - float(token[4:]))
+                if token.startswith("end+"):
+                    return min(total, total + float(token[4:]))
+                return float(token)
+
+            start = max(0.0, _resolve(start_raw, duration))
+            end = min(duration, _resolve(end_raw, duration)) if duration > 0 else _resolve(end_raw, duration)
+            if end <= start:
+                logger.warning(
+                    "[AdRemover] Skipping degenerate window %r (start=%.1f >= end=%.1f)",
+                    part, start, end,
+                )
+                continue
+            windows.append((start, end))
+        except ValueError as exc:
+            logger.warning("[AdRemover] Ignoring unparseable AD_TRANSCRIBE_WINDOWS entry %r: %s", part, exc)
+
+    return windows
+
+
+def _extract_audio_window(mp3_path: str, start: float, end: float, out_path: str) -> None:
+    """Extract a sub-clip ``[start, end]`` seconds from *mp3_path* into *out_path*.
+
+    Uses ``ffmpeg -ss``/``-to`` with ``-c copy`` for fast stream copy when
+    possible, falling back to re-encode if the source is variable-bitrate.
+
+    Args:
+        mp3_path: Source audio file.
+        start:    Clip start in seconds.
+        end:      Clip end in seconds.
+        out_path: Destination path for the extracted clip.
+
+    Raises:
+        RuntimeError: If ffmpeg exits with a non-zero return code.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start),
+        "-to", str(end),
+        "-i", mp3_path,
+        "-c", "copy",
+        out_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg window extract failed (rc={result.returncode}): {result.stderr[-500:]}"
+        )
+
+
 def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     """Upload *mp3_path* to S3 and transcribe it with AWS Transcribe.
 
@@ -381,6 +503,101 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
         cached = _load_transcript_cache(s3_client, bucket, video_id)
         if cached is not None:
             return cached
+
+    # 1a. Selective transcription windows (AD_TRANSCRIBE_WINDOWS)
+    #     If set, only transcribe specified sub-clips to reduce Transcribe cost.
+    windows_raw = os.environ.get("AD_TRANSCRIBE_WINDOWS", "").strip()
+    if windows_raw:
+        duration = _get_audio_duration(mp3_path)
+        windows = _parse_transcribe_windows(windows_raw, duration)
+        if windows:
+            import tempfile as _tempfile
+            all_segments: list[dict] = []
+            for w_idx, (w_start, w_end) in enumerate(windows):
+                with _tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as w_tmp:
+                    w_tmp_path = w_tmp.name
+                try:
+                    _extract_audio_window(mp3_path, w_start, w_end, w_tmp_path)
+                    w_id = f"{video_id}-w{w_idx}"
+                    w_key = f"transcribe-tmp/{w_id}.mp3"
+                    logger.info(
+                        "[AdRemover] Window %d/%d: uploading %.1f-%.1fs sub-clip for transcription",
+                        w_idx + 1, len(windows), w_start, w_end,
+                    )
+                    retry_aws_call(
+                        lambda k=w_key, p=w_tmp_path: s3_client.upload_file(p, bucket, k),
+                        label=f"s3.upload_file[window-{w_idx}]",
+                    )
+                    w_uri = f"s3://{bucket}/{w_key}"
+                    w_safe = re.sub(r"[^A-Za-z0-9_-]", "-", w_id)[:64].strip("-")
+                    w_job = f"pad-{w_safe}-{uuid.uuid4().hex[:8]}"
+                    retry_aws_call(
+                        lambda j=w_job, u=w_uri: transcribe_client.start_transcription_job(
+                            TranscriptionJobName=j,
+                            Media={"MediaFileUri": u},
+                            MediaFormat="mp3",
+                            LanguageCode=language_code,
+                            Settings={"ShowSpeakerLabels": False, "ChannelIdentification": False},
+                        ),
+                        label=f"transcribe.start[window-{w_idx}]",
+                    )
+                    # Poll until complete
+                    w_elapsed = 0
+                    w_status_resp: dict = {}
+                    while w_elapsed < max_wait:
+                        time.sleep(poll_interval)
+                        w_elapsed += poll_interval
+                        w_status_resp = transcribe_client.get_transcription_job(TranscriptionJobName=w_job)
+                        w_status = w_status_resp["TranscriptionJob"]["TranscriptionJobStatus"]
+                        if w_status == "COMPLETED":
+                            break
+                        if w_status == "FAILED":
+                            raise RuntimeError(
+                                f"Transcribe window job {w_job} failed: "
+                                + w_status_resp["TranscriptionJob"].get("FailureReason", "unknown")
+                            )
+                    else:
+                        raise RuntimeError(f"Transcribe window job {w_job} timed out after {max_wait}s")
+
+                    w_uri_result = w_status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
+                    import urllib.request as _req
+                    with _req.urlopen(w_uri_result, context=_SSL_CTX) as r:
+                        w_data = json.loads(r.read())
+                    w_items = w_data.get("results", {}).get("items", [])
+                    w_segs = _items_to_segments(w_items)
+                    # Offset all segment timestamps by the window start
+                    for seg in w_segs:
+                        seg["start"] += w_start
+                        seg["end"] += w_start
+                    all_segments.extend(w_segs)
+                    logger.info(
+                        "[AdRemover] Window %d/%d complete: %d segments (offset +%.1fs)",
+                        w_idx + 1, len(windows), len(w_segs), w_start,
+                    )
+                finally:
+                    # Clean up temp clip file and cloud resources
+                    try:
+                        os.remove(w_tmp_path)
+                    except OSError:
+                        pass
+                    try:
+                        s3_client.delete_object(Bucket=bucket, Key=w_key)
+                    except Exception:
+                        pass
+                    try:
+                        transcribe_client.delete_transcription_job(TranscriptionJobName=w_job)
+                    except Exception:
+                        pass
+
+            # Sort merged segments by start time
+            all_segments.sort(key=lambda s: s["start"])
+            logger.info(
+                "[AdRemover] Windowed transcription complete: %d total segments from %d window(s)",
+                len(all_segments), len(windows),
+            )
+            if use_cache:
+                _save_transcript_cache(s3_client, bucket, video_id, all_segments)
+            return all_segments
 
     # 1. Upload audio to a temporary S3 key
     tmp_key = f"transcribe-tmp/{video_id}.mp3"
@@ -563,7 +780,7 @@ where the host personally delivers the ad copy in their own voice.
    above even when the voice and style match the rest of the episode.
 5. A single ad segment should rarely exceed 3 minutes (180 seconds). If you find
    yourself marking a very long stretch as an ad, double-check it is not content.
-
+{hints_section}
 ## Reasoning step (do NOT include in output)
 Before writing the JSON, briefly note each candidate segment and why you
 think it is an ad. Then output ONLY the final JSON array.
@@ -577,6 +794,14 @@ Example:
 
 Transcript:
 {transcript}
+"""
+
+_AD_HINTS_SECTION = """
+## Podcast-specific ad patterns
+The following notes describe known advertising patterns for this podcast.
+Use them as extra guidance — do not limit detection to only these patterns.
+{hints}
+
 """
 
 
@@ -681,7 +906,7 @@ def _verify_ad_segment(
         return True
 
 
-def detect_ads(segments: list[dict]) -> list[AdSegment]:
+def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
     """Ask AWS Bedrock to identify ad segments in *segments*.
 
     Uses the Bedrock Converse API with the model specified by
@@ -699,6 +924,10 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
     Args:
         segments: List of transcript segment dicts as returned by
             :func:`transcribe_audio`.
+        ad_hints: Optional free-text description of known ad patterns for this
+            podcast (e.g. "ads always start with 'Let's hear from our sponsor'").
+            Injected into the detection prompt as an extra context section when
+            non-empty.  Sourced from ``PodcastConfig.ad_hints``.
 
     Returns:
         List of ``{"start": float, "end": float}`` dicts for ad intervals.
@@ -734,7 +963,10 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
         transcript_lines = "\n".join(
             f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in chunk
         )
-        prompt = _AD_DETECTION_PROMPT.format(transcript=transcript_lines)
+        hints_section = (
+            _AD_HINTS_SECTION.format(hints=ad_hints.strip()) if ad_hints and ad_hints.strip() else ""
+        )
+        prompt = _AD_DETECTION_PROMPT.format(transcript=transcript_lines, hints_section=hints_section)
 
         logger.info(
             "[AdRemover] Sending chunk %d/%d to Bedrock (model=%s, segments=%d, chars=%d)",
@@ -1044,7 +1276,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> tuple[str, list[AdSegment]]:
+def remove_ads(mp3_path: str, video_id: str, tmp_dir: str, ad_hints: str = "") -> tuple[str, list[AdSegment]]:
     """Run the full ad-removal pipeline on *mp3_path*.
 
     Steps:
@@ -1056,9 +1288,11 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> tuple[str, list[Ad
     *mp3_path* unchanged so the caller can still upload the unmodified file.
 
     Args:
-        mp3_path: Path to the downloaded audio file.
-        video_id: Episode identifier (used to name the Transcribe job and output file).
-        tmp_dir:  Temporary directory to write the cleaned file into.
+        mp3_path:  Path to the downloaded audio file.
+        video_id:  Episode identifier (used to name the Transcribe job and output file).
+        tmp_dir:   Temporary directory to write the cleaned file into.
+        ad_hints:  Optional free-text hints about known ad patterns for this podcast,
+                   forwarded to :func:`detect_ads`.
 
     Returns:
         A tuple of ``(cleaned_path, ad_segments)`` where *cleaned_path* is the
@@ -1121,7 +1355,7 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> tuple[str, list[Ad
         return mp3_path, []
 
     try:
-        ad_segments = detect_ads(segments)
+        ad_segments = detect_ads(segments, ad_hints=ad_hints)
     except Exception as exc:
         logger.error("[AdRemover] Ad detection failed for %s: %s — using original file", video_id, exc)
         return mp3_path, []

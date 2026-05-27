@@ -1484,3 +1484,167 @@ class TestAdSegmentsCache:
         assert spliced_calls, "splice_audio should have been called"
         assert spliced_calls[0] == cached_ads
         assert result_segs == cached_ads
+
+
+# ---------------------------------------------------------------------------
+# Fix #5 – Selective transcription windows (_parse_transcribe_windows,
+#           _extract_audio_window, _get_audio_duration)
+# ---------------------------------------------------------------------------
+
+class TestParseTranscribeWindows:
+    """Unit tests for _parse_transcribe_windows."""
+
+    from ad_remover import _parse_transcribe_windows
+
+    def test_absolute_range(self):
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("0:300", 3600.0)
+        assert windows == [(0.0, 300.0)]
+
+    def test_end_keyword(self):
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("0:end", 600.0)
+        assert windows == [(0.0, 600.0)]
+
+    def test_end_minus_offset(self):
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("end-120:end", 600.0)
+        assert windows == [(480.0, 600.0)]
+
+    def test_multiple_windows(self):
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("0:300,end-600:end", 3600.0)
+        assert windows == [(0.0, 300.0), (3000.0, 3600.0)]
+
+    def test_empty_string_returns_empty(self):
+        from ad_remover import _parse_transcribe_windows
+        assert _parse_transcribe_windows("", 3600.0) == []
+
+    def test_degenerate_window_skipped(self):
+        from ad_remover import _parse_transcribe_windows
+        # start >= end → skipped
+        windows = _parse_transcribe_windows("300:100", 3600.0)
+        assert windows == []
+
+    def test_invalid_entry_skipped(self):
+        from ad_remover import _parse_transcribe_windows
+        # no colon → invalid; valid entry still parsed
+        windows = _parse_transcribe_windows("bad,0:60", 600.0)
+        assert windows == [(0.0, 60.0)]
+
+    def test_clamped_to_duration(self):
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("0:9999", 600.0)
+        assert windows == [(0.0, 600.0)]
+
+
+class TestGetAudioDuration:
+    def test_returns_float_from_ffprobe(self, tmp_path):
+        from ad_remover import _get_audio_duration
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        with patch("ad_remover.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="3600.123\n", stderr="")
+            duration = _get_audio_duration(str(fake_mp3))
+
+        assert duration == pytest.approx(3600.123)
+
+    def test_returns_zero_on_failure(self, tmp_path):
+        from ad_remover import _get_audio_duration
+        with patch("ad_remover.subprocess.run", side_effect=OSError("ffprobe not found")):
+            assert _get_audio_duration("nonexistent.mp3") == 0.0
+
+
+class TestExtractAudioWindow:
+    def test_calls_ffmpeg_with_correct_args(self, tmp_path):
+        from ad_remover import _extract_audio_window
+        with patch("ad_remover.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            _extract_audio_window("input.mp3", 30.0, 120.0, "output.mp3")
+
+        cmd = mock_run.call_args[0][0]
+        assert "-ss" in cmd and "30.0" in cmd
+        assert "-to" in cmd and "120.0" in cmd
+        assert "output.mp3" in cmd
+
+    def test_raises_on_nonzero_returncode(self, tmp_path):
+        from ad_remover import _extract_audio_window
+        with patch("ad_remover.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="error message")
+            with pytest.raises(RuntimeError, match="ffmpeg window extract failed"):
+                _extract_audio_window("input.mp3", 0.0, 60.0, "output.mp3")
+
+
+# ---------------------------------------------------------------------------
+# Fix #8 – Per-podcast ad_hints injected into detection prompt
+# ---------------------------------------------------------------------------
+
+class TestDetectAdsWithHints:
+    """Tests for ad_hints parameter in detect_ads (fix #8)."""
+
+    def _make_segments(self, n: int = 3) -> list[dict]:
+        return [{"start": float(i * 10), "end": float(i * 10 + 9), "text": f"Word {i}"} for i in range(n)]
+
+    def _make_bedrock_response(self, payload: str):
+        resp = MagicMock()
+        resp.__getitem__ = lambda s, k: {
+            "output": {"message": {"content": [{"text": payload}]}}
+        }[k]
+        return resp
+
+    def test_hints_section_included_in_prompt(self):
+        """When ad_hints is non-empty, _AD_HINTS_SECTION content appears in prompt."""
+        from ad_remover import detect_ads
+
+        captured_prompts = []
+
+        def fake_converse(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"][0]["text"])
+            return {"output": {"message": {"content": [{"text": "[]"}]}}}
+
+        bedrock_mock = MagicMock()
+        bedrock_mock.converse.side_effect = fake_converse
+
+        with patch("ad_remover.boto3.client", return_value=bedrock_mock):
+            detect_ads(self._make_segments(), ad_hints="Ads always start with 'Brought to you by'")
+
+        assert captured_prompts, "No prompt captured"
+        assert "Podcast-specific ad patterns" in captured_prompts[0]
+        assert "Brought to you by" in captured_prompts[0]
+
+    def test_no_hints_section_when_empty(self):
+        """When ad_hints is empty, no hints section appears in prompt."""
+        from ad_remover import detect_ads
+
+        captured_prompts = []
+
+        def fake_converse(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"][0]["text"])
+            return {"output": {"message": {"content": [{"text": "[]"}]}}}
+
+        bedrock_mock = MagicMock()
+        bedrock_mock.converse.side_effect = fake_converse
+
+        with patch("ad_remover.boto3.client", return_value=bedrock_mock):
+            detect_ads(self._make_segments(), ad_hints="")
+
+        assert "Podcast-specific ad patterns" not in captured_prompts[0]
+
+    def test_hints_whitespace_only_not_injected(self):
+        """Whitespace-only ad_hints string is treated as empty."""
+        from ad_remover import detect_ads
+
+        captured_prompts = []
+
+        def fake_converse(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"][0]["text"])
+            return {"output": {"message": {"content": [{"text": "[]"}]}}}
+
+        bedrock_mock = MagicMock()
+        bedrock_mock.converse.side_effect = fake_converse
+
+        with patch("ad_remover.boto3.client", return_value=bedrock_mock):
+            detect_ads(self._make_segments(), ad_hints="   ")
+
+        assert "Podcast-specific ad patterns" not in captured_prompts[0]
