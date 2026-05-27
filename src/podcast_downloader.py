@@ -396,6 +396,11 @@ _download_retry = retry(
 def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
     """Download a podcast episode MP3 from *url* to *tmp_dir*.
 
+    Supports HTTP range-request resumption: if a partial file already exists
+    from a previous interrupted download, a ``Range: bytes=N-`` header is sent
+    so only the missing bytes are transferred.  Falls back to a full download
+    when the server does not support range requests (returns 200 instead of 206).
+
     Retries up to 3 times on transient network errors.
 
     Args:
@@ -414,16 +419,46 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
 
     @_download_retry
     def _attempt() -> None:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "PodcastDrive/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=300, context=_SSL_CTX) as resp, open(local_path, "wb") as out:
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
+        existing_bytes = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+
+        headers: dict[str, str] = {"User-Agent": "PodcastDrive/1.0"}
+        if existing_bytes > 0:
+            headers["Range"] = f"bytes={existing_bytes}-"
+            logger.info(
+                "[PodcastDownloader] Resuming %s from byte %d",
+                episode_id, existing_bytes,
+            )
+
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=300, context=_SSL_CTX)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 416:
+                # Range not satisfiable — file already complete
+                logger.info("[PodcastDownloader] %s already fully downloaded (416)", episode_id)
+                return
+            raise
+
+        with resp:
+            status = getattr(resp, "status", resp.getcode())
+            if status == 206:
+                # Partial content — append to existing file
+                open_mode = "ab"
+            else:
+                # Full response (server ignored Range header) — start fresh
+                if existing_bytes:
+                    logger.info(
+                        "[PodcastDownloader] Server returned %d (no range support) — restarting %s",
+                        status, episode_id,
+                    )
+                open_mode = "wb"
+
+            with open(local_path, open_mode) as out:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
 
     try:
         _attempt()

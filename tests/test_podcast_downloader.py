@@ -570,3 +570,97 @@ class TestParseEpisodesThumbnails:
         episodes = parse_episodes(_SAMPLE_FEED)  # _SAMPLE_FEED has no images
         for ep in episodes:
             assert ep.thumbnail == ""
+
+
+# ---------------------------------------------------------------------------
+# Fix #10 – HTTP range-request download resume
+# ---------------------------------------------------------------------------
+
+class TestDownloadEpisodeRangeResume:
+    """Tests for range-request resumption in download_episode (fix #10)."""
+
+    def _make_resp(self, data: bytes, status: int = 200):
+        """Build a mock urllib response."""
+        resp = MagicMock()
+        resp.read.side_effect = [data, b""]
+        resp.status = status
+        resp.getcode.return_value = status
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_resume_sends_range_header(self, tmp_path):
+        """When a partial file exists, the Range header is sent."""
+        partial = tmp_path / "ep001.mp3"
+        partial.write_bytes(b"partial-data")  # 12 bytes already downloaded
+
+        remaining = b"rest-of-file"
+        resp = self._make_resp(remaining, status=206)
+
+        captured_reqs = []
+
+        def fake_urlopen(req, **kwargs):
+            captured_reqs.append(req)
+            return resp
+
+        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert captured_reqs, "urlopen was not called"
+        assert captured_reqs[0].get_header("Range") == f"bytes={len(b'partial-data')}-"
+        # File should contain original partial + new data
+        assert partial.read_bytes() == b"partial-data" + b"rest-of-file"
+
+    def test_206_appends_to_partial_file(self, tmp_path):
+        """A 206 response causes the download to append, not overwrite."""
+        partial = tmp_path / "ep001.mp3"
+        partial.write_bytes(b"AAA")
+
+        resp = self._make_resp(b"BBB", status=206)
+
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert partial.read_bytes() == b"AAABBB"
+
+    def test_200_overwrites_when_no_range_support(self, tmp_path):
+        """A 200 response (server ignores Range) restarts the download from scratch."""
+        partial = tmp_path / "ep001.mp3"
+        partial.write_bytes(b"stale-partial")
+
+        resp = self._make_resp(b"fresh-full", status=200)
+
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert partial.read_bytes() == b"fresh-full"
+
+    def test_416_treated_as_already_complete(self, tmp_path):
+        """HTTP 416 (Range Not Satisfiable) means the file is already fully downloaded."""
+        import urllib.error
+
+        partial = tmp_path / "ep001.mp3"
+        partial.write_bytes(b"complete-data")
+
+        def fake_urlopen(req, **kwargs):
+            raise urllib.error.HTTPError("url", 416, "Range Not Satisfiable", {}, None)
+
+        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+            result = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert result == str(partial)
+        assert partial.read_bytes() == b"complete-data"  # Unchanged
+
+    def test_fresh_download_no_range_header(self, tmp_path):
+        """Without a partial file, no Range header is sent."""
+        resp = self._make_resp(b"full-content", status=200)
+        captured_reqs = []
+
+        def fake_urlopen(req, **kwargs):
+            captured_reqs.append(req)
+            return resp
+
+        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert captured_reqs[0].get_header("Range") is None
