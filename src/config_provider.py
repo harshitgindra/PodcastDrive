@@ -89,7 +89,7 @@ class YamlConfigProvider(ConfigProvider):
             logger.warning("Config file not found: %s", self.path)
             return []
 
-        with open(self.path, "r") as f:
+        with open(self.path) as f:
             data = yaml.safe_load(f) or {}
 
         defaults = data.get("defaults", {})

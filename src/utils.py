@@ -4,7 +4,8 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 from urllib.parse import parse_qs, urlparse
 
 _logger = logging.getLogger(__name__)

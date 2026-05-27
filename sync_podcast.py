@@ -95,10 +95,6 @@ def sync_playlist(
         logger.info("Found %d existing episodes in S3", len(existing_keys))
 
         # Step 3: Diff — find new videos to download and stale ones to delete
-        from datetime import datetime, timedelta, timezone
-        from utils import parse_upload_date
-
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
         playlist_video_ids = {v.video_id for v in video_entries}
         to_download = [v for v in video_entries if v.video_id not in existing_keys]
         to_delete = [vid for vid in existing_keys if vid not in playlist_video_ids]

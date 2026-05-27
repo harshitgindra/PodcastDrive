@@ -28,7 +28,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import format_datetime
-from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom.minidom import parseString
 
 from ad_remover import remove_ads
@@ -151,7 +150,7 @@ def _build_podcast_feed_xml(
         img_el = ET.SubElement(channel, f"{{{_ITUNES_NS}}}image")
         img_el.set("href", artwork_url)
 
-    for ep, ep_id in zip(episodes, episode_ids):
+    for ep, ep_id in zip(episodes, episode_ids, strict=True):
         item = ET.SubElement(channel, "item")
         ET.SubElement(item, "title").text = ep.title
 
@@ -456,12 +455,12 @@ def process_podcast_feed(
 
             # Sort newest-first by pub_date
             pairs = sorted(
-                zip(feed_episodes, feed_ep_ids),
+                zip(feed_episodes, feed_ep_ids, strict=True),
                 key=lambda x: x[0].pub_date,
                 reverse=True,
             )
             if pairs:
-                feed_episodes, feed_ep_ids = zip(*pairs)
+                feed_episodes, feed_ep_ids = zip(*pairs, strict=True)
                 feed_episodes = list(feed_episodes)
                 feed_ep_ids = list(feed_ep_ids)
             else:

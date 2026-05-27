@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from ad_remover import remove_ads
-from downloader import DownloadError, download_and_convert
+from downloader import download_and_convert
 from extractor import extract_playlist, extract_video_metadata
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
