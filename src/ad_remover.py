@@ -22,6 +22,16 @@ Environment variables (all optional — sensible defaults provided):
     REMOVE_ADS_DRY_RUN      – Set to "true" to detect ads and log them without actually
                               splicing the audio file (default: "false").  Useful for
                               evaluating detection quality before enabling full removal.
+    MAX_AD_SEGMENT_SECS     – Ad segments longer than this are treated as false positives and
+                              skipped (default: "180").  Legitimate podcast ads rarely exceed
+                              3 minutes; very long segments usually indicate content misclassified
+                              as an ad.
+    AD_VERIFY_THRESHOLD_SECS – Segments longer than this value trigger a second Bedrock call to
+                              confirm they are genuinely ads before removal (default: "90").
+                              Set to "0" to verify every segment, or a very large number to
+                              disable verification.
+    AD_SNAP_TO_SILENCE      – Set to "true" to snap ad-segment boundaries to the nearest silence
+                              gap (±3 s window), producing cleaner audio cuts (default: "true").
 """
 
 from __future__ import annotations
@@ -49,6 +59,143 @@ logger.setLevel(logging.INFO)
 # Internal type alias
 # ---------------------------------------------------------------------------
 AdSegment = dict  # {"start": float, "end": float}
+
+
+# ---------------------------------------------------------------------------
+# Fix #5 – Silence detection + boundary snapping
+# ---------------------------------------------------------------------------
+
+def detect_silence(
+    mp3_path: str,
+    noise_threshold: str = "-35dB",
+    min_duration: float = 0.5,
+) -> list[dict]:
+    """Detect silence intervals in *mp3_path* using ffmpeg silencedetect.
+
+    Args:
+        mp3_path:        Path to the audio file.
+        noise_threshold: Noise floor passed to silencedetect (e.g. ``"-35dB"``).
+        min_duration:    Minimum silence duration in seconds to report.
+
+    Returns:
+        List of ``{"start": float, "end": float, "duration": float}`` dicts,
+        sorted by start time.  Returns an empty list if ffmpeg is unavailable
+        or the file contains no qualifying silences.
+    """
+    cmd = [
+        "ffmpeg", "-i", mp3_path,
+        "-af", f"silencedetect=noise={noise_threshold}:d={min_duration}",
+        "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        logger.warning("[AdRemover] ffmpeg not found — silence detection skipped")
+        return []
+
+    silences: list[dict] = []
+    current_start: float | None = None
+    for line in result.stderr.split("\n"):
+        if "silence_start:" in line:
+            try:
+                current_start = float(line.split("silence_start:")[1].strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+        elif "silence_end:" in line and current_start is not None:
+            try:
+                parts = line.split("silence_end:")[1].strip().split("|")
+                end = float(parts[0].strip().split()[0])
+                duration = (
+                    float(parts[1].split("silence_duration:")[1].strip())
+                    if len(parts) > 1
+                    else end - current_start
+                )
+                silences.append({
+                    "start": round(current_start, 2),
+                    "end": round(end, 2),
+                    "duration": round(duration, 2),
+                })
+                current_start = None
+            except (ValueError, IndexError):
+                current_start = None
+
+    return silences
+
+
+def _snap_to_silence_boundary(
+    time: float,
+    silences: list[dict],
+    window: float = 3.0,
+) -> float:
+    """Return the silence boundary nearest to *time* within ±*window* seconds.
+
+    If no silence boundary falls within the window, *time* is returned unchanged.
+    Considers both the start and end of every silence interval as candidates.
+    """
+    best_time = time
+    best_dist = float("inf")
+    for silence in silences:
+        for candidate in (silence["start"], silence["end"]):
+            dist = abs(candidate - time)
+            if dist < best_dist and dist <= window:
+                best_dist = dist
+                best_time = candidate
+    return best_time
+
+
+def snap_ad_boundaries(
+    ad_segments: list[AdSegment],
+    mp3_path: str,
+    snap_window: float = 3.0,
+) -> list[AdSegment]:
+    """Snap each ad-segment boundary to the nearest silence gap.
+
+    Cuts landing on silence rather than mid-word produce much cleaner audio.
+    Falls back to the original boundaries if silence detection fails or finds
+    nothing within *snap_window* seconds.
+
+    Args:
+        ad_segments:  Candidate ad segments to adjust.
+        mp3_path:     Source audio file (used to detect silences).
+        snap_window:  Maximum seconds to move a boundary (default: 3.0).
+
+    Returns:
+        Adjusted segment list.  Any segment shrunk below ``_MIN_AD_SECONDS``
+        after snapping is kept at its original boundaries.
+    """
+    if not ad_segments:
+        return ad_segments
+
+    try:
+        silences = detect_silence(mp3_path)
+    except Exception as exc:
+        logger.warning("[AdRemover] Silence detection failed — keeping original boundaries: %s", exc)
+        return ad_segments
+
+    if not silences:
+        logger.debug("[AdRemover] No silence intervals found — skipping boundary snapping")
+        return ad_segments
+
+    _MIN_AD = 5.0
+    snapped: list[AdSegment] = []
+    for seg in ad_segments:
+        new_start = _snap_to_silence_boundary(seg["start"], silences, snap_window)
+        new_end = _snap_to_silence_boundary(seg["end"], silences, snap_window)
+        if new_end - new_start < _MIN_AD:
+            logger.warning(
+                "[AdRemover] Silence snap would shrink [%.1f–%.1f] to %.1fs — keeping original",
+                seg["start"], seg["end"], new_end - new_start,
+            )
+            snapped.append(seg)
+        else:
+            if new_start != seg["start"] or new_end != seg["end"]:
+                logger.info(
+                    "[AdRemover] Snapped [%.1f–%.1f] → [%.1f–%.1f]",
+                    seg["start"], seg["end"], new_start, new_end,
+                )
+            snapped.append({"start": new_start, "end": new_end})
+
+    return snapped
 
 
 # ---------------------------------------------------------------------------
@@ -250,14 +397,17 @@ where the host personally delivers the ad copy in their own voice.
   "alright let's get into it", "back to the show", "let's continue"
 
 ## Rules
-1. When in doubt, INCLUDE the segment — it is better to trim a few extra
-   seconds of content than to leave an ad in.
+1. Only flag segments where you have clear evidence of advertising. Do NOT flag
+   editorial discussion, interview content, or product mentions unless they are
+   clearly promotional with a call-to-action. If a segment is ambiguous, leave it out.
 2. Extend each segment's start time back by 2 seconds and end time forward
    by 2 seconds to avoid clipped transitions (but never below 0).
-3. If two ad segments are within 10 seconds of each other, merge them into
+3. If two ad segments are within 30 seconds of each other, merge them into
    one continuous segment.
 4. Host-read ads blend naturally into the show's tone — look for the signals
    above even when the voice and style match the rest of the episode.
+5. A single ad segment should rarely exceed 3 minutes (180 seconds). If you find
+   yourself marking a very long stretch as an ad, double-check it is not content.
 
 ## Reasoning step (do NOT include in output)
 Before writing the JSON, briefly note each candidate segment and why you
@@ -273,6 +423,107 @@ Example:
 Transcript:
 {transcript}
 """
+
+
+_AD_VERIFICATION_PROMPT = """You are reviewing a candidate ad segment extracted from a podcast transcript.
+The segment below was flagged as a possible advertisement.
+
+Segment [{start:.1f}s – {end:.1f}s]:
+{text}
+
+Is this segment an advertisement or sponsored content?
+Answer with ONLY a JSON object on a single line:
+{{"is_ad": true, "reason": "one-sentence explanation"}}
+
+Criteria for YES (is_ad=true):
+- Clear sponsor language, discount codes, promo URLs, or calls-to-action
+- Explicit mention of a product/service being sold, with pricing or sign-up incentive
+
+Criteria for NO (is_ad=false):
+- Editorial discussion, interview, news analysis, or opinion content
+- Casual product mention without promotion (e.g. "I used Notion for this")
+- Content about the podcast itself (subscribe, leave a review)
+"""
+
+
+def _verify_ad_segment(
+    segment: AdSegment,
+    transcript_segments: list[dict],
+    bedrock_client,
+    model_id: str,
+) -> bool:
+    """Second-pass Bedrock call to confirm a candidate ad segment.
+
+    Used for segments above ``AD_VERIFY_THRESHOLD_SECS`` where a false positive
+    would remove a significant chunk of content.
+
+    Args:
+        segment:             Candidate ad segment with ``start`` and ``end``.
+        transcript_segments: Full transcript (to extract the relevant text).
+        bedrock_client:      Initialised ``bedrock-runtime`` boto3 client.
+        model_id:            Bedrock model ID to use for verification.
+
+    Returns:
+        ``True`` if confirmed as an ad, ``False`` if the model rejects it.
+        Defaults to ``True`` on any error so we never silently discard a real ad.
+    """
+    text = " ".join(
+        s["text"] for s in transcript_segments
+        if s["start"] >= segment["start"] - 5 and s["end"] <= segment["end"] + 5
+    )
+    if not text.strip():
+        # No transcript coverage — keep the detection rather than risk missing an ad
+        logger.warning(
+            "[AdRemover] No transcript text for verification of [%.1f–%.1f] — keeping segment",
+            segment["start"], segment["end"],
+        )
+        return True
+
+    prompt = _AD_VERIFICATION_PROMPT.format(
+        start=segment["start"],
+        end=segment["end"],
+        text=text[:2000],
+    )
+
+    try:
+        response = retry_aws_call(
+            lambda p=prompt: bedrock_client.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": p}]}],
+                inferenceConfig={"temperature": 0.0},
+            ),
+            label="bedrock.converse[verify]",
+        )
+        raw = response["output"]["message"]["content"][0]["text"].strip()
+
+        # Parse the JSON response (model may wrap it in markdown)
+        start_idx = raw.find("{")
+        end_idx = raw.rfind("}") + 1
+        if start_idx == -1 or end_idx == 0:
+            logger.warning("[AdRemover] Verification response had no JSON — keeping segment: %s", raw[:200])
+            return True
+
+        result = json.loads(raw[start_idx:end_idx])
+        is_ad = bool(result.get("is_ad", True))
+        reason = result.get("reason", "")
+        if is_ad:
+            logger.info(
+                "[AdRemover] Verification CONFIRMED ad [%.1f–%.1f]: %s",
+                segment["start"], segment["end"], reason,
+            )
+        else:
+            logger.info(
+                "[AdRemover] Verification REJECTED [%.1f–%.1f] (not an ad): %s",
+                segment["start"], segment["end"], reason,
+            )
+        return is_ad
+
+    except Exception as exc:
+        logger.warning(
+            "[AdRemover] Verification call failed for [%.1f–%.1f]: %s — keeping segment",
+            segment["start"], segment["end"], exc,
+        )
+        return True
 
 
 def detect_ads(segments: list[dict]) -> list[AdSegment]:
@@ -349,7 +600,11 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
 
     merged = _merge_overlapping_ads(all_ads)
 
+    # Fix #2: guard rails on duration — ads almost never exceed 3 min
     _MIN_AD_SECONDS = 5.0
+    max_ad_secs = float(os.environ.get("MAX_AD_SEGMENT_SECS", "180"))
+    verify_threshold = float(os.environ.get("AD_VERIFY_THRESHOLD_SECS", "90"))
+
     valid = []
     for seg in merged:
         duration = seg["end"] - seg["start"]
@@ -360,7 +615,32 @@ def detect_ads(segments: list[dict]) -> list[AdSegment]:
                 duration, _MIN_AD_SECONDS, seg["start"], seg["end"],
             )
             continue
+        if duration > max_ad_secs:
+            logger.warning(
+                "[AdRemover] Skipping suspiciously long ad segment "
+                "(%.1fs > %.1fs maximum): start=%.1f end=%.1f — likely a false positive",
+                duration, max_ad_secs, seg["start"], seg["end"],
+            )
+            continue
         valid.append(seg)
+
+    # Fix #4: second-pass verification for large segments
+    if valid and verify_threshold > 0:
+        confirmed = []
+        for seg in valid:
+            duration = seg["end"] - seg["start"]
+            if duration >= verify_threshold:
+                logger.info(
+                    "[AdRemover] Segment [%.1f–%.1f] (%.0fs) exceeds verify threshold "
+                    "(%.0fs) — running second-pass verification",
+                    seg["start"], seg["end"], duration, verify_threshold,
+                )
+                if _verify_ad_segment(seg, segments, bedrock, model_id):
+                    confirmed.append(seg)
+                # If rejected, it is simply dropped (logged inside _verify_ad_segment)
+            else:
+                confirmed.append(seg)
+        valid = confirmed
 
     if valid and segments:
         for ad in valid:
@@ -466,7 +746,7 @@ def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
     merged: list[AdSegment] = [{"start": sorted_ads[0]["start"], "end": sorted_ads[0]["end"]}]
 
     for seg in sorted_ads[1:]:
-        if seg["start"] <= merged[-1]["end"] + 5:
+        if seg["start"] <= merged[-1]["end"] + 2:  # Fix #3: 5s→2s — was merging unrelated ad blocks
             merged[-1]["end"] = max(merged[-1]["end"], seg["end"])
         else:
             merged.append({"start": seg["start"], "end": seg["end"]})
@@ -642,6 +922,10 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str) -> tuple[str, list[Ad
     if not ad_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
         return mp3_path, []
+
+    # Fix #5: snap boundaries to silence gaps for cleaner cuts
+    if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
+        ad_segments = snap_ad_boundaries(ad_segments, mp3_path)
 
     if dry_run:
         total_ad_secs = sum(s["end"] - s["start"] for s in ad_segments)

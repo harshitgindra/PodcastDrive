@@ -228,3 +228,5 @@ _LocalNotes.md
 .claude/
 .cline/
 reports/
+.syncstuffs_meta.json
+/test_output

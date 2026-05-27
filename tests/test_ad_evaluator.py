@@ -255,13 +255,20 @@ class TestEvaluateAdRemovalClean:
 
 class TestEvaluateAdRemovalResiduals:
     def test_partial_result_when_residual_near_original(self, monkeypatch, tmp_path):
-        """Residual within tolerance of original → overall result PARTIAL."""
+        """Residual near original boundary → overall result PARTIAL (Fix #1: using translated coords).
+
+        original_segs = [55–85] (30s removed).
+        Residual at cleaned [58–65] translates to original [88–95]:
+          keep [0–55] = 55s; cleaned 58 > 55 → original = 85 + (58-55) = 88.
+        Original [88–95] is 3s past the end of [55–85], within 10s boundary tolerance → PARTIAL.
+        """
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
         original_segs = [{"start": 55.0, "end": 85.0}]
-        residual = {"start": 88.0, "end": 95.0}
+        # Residual in cleaned-file space: [58–65] → translates to [88–95] in original space
+        residual = {"start": 58.0, "end": 65.0}
 
-        segments = [{"start": 88.0, "end": 95.0, "text": "sponsor message"}]
+        segments = [{"start": 58.0, "end": 65.0, "text": "sponsor message"}]
 
         with patch("ad_remover.transcribe_audio", return_value=segments), \
              patch("ad_remover.detect_ads", return_value=[residual]):

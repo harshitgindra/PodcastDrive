@@ -762,17 +762,24 @@ class TestMergeOverlappingAds:
         result = ad_remover._merge_overlapping_ads(ads)
         assert result == [{"start": 10.0, "end": 50.0}]
 
-    def test_adjacent_within_5s_merged(self):
-        """Segments within 5 seconds gap are merged."""
+    def test_adjacent_within_2s_merged(self):
+        """Segments within 2 seconds gap are merged (Fix #3: threshold reduced from 5s→2s)."""
         import ad_remover
-        ads = [{"start": 10.0, "end": 20.0}, {"start": 24.0, "end": 40.0}]
+        ads = [{"start": 10.0, "end": 20.0}, {"start": 22.0, "end": 40.0}]  # 2s gap
         result = ad_remover._merge_overlapping_ads(ads)
         assert result == [{"start": 10.0, "end": 40.0}]
 
-    def test_not_merged_when_gap_exceeds_5s(self):
-        """Segments with > 5s gap remain separate."""
+    def test_adjacent_within_5s_no_longer_merged(self):
+        """4s gap was merged under old 5s rule but stays separate under new 2s rule (Fix #3)."""
         import ad_remover
-        ads = [{"start": 10.0, "end": 20.0}, {"start": 26.0, "end": 40.0}]
+        ads = [{"start": 10.0, "end": 20.0}, {"start": 24.0, "end": 40.0}]  # 4s gap
+        result = ad_remover._merge_overlapping_ads(ads)
+        assert len(result) == 2, "4s gap should NOT merge under the new 2s threshold"
+
+    def test_not_merged_when_gap_exceeds_2s(self):
+        """Segments with > 2s gap remain separate."""
+        import ad_remover
+        ads = [{"start": 10.0, "end": 20.0}, {"start": 23.0, "end": 40.0}]  # 3s gap
         result = ad_remover._merge_overlapping_ads(ads)
         assert len(result) == 2
 
@@ -887,3 +894,194 @@ class TestDetectAdsChunking:
         result = ad_remover2.detect_ads(segments)
         assert len(result) == 1
         assert result[0] == {"start": 40.0, "end": 60.0}
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests — reach the remaining 20 uncovered lines
+# ---------------------------------------------------------------------------
+
+class TestDetectSilenceEdgeCases:
+    """Cover malformed ffmpeg output branches in detect_silence (lines 102-103, 119-120)."""
+
+    def _run(self, stderr_text):
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+        fake = MagicMock(stderr=stderr_text)
+        with patch("subprocess.run", return_value=fake):
+            return ad_remover.detect_silence("/fake.mp3")
+
+    def test_malformed_silence_start_does_not_crash(self):
+        """ValueError on bad silence_start line is silently swallowed (line 102-103)."""
+        # 'not_a_number' triggers ValueError in float()
+        result = self._run("[silencedetect] silence_start: not_a_number\n")
+        assert result == []
+
+    def test_malformed_silence_end_does_not_crash(self):
+        """ValueError on bad silence_end line resets current_start (lines 119-120)."""
+        stderr = (
+            "[silencedetect] silence_start: 10.0\n"
+            "[silencedetect] silence_end: BAD | silence_duration: also_bad\n"
+        )
+        result = self._run(stderr)
+        assert result == []
+
+    def test_silence_end_without_duration_field_uses_calculation(self):
+        """silence_end line without pipe-separated duration falls back to end-start."""
+        stderr = (
+            "[silencedetect] silence_start: 5.0\n"
+            "[silencedetect] silence_end: 6.5\n"  # no | silence_duration part
+        )
+        result = self._run(stderr)
+        assert len(result) == 1
+        assert abs(result[0]["duration"] - 1.5) < 0.01
+
+
+class TestSnapAdBoundariesEdgeCases:
+    """Cover snap_ad_boundaries empty-list and exception branches (lines 167, 171-173)."""
+
+    def test_empty_ad_segments_returns_immediately(self):
+        """snap_ad_boundaries returns [] without calling detect_silence (line 167)."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+        with patch("ad_remover.detect_silence") as mock_silence:
+            result = ad_remover.snap_ad_boundaries([], "/fake.mp3")
+        assert result == []
+        mock_silence.assert_not_called()
+
+    def test_detect_silence_exception_returns_original_segments(self):
+        """If detect_silence raises, original segments are returned unchanged (lines 171-173)."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+        segments = [{"start": 10.0, "end": 50.0}]
+        with patch("ad_remover.detect_silence", side_effect=RuntimeError("ffmpeg crashed")):
+            result = ad_remover.snap_ad_boundaries(segments, "/fake.mp3")
+        assert result == segments
+
+
+class TestTranscribeCleanupErrors:
+    """Cover silent-swallow branches when S3/Transcribe cleanup fails (lines 301-308)."""
+
+    @staticmethod
+    def _patch_boto3(monkeypatch, transcribe_client, s3_client=None):
+        """Patch boto3.client to return the provided mock clients."""
+        if s3_client is None:
+            s3_client = MagicMock()
+
+        def _client_factory(service, **kw):
+            if service == "s3":
+                return s3_client
+            return transcribe_client
+
+        import boto3
+        monkeypatch.setattr(boto3, "client", _client_factory)
+
+    def _make_transcribe(self):
+        """Return a transcribe mock that completes successfully."""
+        import json, urllib
+        transcript_data = {"results": {"items": []}}
+        tc = MagicMock()
+        tc.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://example.com/t.json"},
+            }
+        }
+        return tc
+
+    def test_s3_delete_error_is_swallowed(self, monkeypatch, mock_urlopen):
+        """S3 delete_object failure does not propagate (line 301-302)."""
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        s3 = MagicMock()
+        s3.delete_object.side_effect = RuntimeError("S3 unavailable")
+        tc = self._make_transcribe()
+        self._patch_boto3(monkeypatch, tc, s3_client=s3)
+        import ad_remover
+        # Should not raise despite S3 delete failure
+        result = ad_remover.transcribe_audio("/tmp/ep.mp3", "vid123")
+        assert isinstance(result, list)
+        s3.delete_object.assert_called_once()
+
+    def test_transcribe_job_delete_error_is_swallowed(self, monkeypatch, mock_urlopen):
+        """Transcribe job delete failure does not propagate (lines 307-308)."""
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        tc = self._make_transcribe()
+        tc.delete_transcription_job.side_effect = RuntimeError("delete failed")
+        self._patch_boto3(monkeypatch, tc)
+        import ad_remover
+        # Should not raise despite job delete failure
+        result = ad_remover.transcribe_audio("/tmp/ep.mp3", "vid123")
+        assert isinstance(result, list)
+        tc.delete_transcription_job.assert_called_once()
+
+
+class TestVerifyAdSegmentNoJson:
+    """Cover the no-JSON-in-verification-response branch (lines 503-504)."""
+
+    def test_no_json_in_response_keeps_segment(self, monkeypatch):
+        """If the verification response contains no JSON object, segment is kept."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "I cannot determine if this is an ad."}]}}
+        }
+        segs = [{"start": 100.0, "end": 200.0, "text": "some content"}]
+        seg = {"start": 100.0, "end": 200.0}
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            result = ad_remover._verify_ad_segment(seg, segs, mock_bedrock, "test-model")
+
+        assert result is True, "Segment with no-JSON response should be kept (fail-safe)"
+
+
+class TestSpliceAudioEdgeCases:
+    """Cover the remaining splice_audio error branches (lines 782-783, 789, 804, 815-816)."""
+
+    def test_raises_runtime_error_when_getsize_fails(self, monkeypatch):
+        """OSError from os.path.getsize is wrapped in RuntimeError (lines 782-783)."""
+        import ad_remover
+        monkeypatch.setattr(os.path, "getsize", MagicMock(side_effect=OSError("no such file")))
+        with pytest.raises(RuntimeError, match="cannot stat input file"):
+            ad_remover.splice_audio("/missing.mp3", [{"start": 0.0, "end": 10.0}], "/out.mp3")
+
+    def test_raises_runtime_error_for_tiny_file(self, monkeypatch):
+        """Files smaller than 1 KB are rejected as corrupt (line 789)."""
+        import ad_remover
+        monkeypatch.setattr(os.path, "getsize", lambda p: 512)  # 512 bytes < 1 KB
+        with pytest.raises(RuntimeError, match="suspiciously small"):
+            ad_remover.splice_audio("/tiny.mp3", [{"start": 0.0, "end": 10.0}], "/out.mp3")
+
+    def test_ffprobe_stderr_is_logged_but_does_not_fail(self, monkeypatch):
+        """Non-empty ffprobe stderr is logged at DEBUG and does not block execution (line 804)."""
+        import ad_remover
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd[0])
+            if cmd[0] == "ffprobe":
+                return MagicMock(stdout="300.0\n", stderr="some non-fatal ffprobe warning", returncode=0)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        # Should complete without raising despite ffprobe stderr output
+        ad_remover.splice_audio("/in.mp3", [{"start": 10.0, "end": 50.0}], "/out.mp3")
+        assert "ffprobe" in run_calls
+
+    def test_raises_runtime_error_for_non_subprocess_ffprobe_error(self, monkeypatch):
+        """Non-CalledProcessError from ffprobe is wrapped in RuntimeError (lines 815-816)."""
+        import ad_remover
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "ffprobe":
+                raise FileNotFoundError("ffprobe not found")
+            return MagicMock()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="ffprobe error"):
+            ad_remover.splice_audio("/in.mp3", [{"start": 10.0, "end": 50.0}], "/out.mp3")

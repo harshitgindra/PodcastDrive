@@ -126,6 +126,46 @@ def _build_proposals(
 
 
 # ---------------------------------------------------------------------------
+# Fix #1 – Timestamp coordinate translation
+# ---------------------------------------------------------------------------
+
+def _translate_cleaned_to_original(
+    cleaned_time: float,
+    removed_segments: list[dict],
+) -> float:
+    """Translate a cleaned-file timestamp back to original-file space.
+
+    When ad segments are spliced out, all subsequent content shifts earlier.
+    This reverses the shift so residual timestamps can be compared against the
+    original-file ad-segment list.
+
+    Args:
+        cleaned_time:     Timestamp in the cleaned file (seconds).
+        removed_segments: Segments removed during ad splicing (``{start, end}``).
+
+    Returns:
+        Equivalent timestamp in the original file (seconds).
+    """
+    if not removed_segments:
+        return cleaned_time
+
+    sorted_segs = sorted(removed_segments, key=lambda s: s["start"])
+    cleaned_cursor = 0.0
+    original_cursor = 0.0
+
+    for seg in sorted_segs:
+        keep_duration = max(0.0, seg["start"] - original_cursor)
+        if cleaned_cursor + keep_duration >= cleaned_time:
+            # cleaned_time lands inside this keep interval
+            return original_cursor + (cleaned_time - cleaned_cursor)
+        cleaned_cursor += keep_duration
+        original_cursor = seg["end"]
+
+    # cleaned_time is past all removed segments
+    return original_cursor + (cleaned_time - cleaned_cursor)
+
+
+# ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
 
@@ -191,6 +231,16 @@ def evaluate_ad_removal(
         logger.warning("[AdEvaluator] Ad detection on cleaned file failed for %s: %s", episode_id, exc)
         return {"skipped": True, "error": str(exc)}
 
+    # Fix #1: translate residual timestamps from cleaned-file space to original-file
+    # space so _classify_residual compares apples-to-apples.
+    for residual in residual_segments:
+        residual["original_time_start"] = round(
+            _translate_cleaned_to_original(residual["start"], original_ad_segments), 2
+        )
+        residual["original_time_end"] = round(
+            _translate_cleaned_to_original(residual["end"], original_ad_segments), 2
+        )
+
     # Attach transcript text to residual segments for better proposals
     for residual in residual_segments:
         covered_text = " ".join(
@@ -199,17 +249,22 @@ def evaluate_ad_removal(
         )
         residual["text"] = covered_text[:300]
 
-    # --- Step 3: Classify and build proposals ---
+    # --- Step 3: Classify and build proposals (using original-space timestamps) ---
+    # Build translated copies for classification so proposals show original times.
+    translated_residuals = [
+        {**r, "start": r["original_time_start"], "end": r["original_time_end"]}
+        for r in residual_segments
+    ]
     if not residual_segments:
         result = RESULT_CLEAN
         proposals: list[dict] = []
     else:
         classifications = [
-            _classify_residual(r, original_ad_segments) for r in residual_segments
+            _classify_residual(r, original_ad_segments) for r in translated_residuals
         ]
         # Overall result is the worst classification found
         result = RESULT_MISSED if RESULT_MISSED in classifications else RESULT_PARTIAL
-        proposals = _build_proposals(residual_segments, original_ad_segments)
+        proposals = _build_proposals(translated_residuals, original_ad_segments)
 
     total_removed = sum(s["end"] - s["start"] for s in original_ad_segments)
     residual_secs = sum(s["end"] - s["start"] for s in residual_segments)
