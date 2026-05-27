@@ -1132,3 +1132,176 @@ class TestBedrockModelTiering:
         ad_remover.detect_ads(segments)
 
         assert called_model_ids[0] == "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
+
+class TestTranscriptCache:
+    """_load_transcript_cache, _save_transcript_cache, and transcribe_audio cache integration."""
+
+    def test_load_returns_none_on_cache_miss(self, monkeypatch):
+        """Cache MISS (NoSuchKey) returns None without raising."""
+        import ad_remover
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": ""}}, "GetObject"
+        )
+        result = ad_remover._load_transcript_cache(mock_s3, "my-bucket", "ep123")
+        assert result is None
+
+    def test_load_returns_segments_on_cache_hit(self, monkeypatch):
+        """Cache HIT returns the stored segment list."""
+        import ad_remover
+        import json
+
+        segments = [{"start": 0.0, "end": 5.0, "text": "hello"}]
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(read=lambda: json.dumps(segments).encode())
+        }
+        result = ad_remover._load_transcript_cache(mock_s3, "my-bucket", "ep123")
+        assert result == segments
+
+    def test_load_returns_none_on_corrupt_cache(self, monkeypatch):
+        """Non-list cache content returns None gracefully."""
+        import ad_remover
+        import json
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(read=lambda: json.dumps({"not": "a list"}).encode())
+        }
+        result = ad_remover._load_transcript_cache(mock_s3, "my-bucket", "ep123")
+        assert result is None
+
+    def test_save_puts_object_to_s3(self, monkeypatch):
+        """_save_transcript_cache writes JSON to correct S3 key."""
+        import ad_remover
+
+        mock_s3 = MagicMock()
+        segments = [{"start": 1.0, "end": 10.0, "text": "ad content"}]
+        ad_remover._save_transcript_cache(mock_s3, "my-bucket", "ep456", segments)
+
+        mock_s3.put_object.assert_called_once()
+        call_kwargs = mock_s3.put_object.call_args[1]
+        assert call_kwargs["Bucket"] == "my-bucket"
+        assert "ep456" in call_kwargs["Key"]
+        import json
+        assert json.loads(call_kwargs["Body"].decode()) == segments
+
+    def test_save_swallows_exceptions(self, monkeypatch):
+        """_save_transcript_cache never raises even if S3 write fails."""
+        import ad_remover
+
+        mock_s3 = MagicMock()
+        mock_s3.put_object.side_effect = RuntimeError("network error")
+        # Should not raise
+        ad_remover._save_transcript_cache(mock_s3, "my-bucket", "ep789", [])
+
+    def test_transcribe_returns_cache_when_hit(self, monkeypatch):
+        """transcribe_audio returns cached segments without calling Transcribe."""
+        import ad_remover
+        import json
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+
+        cached = [{"start": 5.0, "end": 10.0, "text": "sponsored by"}]
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(read=lambda: json.dumps(cached).encode())
+        }
+        mock_transcribe = MagicMock()
+
+        def fake_client(service, **kw):
+            return mock_s3 if service == "s3" else mock_transcribe
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=fake_client))
+
+        result = ad_remover.transcribe_audio("/fake.mp3", "ep_cached")
+        assert result == cached
+        mock_transcribe.start_transcription_job.assert_not_called()
+
+    def test_eval_jobs_skip_cache(self, monkeypatch):
+        """eval- prefixed video_ids bypass cache (evaluator re-transcribes cleaned file)."""
+        import ad_remover
+        import json
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+
+        # S3 would return a hit if consulted — but it should NOT be consulted
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(read=lambda: json.dumps([]).encode())
+        }
+
+        # Transcribe returns COMPLETED immediately with a valid transcript
+        transcript = {"results": {"items": []}}
+        import urllib.request as urllib_req
+
+        def fake_urlopen(url, context=None):
+            return MagicMock(
+                __enter__=lambda s: s,
+                __exit__=lambda s, *a: None,
+                read=lambda: json.dumps(transcript).encode(),
+            )
+
+        mock_transcribe = MagicMock()
+        mock_transcribe.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://fake/transcript.json"},
+            }
+        }
+
+        def fake_client(service, **kw):
+            return mock_s3 if service == "s3" else mock_transcribe
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=fake_client))
+        monkeypatch.setattr(urllib_req, "urlopen", fake_urlopen)
+
+        ad_remover.transcribe_audio("/fake.mp3", "eval-ep123")
+        # Cache should NOT have been consulted (get_object not called)
+        mock_s3.get_object.assert_not_called()
+        # And cache should NOT have been saved either
+        mock_s3.put_object.assert_not_called()
+
+    def test_cache_disabled_skips_lookup(self, monkeypatch):
+        """TRANSCRIBE_CACHE_ENABLED=false skips cache lookup entirely."""
+        import ad_remover
+        import json
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+
+        mock_s3 = MagicMock()
+        transcript = {"results": {"items": []}}
+
+        import urllib.request as urllib_req
+
+        def fake_urlopen(url, context=None):
+            return MagicMock(
+                __enter__=lambda s: s,
+                __exit__=lambda s, *a: None,
+                read=lambda: json.dumps(transcript).encode(),
+            )
+
+        mock_transcribe = MagicMock()
+        mock_transcribe.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://fake/transcript.json"},
+            }
+        }
+
+        def fake_client(service, **kw):
+            return mock_s3 if service == "s3" else mock_transcribe
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=fake_client))
+        monkeypatch.setattr(urllib_req, "urlopen", fake_urlopen)
+
+        ad_remover.transcribe_audio("/fake.mp3", "ep_no_cache")
+        # Cache get_object must not have been called
+        mock_s3.get_object.assert_not_called()

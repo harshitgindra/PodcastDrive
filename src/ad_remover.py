@@ -37,6 +37,12 @@ Environment variables (all optional — sensible defaults provided):
                               disable verification.
     AD_SNAP_TO_SILENCE      – Set to "true" to snap ad-segment boundaries to the nearest silence
                               gap (±3 s window), producing cleaner audio cuts (default: "true").
+    TRANSCRIBE_CACHE_ENABLED – Set to "false" to disable S3 transcript caching (default: "true").
+                               When enabled, the segment JSON from each successful Transcribe job is
+                               saved to S3 at ``transcribe-cache/{video_id}.json`` and reused on
+                               subsequent runs, eliminating repeated transcription costs for
+                               reprocessed episodes.
+    TRANSCRIBE_CACHE_PREFIX  – S3 key prefix for cached transcripts (default: "transcribe-cache").
 """
 
 from __future__ import annotations
@@ -207,6 +213,67 @@ def snap_ad_boundaries(
 # Step 1 – Transcription (AWS Transcribe)
 # ---------------------------------------------------------------------------
 
+def _transcript_cache_key(video_id: str) -> str:
+    """Return the S3 key used for caching a transcript."""
+    prefix = os.environ.get("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache")
+    return f"{prefix}/{video_id}.json"
+
+
+def _load_transcript_cache(s3_client, bucket: str, video_id: str) -> list[dict] | None:
+    """Try to load a cached transcript from S3.
+
+    Args:
+        s3_client: Boto3 S3 client.
+        bucket:    S3 bucket name.
+        video_id:  Episode identifier used as the cache key.
+
+    Returns:
+        Cached segment list, or ``None`` if not found or loading fails.
+    """
+    from botocore.exceptions import ClientError
+
+    key = _transcript_cache_key(video_id)
+    try:
+        resp = s3_client.get_object(Bucket=bucket, Key=key)
+        data = json.loads(resp["Body"].read().decode("utf-8"))
+        if isinstance(data, list):
+            logger.info(
+                "[AdRemover] Transcript cache HIT for %s (%d segments) — skipping Transcribe job",
+                video_id, len(data),
+            )
+            return data
+        logger.warning("[AdRemover] Cached transcript for %s is not a list — ignoring", video_id)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
+            logger.debug("[AdRemover] Transcript cache MISS for %s", video_id)
+        else:
+            logger.debug("[AdRemover] Transcript cache load error for %s (%s): %s", video_id, code, exc)
+    except Exception as exc:
+        logger.debug("[AdRemover] Transcript cache load failed for %s: %s", video_id, exc)
+    return None
+
+
+def _save_transcript_cache(s3_client, bucket: str, video_id: str, segments: list[dict]) -> None:
+    """Persist a transcript segment list to S3 for future reuse.
+
+    Args:
+        s3_client: Boto3 S3 client.
+        bucket:    S3 bucket name.
+        video_id:  Episode identifier used as the cache key.
+        segments:  Segment list returned by ``_items_to_segments``.
+    """
+    key = _transcript_cache_key(video_id)
+    try:
+        body = json.dumps(segments).encode("utf-8")
+        s3_client.put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+        )
+        logger.debug("[AdRemover] Transcript cache saved for %s → s3://%s/%s", video_id, bucket, key)
+    except Exception as exc:
+        logger.warning("[AdRemover] Could not save transcript cache for %s: %s", video_id, exc)
+
+
 def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     """Upload *mp3_path* to S3 and transcribe it with AWS Transcribe.
 
@@ -233,9 +300,19 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     language_code = os.environ.get("TRANSCRIBE_LANGUAGE_CODE", "en-US")
     poll_interval = int(os.environ.get("TRANSCRIBE_POLL_INTERVAL", "10"))
     max_wait = int(os.environ.get("TRANSCRIBE_MAX_WAIT", "3600"))
+    cache_enabled = os.environ.get("TRANSCRIBE_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
+    # Skip caching for evaluator re-transcriptions (eval- prefix) — those target the cleaned
+    # file and should not overwrite the original episode's cache entry.
+    use_cache = cache_enabled and not video_id.startswith("eval-")
 
     s3_client = boto3.client("s3", region_name=region)
     transcribe_client = boto3.client("transcribe", region_name=region)
+
+    # 0. Check transcript cache (skip expensive Transcribe job if already done)
+    if use_cache:
+        cached = _load_transcript_cache(s3_client, bucket, video_id)
+        if cached is not None:
+            return cached
 
     # 1. Upload audio to a temporary S3 key
     tmp_key = f"transcribe-tmp/{video_id}.mp3"
@@ -296,6 +373,11 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
         items = transcript_data.get("results", {}).get("items", [])
         segments = _items_to_segments(items)
         logger.info("[AdRemover] Transcription complete: %d segments from %d items", len(segments), len(items))
+
+        # Save to cache so subsequent runs skip the Transcribe job
+        if use_cache:
+            _save_transcript_cache(s3_client, bucket, video_id, segments)
+
         return segments
 
     finally:
