@@ -1,7 +1,6 @@
 """Playlist extraction using yt_dlp for YouTube metadata."""
 
 import logging
-from datetime import datetime, timezone
 
 import yt_dlp
 

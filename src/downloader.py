@@ -10,7 +10,6 @@ retried automatically with exponential back-off via ``tenacity``.
 import glob
 import logging
 import os
-import sys
 
 import yt_dlp
 from tenacity import (

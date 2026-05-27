@@ -93,10 +93,8 @@ class YamlConfigProvider(ConfigProvider):
             data = yaml.safe_load(f) or {}
 
         defaults = data.get("defaults", {})
-        podcasts = []
-
-        for entry in data.get("podcasts", []):
-            podcasts.append(PodcastConfig(
+        podcasts = [
+            PodcastConfig(
                 name=entry.get("name", entry.get("url", "Unknown")),
                 url=entry["url"],
                 enabled=entry.get("enabled", True),
@@ -104,7 +102,9 @@ class YamlConfigProvider(ConfigProvider):
                 max_age_days=entry.get("max_age_days", defaults.get("max_age_days")),
                 sleep_between=entry.get("sleep_between", defaults.get("sleep_between")),
                 ad_hints=entry.get("ad_hints", defaults.get("ad_hints", "")),
-            ))
+            )
+            for entry in data.get("podcasts", [])
+        ]
 
         logger.info("Loaded %d podcasts from %s", len(podcasts), self.path)
         return podcasts
