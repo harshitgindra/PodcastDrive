@@ -166,13 +166,22 @@ def _check_yt_dlp() -> None:
     except ImportError:
         _fail("yt-dlp is not installed — run: pip install yt-dlp")
 
+    yt_dlp_bin = shutil.which("yt-dlp")
+    if not yt_dlp_bin:
+        _fail(
+            "yt-dlp binary not found on PATH.\n"
+            "  This usually means the virtual environment is broken or was built\n"
+            "  under a different username/path.  Delete .venv and re-run run.sh:\n"
+            "    rm -rf .venv && ./run.sh"
+        )
+
     result = subprocess.run(
-        ["yt-dlp", "--version"],
+        [yt_dlp_bin, "--version"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        _fail("yt-dlp binary not found or not working — ensure it is on PATH")
-    _ok(f"yt-dlp binary version: {result.stdout.strip()}")
+        _fail(f"yt-dlp binary found at {yt_dlp_bin} but failed to run")
+    _ok(f"yt-dlp binary version: {result.stdout.strip()} ({yt_dlp_bin})")
 
 
 def _check_ffmpeg() -> None:

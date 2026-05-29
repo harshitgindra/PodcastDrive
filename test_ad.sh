@@ -26,16 +26,22 @@ set -o allexport
 source "$SCRIPT_DIR/config.env"
 set +o allexport
 
-# ── 2. Bootstrap venv (first run creates it, subsequent runs skip) ────────────
+# ── 2. Bootstrap venv (recreate if missing, broken, or built under a different path) ──
 VENV="$SCRIPT_DIR/.venv"
 VENV_PYTHON="$VENV/bin/python3"
 VENV_PIP="$VENV/bin/pip"
 
 if [[ ! -d "$VENV" ]]; then
   echo "Creating virtual environment..."
-  /opt/homebrew/bin/python3 -m venv "$VENV" 2>/dev/null \
-    || /usr/local/bin/python3 -m venv "$VENV" 2>/dev/null \
-    || python3 -m venv "$VENV"
+  python3 -m venv "$VENV"
+elif ! "$VENV_PYTHON" -c "import sys; sys.exit(0)" 2>/dev/null; then
+  echo "Warning: virtual environment is broken — recreating..."
+  rm -rf "$VENV"
+  python3 -m venv "$VENV"
+elif ! head -1 "$VENV/bin/pip" 2>/dev/null | grep -qF "$SCRIPT_DIR"; then
+  echo "Warning: virtual environment has stale shebangs (built under a different path) — recreating..."
+  rm -rf "$VENV"
+  python3 -m venv "$VENV"
 fi
 
 if ! "$VENV_PYTHON" -c "import yt_dlp, boto3, tenacity, certifi" 2>/dev/null; then

@@ -47,14 +47,14 @@ echo $$ > "$LOCK_FILE"
 
 # --- Parse flags: --dry-run, --reset, --force ---
 DRY_RUN=false
-RESET=false
+DO_RESET=false
 FORCE=false
 ARGS=()
 for arg in "$@"; do
     if [[ "$arg" == "--dry-run" ]]; then
         DRY_RUN=true
     elif [[ "$arg" == "--reset" ]]; then
-        RESET=true
+        DO_RESET=true
     elif [[ "$arg" == "--force" ]]; then
         FORCE=true
     else
@@ -80,13 +80,17 @@ else
     fail "config.env not found — copy config.env.example and fill in your values"
 fi
 
-# --- Setup venv if needed ---
+# --- Setup venv (recreate if missing, broken, or built under a different path) ---
 section "2 / 2  Python environment"
 if [ ! -d "${SCRIPT_DIR}/.venv" ]; then
     info "Creating virtual environment..."
     python3 -m venv "${SCRIPT_DIR}/.venv"
 elif ! "${SCRIPT_DIR}/.venv/bin/python3" -c "import sys; sys.exit(0)" 2>/dev/null; then
-    warn "Virtual environment is broken (interpreter missing or wrong path) — recreating..."
+    warn "Virtual environment is broken (interpreter not executable) — recreating..."
+    rm -rf "${SCRIPT_DIR}/.venv"
+    python3 -m venv "${SCRIPT_DIR}/.venv"
+elif ! head -1 "${SCRIPT_DIR}/.venv/bin/pip" 2>/dev/null | grep -qF "${SCRIPT_DIR}"; then
+    warn "Virtual environment has stale shebangs (built under a different path) — recreating..."
     rm -rf "${SCRIPT_DIR}/.venv"
     python3 -m venv "${SCRIPT_DIR}/.venv"
 fi
@@ -124,7 +128,7 @@ export PODCASTS_YAML="${PODCASTS_YAML:-${SCRIPT_DIR}/podcasts.yaml}"
 export PYTHONPATH="${SCRIPT_DIR}/src"
 
 # --- Reset mode: wipe all S3 data for enabled podcasts then exit ---
-if [ "$RESET" = true ]; then
+if [ "$DO_RESET" = true ]; then
     FORCE_FLAG=""
     if [ "$FORCE" = true ]; then
         FORCE_FLAG="--force"
