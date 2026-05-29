@@ -9,10 +9,11 @@ Thank you for considering a contribution! This document describes how to set up 
 1. [Prerequisites](#prerequisites)
 2. [Local setup](#local-setup)
 3. [Running tests](#running-tests)
-4. [Code style](#code-style)
-5. [Pull-request workflow](#pull-request-workflow)
-6. [Commit message convention](#commit-message-convention)
-7. [Reporting bugs](#reporting-bugs)
+4. [Git hooks](#git-hooks)
+5. [Code style](#code-style)
+6. [Pull-request workflow](#pull-request-workflow)
+7. [Commit message convention](#commit-message-convention)
+8. [Reporting bugs](#reporting-bugs)
 
 ---
 
@@ -68,6 +69,98 @@ python3 -m pytest tests/ -k "sleep"
 ```
 
 The CI workflow (`.github/workflows/test.yml`) requires **≥ 95 % coverage** and runs on Python 3.11, 3.12 and 3.13. Please make sure your changes don't drop coverage below this threshold.
+
+---
+
+## Git hooks
+
+A `pre-push` hook is provided that runs the **exact same test command as CI** before every `git push`. This gives you fast local feedback before code reaches GitHub.
+
+> **Note:** The hook is opt-in per machine. Server-side branch protection (below) is the authoritative enforcement that covers all contributors regardless of local setup.
+
+### Install (one-time setup)
+
+```bash
+make install-hooks
+```
+
+Or manually:
+
+```bash
+cp scripts/pre-push .git/hooks/pre-push
+chmod +x .git/hooks/pre-push
+```
+
+### What it does
+
+Every time you run `git push`, the hook executes:
+
+```bash
+python -m pytest tests/ --tb=short --cov=src --cov-report=term-missing --cov-fail-under=95
+```
+
+- ✅ **All tests pass + coverage ≥ 95%** → push proceeds normally.
+- ❌ **Tests fail or coverage drops** → push is blocked with a clear error message.
+
+### Bypassing the hook
+
+For work-in-progress branches where you intentionally want to push without running tests:
+
+```bash
+git push --no-verify
+```
+
+---
+
+## GitHub branch protection (server-side enforcement)
+
+Branch protection rules enforce CI for **every contributor**, regardless of whether they have the local hook installed. These rules are applied server-side on GitHub and cannot be bypassed.
+
+### What is enforced on `main`
+
+| Rule | Effect |
+|------|--------|
+| **`ci-gate` must pass** | All 3 Python-version test jobs must be green before merge |
+| **1 approving review required** | No self-merge; at least one teammate must approve |
+| **CODEOWNERS review required** | `@harshitgindra` must approve every PR (see `.github/CODEOWNERS`) |
+| **Stale reviews dismissed** | New commits invalidate existing approvals |
+| **Direct pushes to `main` blocked** | All changes must go through a PR |
+| **Enforced for admins** | No bypass, even for repository owners |
+
+### One-time setup (repository owner only)
+
+Run this once after creating the repository (or after changing the rules):
+
+```bash
+# Generate a token at https://github.com/settings/tokens
+# Required scope: repo  (classic token)
+#                 or administration:write  (fine-grained token)
+GITHUB_TOKEN=ghp_... make protect
+```
+
+This calls `scripts/setup-branch-protection.sh` which applies all rules above via the GitHub REST API.
+
+### How it protects the team
+
+```
+Developer A               GitHub                   GitHub Actions CI
+    │                        │                            │
+    ├── git push feature ──► │                            │
+    │                        ├── PR opened                │
+    │                        ├── triggers CI ────────────►│
+    │                        │                            ├── Python 3.11 ✅
+    │                        │                            ├── Python 3.12 ✅
+    │                        │                            ├── Python 3.13 ✅
+    │                        │◄─── ci-gate: PASS ─────────┤
+    │                        │                            │
+    │◄── review required ────┤                            │
+    │    (CODEOWNER)         │                            │
+    │                        │                            │
+    ├── approved + CI green ►│                            │
+    │                        ├── merge allowed ✅          │
+```
+
+If CI fails or no review is given, **GitHub blocks the merge button** — no code reaches `main`.
 
 ---
 

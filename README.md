@@ -1,7 +1,7 @@
 # PodcastDrive
 
 [![CI](https://github.com/harshitgindra/PodcastDrive/actions/workflows/test.yml/badge.svg)](https://github.com/harshitgindra/PodcastDrive/actions/workflows/test.yml)
-[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/harshitgindra/PodcastDrive/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](https://github.com/harshitgindra/PodcastDrive/actions/workflows/test.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/harshitgindra/PodcastDrive)
 
 A self-hosted podcast pipeline that does two things:
@@ -81,8 +81,8 @@ A JSON report with improvement proposals is written to `reports/{slug}/{episode_
 │   ├── models.py               # Data models (PlaylistMeta, VideoEntry, EpisodeMeta)
 │   ├── logger_config.py        # Logging setup (rotating file + console)
 │   └── utils.py                # Utility functions (URL parsing, date parsing, AWS retry)
-├── tests/                      # Unit test suite (531 tests across all modules)
-│   ├── test_ad_remover.py      # Ad removal pipeline — 149 tests, 100% coverage
+├── tests/                      # Unit test suite (657 tests, 97% overall coverage)
+│   ├── test_ad_remover.py      # Ad removal pipeline — 113 tests, 96% coverage
 │   ├── test_ad_evaluator.py    # Ad evaluator — 100% coverage
 │   ├── test_ad_fixes.py        # Regression tests for the 5 ad-removal fixes
 │   └── test_*.py               # All other module tests
@@ -443,46 +443,41 @@ If you leave `URL` blank for a `Source = Podcast` entry, PodcastDrive will:
 
 ## Running tests
 
-### Ad-removal pipeline (100% coverage)
-
-```bash
-# Activate the virtual environment (or let run.sh do it)
-source .venv/bin/activate
-
-# Run the full ad-removal test suite with coverage
-PYTHONPATH=src python -m coverage run --source=src \
-    -m pytest tests/test_ad_remover.py tests/test_ad_evaluator.py tests/test_ad_fixes.py -q
-
-# Show coverage report
-python -m coverage report --include="*/ad_remover*,*/ad_evaluator*" --show-missing
-```
-
-Expected output:
-```
-149 passed in 0.89s
-
-Name                   Stmts   Miss  Cover
-------------------------------------------
-src/ad_evaluator.py       92      0   100%
-src/ad_remover.py        379      0   100%
-TOTAL                    471      0   100%
-```
-
-### Full test suite
-
 ```bash
 source .venv/bin/activate
 
 # Run all tests
-python -m pytest tests/ -v
+python -m pytest tests/ --tb=short
 
-# Run with full coverage (all modules)
-PYTHONPATH=src python -m pytest tests/ --cov=src --cov-report=term-missing
+# Run with full coverage report (CI threshold is 95%)
+python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=95
 
 # Run a specific module
 python -m pytest tests/test_podcast_sync.py -v
 python -m pytest tests/test_ad_remover.py -v
 ```
+
+Or use the Makefile shortcuts:
+
+```bash
+make test       # run full suite
+make coverage   # run with coverage report (fails if < 95%)
+```
+
+Expected output:
+```
+657 passed, 9 skipped in ~12s
+
+Name                        Stmts   Miss  Cover
+-----------------------------------------------
+src/ad_evaluator.py            92      0   100%
+src/ad_remover.py             614     23    96%
+src/s3_manager.py             156      0   100%
+...
+TOTAL                        2413     65    97%
+```
+
+CI runs the same command on Python 3.11, 3.12, and 3.13 via GitHub Actions.
 
 ### Test categories
 
@@ -694,6 +689,27 @@ Key log prefixes to grep for:
 ## Contributing
 
 Contributions, bug reports, and feature requests are welcome. Please open an issue or pull request on GitHub. By contributing, you agree that your contributions will be licensed under the same licence as this project.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide, including:
+
+- **Local setup** and virtual environment instructions
+- **Git hooks** — install a `pre-push` hook (`make install-hooks`) that runs the test suite locally before every push, giving you the same feedback as CI without waiting for GitHub Actions
+- **GitHub branch protection** — server-side rules that enforce CI for every contributor regardless of local setup. All PRs must pass the `ci-gate` check (Python 3.11 + 3.12 + 3.13, coverage ≥ 95%) and receive a code-owner review before merging. To activate these rules on the repository run:
+  ```bash
+  GITHUB_TOKEN=ghp_... make protect
+  ```
+- **Code style**, **commit message convention**, and **PR workflow**
+
+### Quick start for contributors
+
+```bash
+git clone https://github.com/harshitgindra/PodcastDrive.git
+cd PodcastDrive
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+make install-hooks   # optional but recommended — blocks broken pushes locally
+make test            # verify everything passes before your first commit
+```
 
 ## Licence
 

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# pre-push hook — mirrors the GitHub Actions CI test command.
+# Blocks the push if tests fail or coverage drops below 95%.
+#
+# Install:  make install-hooks
+#           — or —
+#           cp scripts/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#
+# Skip:     git push --no-verify
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Use the virtual-environment Python when available, fall back to system Python.
+if [ -x "$REPO_ROOT/.venv/bin/python3" ]; then
+    PYTHON="$REPO_ROOT/.venv/bin/python3"
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    PYTHON="$REPO_ROOT/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
+
+echo "🔍  Running test suite before push (use --no-verify to skip)..."
+echo "    Python: $PYTHON"
+echo ""
+
+"$PYTHON" -m pytest tests/ \
+    --tb=short \
+    --cov=src \
+    --cov-report=term-missing \
+    --cov-fail-under=95
+
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+    echo ""
+    echo "❌  Push blocked: tests failed or coverage is below 95%."
+    echo "    Fix the issues above, then push again."
+    echo "    To bypass (e.g. for a WIP branch): git push --no-verify"
+    exit 1
+fi
+
+echo ""
+echo "✅  All tests passed — proceeding with push."
+exit 0

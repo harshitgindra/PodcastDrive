@@ -1,0 +1,8 @@
+# CODEOWNERS — every PR requires approval from a code owner before merging.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything in the repo
+* @harshitgindra
+
+# CI / workflow changes always need owner sign-off
+.github/workflows/ @harshitgindra
