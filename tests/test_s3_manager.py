@@ -541,3 +541,125 @@ class TestResetPodcast:
             result = manager.reset_podcast()
 
             assert result["manifest_deleted"] is True
+
+
+# ---------------------------------------------------------------------------
+# Exception-path coverage for lines 237-238, 265-266, 283, 353-354, 365-366
+# ---------------------------------------------------------------------------
+
+class TestManifestExceptionPaths:
+    """Cover non-404 ClientError and generic Exception branches in load/save_manifest."""
+
+    def test_load_manifest_non_404_client_error_returns_empty(self):
+        """Non-404 ClientError (e.g. 403 Forbidden) is swallowed, returns {} (lines 237-238)."""
+        from botocore.exceptions import ClientError
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+        mock_s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Forbidden"}}, "GetObject"
+        )
+        manager.s3_client = mock_s3
+
+        result = manager.load_manifest()
+        assert result == {}
+
+    def test_load_manifest_generic_exception_returns_empty(self):
+        """Generic Exception in load_manifest is swallowed, returns {} (lines 239-241)."""
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+        mock_s3.get_object.side_effect = RuntimeError("unexpected S3 failure")
+        manager.s3_client = mock_s3
+
+        result = manager.load_manifest()
+        assert result == {}
+
+    def test_save_manifest_exception_is_swallowed(self):
+        """Exception in save_manifest is swallowed (lines 265-266)."""
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+        mock_s3.put_object.side_effect = RuntimeError("S3 write failure")
+        manager.s3_client = mock_s3
+
+        # Should not raise
+        manager.save_manifest({"ep-001": {"size": 100}})
+
+
+class TestCloudFrontClientInit:
+    """Cover the lazy _cf_client initialization branch (line 283)."""
+
+    def test_cf_client_initialized_lazily_when_none(self):
+        """When _cf_client is None and distribution_id is set, boto3.client('cloudfront')
+        is called to create it (line 283)."""
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager._distribution_id = "EDIST_LAZY"
+        assert manager._cf_client is None  # precondition
+
+        mock_cf = unittest.mock.MagicMock()
+
+        with unittest.mock.patch("s3_manager.boto3.client", return_value=mock_cf) as mock_boto3:
+            manager._invalidate_cloudfront("/feed.xml")
+
+        # boto3.client should have been called to create the CF client
+        mock_boto3.assert_called_once_with("cloudfront")
+        # And the invalidation should have been made using that client
+        mock_cf.create_invalidation.assert_called_once()
+
+
+class TestResetPodcastExceptionPaths:
+    """Cover exception branches in reset_podcast for feed/manifest deletes
+    (lines 353-354, 365-366)."""
+
+    def _make_manager(self, conn):
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager.s3_client = conn
+        return manager
+
+    def test_feed_delete_exception_is_swallowed(self):
+        """Exception during feed.xml delete does not propagate (lines 353-354)."""
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+
+        # paginator returns empty pages (no episodes to delete)
+        mock_paginator = unittest.mock.MagicMock()
+        mock_paginator.paginate.return_value = [{"Contents": []}]
+        mock_s3.get_paginator.return_value = mock_paginator
+
+        # First delete_object call (feed.xml) raises; second (manifest.json) succeeds
+        call_count = [0]
+        def fake_delete_object(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("feed delete failed")
+
+        mock_s3.delete_object.side_effect = fake_delete_object
+        manager.s3_client = mock_s3
+
+        # Should not raise
+        result = manager.reset_podcast()
+        assert result["feed_deleted"] is False
+        assert result["manifest_deleted"] is True
+
+    def test_manifest_delete_exception_is_swallowed(self):
+        """Exception during manifest.json delete does not propagate (lines 365-366)."""
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+
+        mock_paginator = unittest.mock.MagicMock()
+        mock_paginator.paginate.return_value = [{"Contents": []}]
+        mock_s3.get_paginator.return_value = mock_paginator
+
+        # First delete_object (feed.xml) succeeds; second (manifest.json) raises
+        call_count = [0]
+        def fake_delete_object(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise RuntimeError("manifest delete failed")
+
+        mock_s3.delete_object.side_effect = fake_delete_object
+        manager.s3_client = mock_s3
+
+        # Should not raise
+        result = manager.reset_podcast()
+        assert result["feed_deleted"] is True
+        assert result["manifest_deleted"] is False

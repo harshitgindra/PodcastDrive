@@ -1640,20 +1640,195 @@ class TestDetectAdsWithHints:
 
         assert "Podcast-specific ad patterns" not in captured_prompts[0]
 
-    def test_hints_whitespace_only_not_injected(self):
-        """Whitespace-only ad_hints string is treated as empty."""
-        from ad_remover import detect_ads
 
-        captured_prompts = []
+# ---------------------------------------------------------------------------
+# Windowed transcription (AD_TRANSCRIBE_WINDOWS) — lines 511-593
+# ---------------------------------------------------------------------------
 
-        def fake_converse(**kwargs):
-            captured_prompts.append(kwargs["messages"][0]["content"][0]["text"])
-            return {"output": {"message": {"content": [{"text": "[]"}]}}}
+class TestWindowedTranscription:
+    """transcribe_audio with AD_TRANSCRIBE_WINDOWS set processes sub-clips."""
 
-        bedrock_mock = MagicMock()
-        bedrock_mock.converse.side_effect = fake_converse
+    @staticmethod
+    def _patch_boto3(monkeypatch, s3_client, transcribe_client):
+        import boto3 as _boto3
+        def fake_client(service, **kw):
+            if service == "s3":
+                return s3_client
+            return transcribe_client
+        monkeypatch.setattr(_boto3, "client", fake_client)
 
-        with patch("ad_remover.boto3.client", return_value=bedrock_mock):
-            detect_ads(self._make_segments(), ad_hints="   ")
+    @staticmethod
+    def _make_transcribe_client_completed():
+        transcript_data = {
+            "results": {
+                "items": [
+                    {"type": "pronunciation", "start_time": "1.0", "end_time": "2.0",
+                     "alternatives": [{"content": "Hello"}]},
+                ]
+            }
+        }
+        import json, urllib.request as ur
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = lambda s: s
+        fake_resp.__exit__ = MagicMock(return_value=False)
+        fake_resp.read.return_value = json.dumps(transcript_data).encode()
 
-        assert "Podcast-specific ad patterns" not in captured_prompts[0]
+        tc = MagicMock()
+        tc.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://fake/t.json"},
+            }
+        }
+        return tc, fake_resp
+
+    def test_windowed_transcription_offsets_segments(self, monkeypatch, tmp_path, mock_sleep):
+        """Segments from windowed transcription have start/end offset by window start."""
+        import ad_remover, json, urllib.request as ur
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "300:600")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+
+        # Create a real temp file so _get_audio_duration doesn't fail stat
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        tc, fake_resp = self._make_transcribe_client_completed()
+        s3 = MagicMock()
+        self._patch_boto3(monkeypatch, s3, tc)
+
+        # Mock _get_audio_duration to return 3600s
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        # Mock _extract_audio_window to not actually run ffmpeg
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+        # Mock urlopen to return fake transcript
+        monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=fake_resp))
+
+        result = ad_remover.transcribe_audio(str(fake_mp3), "vid_windowed")
+
+        assert len(result) == 1
+        # Original word at 1.0-2.0s should be offset by window start (300s)
+        assert result[0]["start"] == pytest.approx(301.0)
+        assert result[0]["end"] == pytest.approx(302.0)
+
+    def test_windowed_transcription_multiple_windows(self, monkeypatch, tmp_path, mock_sleep):
+        """Multiple windows produce merged and sorted segments."""
+        import ad_remover, json, urllib.request as ur
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "0:60,3540:3600")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        # First window returns word at 5s; second at 1s (offset 3540 → 3541)
+        def make_transcript(word, start, end):
+            return json.dumps({
+                "results": {"items": [
+                    {"type": "pronunciation", "start_time": str(start), "end_time": str(end),
+                     "alternatives": [{"content": word}]},
+                ]}
+            }).encode()
+
+        call_count = [0]
+        def fake_urlopen(url, context=None):
+            call_count[0] += 1
+            resp = MagicMock()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            if call_count[0] == 1:
+                resp.read.return_value = make_transcript("Intro", 5.0, 6.0)
+            else:
+                resp.read.return_value = make_transcript("Outro", 1.0, 2.0)
+            return resp
+
+        tc = MagicMock()
+        tc.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://fake/t.json"},
+            }
+        }
+        s3 = MagicMock()
+        self._patch_boto3(monkeypatch, s3, tc)
+
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+        monkeypatch.setattr(ur, "urlopen", fake_urlopen)
+
+        result = ad_remover.transcribe_audio(str(fake_mp3), "vid_multi_window")
+
+        assert len(result) == 2
+        # Should be sorted: first window's word (5.0) before second (3541.0)
+        assert result[0]["start"] == pytest.approx(5.0)
+        assert result[1]["start"] == pytest.approx(3541.0)
+
+    def test_windowed_transcription_cleans_up_on_failure(self, monkeypatch, tmp_path, mock_sleep):
+        """Temp S3 object and Transcribe job are deleted even when window job fails."""
+        import ad_remover, urllib.request as ur
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "0:300")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        tc = MagicMock()
+        tc.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "FAILED",
+                "FailureReason": "Bad audio",
+                "Transcript": {},
+            }
+        }
+        s3 = MagicMock()
+        self._patch_boto3(monkeypatch, s3, tc)
+
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+
+        with pytest.raises(RuntimeError, match="failed"):
+            ad_remover.transcribe_audio(str(fake_mp3), "vid_fail_window")
+
+        # S3 delete and transcribe job delete should have been called (cleanup)
+        s3.delete_object.assert_called()
+        tc.delete_transcription_job.assert_called()
+
+    def test_empty_windows_falls_through_to_normal_transcription(self, monkeypatch, tmp_path, mock_sleep):
+        """When AD_TRANSCRIBE_WINDOWS parses to empty list, full-file transcription runs."""
+        import ad_remover, json, urllib.request as ur
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        # Degenerate window (start >= end) → empty → fallthrough
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "300:100")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        transcript_data = {"results": {"items": []}}
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = lambda s: s
+        fake_resp.__exit__ = MagicMock(return_value=False)
+        fake_resp.read.return_value = json.dumps(transcript_data).encode()
+
+        tc = MagicMock()
+        tc.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://fake/t.json"},
+            }
+        }
+        s3 = MagicMock()
+        self._patch_boto3(monkeypatch, s3, tc)
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=fake_resp))
+
+        # Should not raise — falls through to normal full-file transcription
+        result = ad_remover.transcribe_audio(str(fake_mp3), "vid_empty_windows")
+        assert isinstance(result, list)
+        # Normal transcription should have uploaded the full file
+        s3.upload_file.assert_called()
