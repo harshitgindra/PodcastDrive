@@ -85,6 +85,10 @@ section "2 / 2  Python environment"
 if [ ! -d "${SCRIPT_DIR}/.venv" ]; then
     info "Creating virtual environment..."
     python3 -m venv "${SCRIPT_DIR}/.venv"
+elif ! "${SCRIPT_DIR}/.venv/bin/python3" -c "import sys; sys.exit(0)" 2>/dev/null; then
+    warn "Virtual environment is broken (interpreter missing or wrong path) — recreating..."
+    rm -rf "${SCRIPT_DIR}/.venv"
+    python3 -m venv "${SCRIPT_DIR}/.venv"
 fi
 
 VENV_PIP="${SCRIPT_DIR}/.venv/bin/pip"
