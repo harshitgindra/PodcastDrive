@@ -438,13 +438,18 @@ class TestSpliceAudio:
         assert "concat=n=2" in fc
 
     def test_raises_on_ffprobe_failure(self, monkeypatch):
+        """All three duration-detection stages fail → RuntimeError with descriptive message."""
         import ad_remover
+        import mutagen.mp3 as _mut
         monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+        # Make every subprocess.run call raise CalledProcessError (covers both ffprobe attempts)
         monkeypatch.setattr(
             subprocess, "run",
             MagicMock(side_effect=subprocess.CalledProcessError(1, "ffprobe")),
         )
-        with pytest.raises(RuntimeError, match="ffprobe failed"):
+        # Make mutagen also fail so stage 3 is exhausted
+        monkeypatch.setattr(_mut, "MP3", MagicMock(side_effect=RuntimeError("mutagen unavailable")))
+        with pytest.raises(RuntimeError, match="All duration-detection methods failed"):
             ad_remover.splice_audio("/in.mp3", [{"start": 10.0, "end": 20.0}], "/out.mp3")
 
     def test_raises_on_ffmpeg_failure(self, monkeypatch):
@@ -1072,8 +1077,10 @@ class TestSpliceAudioEdgeCases:
         assert "ffprobe" in run_calls
 
     def test_raises_runtime_error_for_non_subprocess_ffprobe_error(self, monkeypatch):
-        """Non-CalledProcessError from ffprobe is wrapped in RuntimeError (lines 815-816)."""
+        """Non-CalledProcessError from ffprobe (e.g. FileNotFoundError) exhausts all
+        three duration-detection stages and raises a descriptive RuntimeError."""
         import ad_remover
+        import mutagen.mp3 as _mut
         monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
 
         def fake_run(cmd, **kwargs):
@@ -1082,8 +1089,10 @@ class TestSpliceAudioEdgeCases:
             return MagicMock()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
+        # Exhaust stage 3 (mutagen) as well so the chain raises
+        monkeypatch.setattr(_mut, "MP3", MagicMock(side_effect=RuntimeError("mutagen unavailable")))
 
-        with pytest.raises(RuntimeError, match="ffprobe error"):
+        with pytest.raises(RuntimeError, match="All duration-detection methods failed"):
             ad_remover.splice_audio("/in.mp3", [{"start": 10.0, "end": 50.0}], "/out.mp3")
 
 

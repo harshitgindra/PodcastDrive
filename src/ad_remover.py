@@ -1175,31 +1175,71 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
         )
 
     # Probe total duration via ffprobe
-    probe_cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        mp3_path,
-    ]
-    try:
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+    def _ffprobe_duration(path: str, force_format: str | None = None) -> float:
+        """Run ffprobe to get duration in seconds. Raises RuntimeError on failure."""
+        cmd = ["ffprobe", "-v", "error"]
+        if force_format:
+            cmd += ["-f", force_format]
+        cmd += [
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         if result.stderr.strip():
             logger.debug("[AdRemover] ffprobe stderr (non-fatal): %s", result.stderr.strip())
-        total_duration = float(result.stdout.strip())
+        return float(result.stdout.strip())
+
+    def _mutagen_duration(path: str) -> float:
+        """Use mutagen to read MP3 duration — pure Python, crash-proof fallback."""
+        try:
+            from mutagen.mp3 import MP3  # noqa: PLC0415
+            return MP3(path).info.length
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"mutagen could not read duration: {exc}") from exc
+
+    total_duration: float | None = None
+    # Attempt 1 — plain ffprobe (format auto-detected)
+    try:
+        total_duration = _ffprobe_duration(mp3_path)
     except subprocess.CalledProcessError as exc:
         stdout = (exc.stdout or "").strip()
         stderr = (exc.stderr or "").strip()
-        raise RuntimeError(
-            f"ffprobe failed (exit {exc.returncode}):\n"
-            f"  stdout: {stdout!r}\n"
-            f"  stderr: {stderr!r}\n"
-            f"  cmd:    {' '.join(exc.cmd)}"
-        ) from exc
-    except Exception as exc:
-        raise RuntimeError(
-            f"ffprobe error ({type(exc).__name__}): {exc} — "
-            f"file: '{mp3_path}'"
-        ) from exc
+        logger.warning(
+            "[AdRemover] ffprobe auto-detect failed (exit %s) for %s — retrying with -f mp3.\n"
+            "  stdout: %r  stderr: %r",
+            exc.returncode, mp3_path, stdout, stderr,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AdRemover] ffprobe error (%s): %s — retrying with -f mp3.", type(exc).__name__, exc)
+
+    # Attempt 2 — ffprobe with explicit MP3 format (handles acast/non-standard containers)
+    if total_duration is None:
+        try:
+            total_duration = _ffprobe_duration(mp3_path, force_format="mp3")
+        except subprocess.CalledProcessError as exc:
+            stdout = (exc.stdout or "").strip()
+            stderr = (exc.stderr or "").strip()
+            logger.warning(
+                "[AdRemover] ffprobe -f mp3 also failed (exit %s) for %s — falling back to mutagen.\n"
+                "  stdout: %r  stderr: %r",
+                exc.returncode, mp3_path, stdout, stderr,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AdRemover] ffprobe -f mp3 error (%s): %s — falling back to mutagen.",
+                type(exc).__name__, exc,
+            )
+
+    # Attempt 3 — mutagen (pure Python, immune to ffprobe crashes)
+    if total_duration is None:
+        try:
+            total_duration = _mutagen_duration(mp3_path)
+            logger.info("[AdRemover] Used mutagen fallback for duration of %s: %.2fs", mp3_path, total_duration)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"All duration-detection methods failed for '{mp3_path}': {exc}"
+            ) from exc
 
     # Sort ad segments and merge overlaps
     sorted_ads = sorted(ad_segments, key=lambda s: s["start"])
