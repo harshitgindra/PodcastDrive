@@ -68,7 +68,7 @@ class TestDownloadAndConvertSuccess:
             )
 
             opts = mock_ydl_cls.call_args[0][0]
-            assert opts["format"] == "18/bestaudio/best"
+            assert opts["format"] == "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
             assert opts["quiet"] is True
             assert opts["no_warnings"] is True
 

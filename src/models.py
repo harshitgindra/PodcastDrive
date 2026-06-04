@@ -1,6 +1,6 @@
 """Data models for YouTube Playlist to Podcast Lambda."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -29,6 +29,7 @@ class VideoEntry:
     webpage_url: str
     playlist_index: int | None
     live_status: str | None = None  # e.g. "is_upcoming", "is_live", "was_live", "not_live"
+    chapters: list[dict] = field(default_factory=list)  # YouTube chapter markers
 
 
 @dataclass
@@ -46,3 +47,5 @@ class EpisodeMeta:
     s3_key: str  # e.g. "PLxyz/episodes/abc123.mp3"
     file_size: int  # bytes
     cloudfront_url: str  # full URL for enclosure
+    chapters: list[dict] = field(default_factory=list)  # YouTube chapter markers
+    summary: str = ""  # AI-generated episode summary

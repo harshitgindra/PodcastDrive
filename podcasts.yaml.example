@@ -37,6 +37,16 @@ podcasts:
     enabled: true
     max_age_days: 7
 
+  # --- RSS Podcast Feeds (source: Podcast) ---
+  # These entries are processed by the podcast sync pipeline (not YouTube).
+  - name: My RSS Podcast
+    url: "https://feeds.example.com/my-podcast/rss.xml"
+    source: Podcast
+    enabled: true
+    max_age_days: 30
+    language: en
+    description: "A great podcast about technology."
+
   # - name: Unsubscribed Show
   #   url: PLxxxxxxxxxxxxxxxxxxxxxxxxxxxx03
   #   enabled: false

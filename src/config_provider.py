@@ -25,6 +25,8 @@ class PodcastConfig:
     page_id: str | None = None  # Notion page ID (for write-back)
     source: str = "YouTube"  # "YouTube" or "Podcast"
     ad_hints: str = ""  # Free-text hints for the Bedrock ad-detection prompt (e.g. typical ad patterns)
+    language: str = "en"  # BCP-47 language code for RSS feed <language> element
+    description: str = ""  # Podcast description for RSS feed
 
 
 class ConfigProvider(ABC):
@@ -102,6 +104,9 @@ class YamlConfigProvider(ConfigProvider):
                 max_age_days=entry.get("max_age_days", defaults.get("max_age_days")),
                 sleep_between=entry.get("sleep_between", defaults.get("sleep_between")),
                 ad_hints=entry.get("ad_hints", defaults.get("ad_hints", "")),
+                source=entry.get("source", defaults.get("source", "YouTube")),
+                language=entry.get("language", defaults.get("language", "en")),
+                description=entry.get("description", ""),
             )
             for entry in data.get("podcasts", [])
         ]
@@ -491,6 +496,22 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
             if md_prop.get("type") == "number" and md_prop.get("number") is not None:
                 max_downloads = int(md_prop["number"])
 
+            # Language (rich_text type) — BCP-47 language code
+            language = "en"
+            lang_prop = props.get("Language", {})
+            if lang_prop.get("type") == "rich_text":
+                lang_items = lang_prop.get("rich_text", [])
+                if lang_items:
+                    language = lang_items[0].get("plain_text", "en") or "en"
+
+            # Description (rich_text type)
+            description = ""
+            desc_prop = props.get("Description", {})
+            if desc_prop.get("type") == "rich_text":
+                desc_items = desc_prop.get("rich_text", [])
+                if desc_items:
+                    description = desc_items[0].get("plain_text", "") or ""
+
             return PodcastConfig(
                 name=name or url,
                 url=url,
@@ -498,6 +519,8 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
                 max_downloads=max_downloads,
                 max_age_days=max_age_days,
                 source="Podcast",
+                language=language,
+                description=description,
             )
 
         except (KeyError, IndexError) as exc:
@@ -559,6 +582,27 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
             )
 
 
+class YamlPodcastConfigProvider(YamlConfigProvider):
+    """YAML config provider that returns only ``source=Podcast`` entries.
+
+    Subclasses :class:`YamlConfigProvider` and filters for RSS podcast feeds.
+    """
+
+    def get_podcasts(self) -> list[PodcastConfig]:
+        """Return only entries where ``source == "Podcast"``."""
+        all_podcasts = super().get_podcasts()
+        podcasts = [p for p in all_podcasts if p.source == "Podcast"]
+        logger.info("YamlPodcastConfigProvider: %d podcast entries (of %d total)", len(podcasts), len(all_podcasts))
+        return podcasts
+
+    def update_url(self, podcast: PodcastConfig, new_url: str) -> None:
+        """No-op stub — YAML mode does not support write-back."""
+        logger.warning(
+            "URL write-back not supported in YAML mode (podcast=%r, url=%r)",
+            podcast.name, new_url,
+        )
+
+
 def get_config_provider() -> ConfigProvider:
     """Factory: return the appropriate config provider based on CONFIG_PROVIDER env var.
 
@@ -591,4 +635,4 @@ def get_podcast_config_provider() -> "NotionPodcastConfigProvider | ConfigProvid
         return NotionPodcastConfigProvider()
     else:
         yaml_path = os.environ.get("PODCASTS_YAML", "podcasts.yaml")
-        return YamlConfigProvider(path=yaml_path)
+        return YamlPodcastConfigProvider(path=yaml_path)

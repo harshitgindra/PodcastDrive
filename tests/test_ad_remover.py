@@ -537,7 +537,7 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 0.2, "end": 0.8}]))
         monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(return_value=None))
 
-        result, _segs = ad_remover.remove_ads("/ep.mp3", "vid123", tmp_dir)
+        result, _segs, _summary = ad_remover.remove_ads("/ep.mp3", "vid123", tmp_dir)
         assert result == os.path.join(tmp_dir, "vid123_clean.mp3")
 
     def test_calls_splice_with_correct_args(self, monkeypatch, tmp_path):
@@ -579,7 +579,7 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
         monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
-        result, _segs = ad_remover.remove_ads("/ep.mp3", "vid_dry", str(tmp_path))
+        result, _segs, _summary = ad_remover.remove_ads("/ep.mp3", "vid_dry", str(tmp_path))
 
         assert result == "/ep.mp3"
         mock_splice.assert_not_called()
@@ -595,7 +595,7 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
         monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
-        result, _segs = ad_remover.remove_ads("/ep.mp3", "vid_dry_clean", str(tmp_path))
+        result, _segs, _summary = ad_remover.remove_ads("/ep.mp3", "vid_dry_clean", str(tmp_path))
 
         assert result == "/ep.mp3"
         mock_splice.assert_not_called()
@@ -615,7 +615,7 @@ class TestRemoveAds:
             monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
             monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
-            result, _segs = ad_remover.remove_ads("/ep.mp3", f"vid_{val}", str(tmp_path))
+            result, _segs, _summary = ad_remover.remove_ads("/ep.mp3", f"vid_{val}", str(tmp_path))
             assert result == "/ep.mp3", f"Expected original path for DRY_RUN={val!r}"
             mock_splice.assert_not_called()
 
@@ -1103,7 +1103,7 @@ class TestBedrockModelTiering:
         """BEDROCK_DETECT_MODEL_ID is used by detect_ads when set."""
         import ad_remover
         monkeypatch.setenv("BEDROCK_DETECT_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251015-v1:0")
-        monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
         called_model_ids = []
 
@@ -1125,7 +1125,7 @@ class TestBedrockModelTiering:
         """detect_ads uses BEDROCK_MODEL_ID when BEDROCK_DETECT_MODEL_ID is absent."""
         import ad_remover
         monkeypatch.delenv("BEDROCK_DETECT_MODEL_ID", raising=False)
-        monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
         called_model_ids = []
 
@@ -1140,7 +1140,81 @@ class TestBedrockModelTiering:
         segments = [{"start": 0.0, "end": 30.0, "text": "hello world"}]
         ad_remover.detect_ads(segments)
 
-        assert called_model_ids[0] == "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        assert called_model_ids[0] == "us.anthropic.claude-sonnet-4-6"
+
+
+    def test_verify_uses_bedrock_model_id_not_detect_model_id(self, monkeypatch):
+        """Bug fix: verification (second-pass) must use BEDROCK_MODEL_ID, not BEDROCK_DETECT_MODEL_ID.
+
+        When BEDROCK_DETECT_MODEL_ID=haiku (cheap) and BEDROCK_MODEL_ID=sonnet-4-6 (accurate),
+        the first Bedrock call (detection) should use haiku and the second (verification) sonnet-4-6.
+        Previously both calls incorrectly used haiku.
+        """
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+        monkeypatch.setenv("BEDROCK_DETECT_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251015-v1:0")
+        monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+        monkeypatch.setenv("AD_VERIFY_THRESHOLD_SECS", "10")
+        monkeypatch.setenv("MAX_AD_SEGMENT_SECS", "9999")
+
+        called_model_ids = []
+        call_count = [0]
+
+        def fake_converse(**kwargs):
+            called_model_ids.append(kwargs["modelId"])
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"output": {"message": {"content": [{"text": '[{"start": 0.0, "end": 30.0}]'}]}}}
+            return {"output": {"message": {"content": [{"text": '{"is_ad": true, "reason": "confirmed ad"}'}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda *a, **kw: mock_client))
+
+        segments = [{"start": 0.0, "end": 30.0, "text": "use code PODCAST20 for 20 percent off"}]
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            result = ad_remover.detect_ads(segments)
+
+        assert call_count[0] == 2, "Should have made detection + verification calls"
+        assert called_model_ids[0] == "us.anthropic.claude-haiku-4-5-20251015-v1:0", \
+            "Detection call must use BEDROCK_DETECT_MODEL_ID (haiku)"
+        assert called_model_ids[1] == "us.anthropic.claude-sonnet-4-6", \
+            "Verification call must use BEDROCK_MODEL_ID (sonnet-4-6), not the detect model"
+        assert len(result) == 1, "Confirmed ad should be in results"
+
+    def test_verify_threshold_zero_verifies_all_segments(self, monkeypatch):
+        """AD_VERIFY_THRESHOLD_SECS=0 should verify every segment (as documented).
+
+        Previously the outer guard verify_threshold > 0 incorrectly skipped all
+        verification when threshold=0. Now >= 0 allows the inner loop to run and
+        every segment (duration >= 0) gets a second-pass call.
+        """
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+        monkeypatch.setenv("AD_VERIFY_THRESHOLD_SECS", "0")
+        monkeypatch.setenv("MAX_AD_SEGMENT_SECS", "9999")
+        monkeypatch.delenv("BEDROCK_DETECT_MODEL_ID", raising=False)
+
+        call_count = [0]
+
+        def fake_converse(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"output": {"message": {"content": [{"text": '[{"start": 5.0, "end": 15.0}]'}]}}}
+            return {"output": {"message": {"content": [{"text": '{"is_ad": true, "reason": "confirmed"}'}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda *a, **kw: mock_client))
+
+        segments = [{"start": 5.0, "end": 15.0, "text": "ad content"}]
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            result = ad_remover.detect_ads(segments)
+
+        assert call_count[0] == 2, (
+            f"threshold=0 should trigger verification for every segment; got {call_count[0]} calls"
+        )
+        assert len(result) == 1
 
 
 class TestTranscriptCache:
@@ -1488,7 +1562,7 @@ class TestAdSegmentsCache:
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
         monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a: (_ for _ in ()).throw(AssertionError("should not transcribe")))
 
-        result_path, result_segs = ad_remover.remove_ads(str(src), "ep_cached", str(tmp_path))
+        result_path, result_segs, _summary = ad_remover.remove_ads(str(src), "ep_cached", str(tmp_path))
 
         assert spliced_calls, "splice_audio should have been called"
         assert spliced_calls[0] == cached_ads

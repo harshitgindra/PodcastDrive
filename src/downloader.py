@@ -123,7 +123,7 @@ def download_and_convert(
     output_template = os.path.join(tmp_dir, f"{video_id}.%(ext)s")
 
     ydl_opts = {
-        "format": "18/bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": output_template,
         "quiet": True,
         "no_warnings": True,
@@ -131,7 +131,7 @@ def download_and_convert(
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
-                "preferredquality": "192",
+                "preferredquality": str(int(os.environ.get("MP3_QUALITY", "192"))),
             }
         ],
     }

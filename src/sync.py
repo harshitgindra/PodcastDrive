@@ -165,6 +165,7 @@ def process_playlist(
                         video.thumbnail = meta["thumbnail"]
                     if meta.get("duration"):
                         video.duration = meta["duration"]
+                    video.chapters = meta.get("chapters", [])
 
                     # Skip if video is a future premiere or currently live
                     meta_live_status = meta.get("live_status")
@@ -203,7 +204,7 @@ def process_playlist(
                 # Remove ads (falls back to original file on failure)
                 logger.info("[Step 4] Running ad removal for %s", video.video_id)
                 original_mp3 = mp3_path
-                mp3_path, ad_segments = remove_ads(mp3_path, video.video_id, tmp_dir)
+                mp3_path, ad_segments, _summary = remove_ads(mp3_path, video.video_id, tmp_dir)
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if mp3_path != original_mp3:

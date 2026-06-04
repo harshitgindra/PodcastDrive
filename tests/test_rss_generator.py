@@ -391,7 +391,9 @@ class TestGenerateRssItems:
         ep = _make_episode(description="First para.\n\nSecond para.")
         xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
-        assert root.find(".//item/description").text == "First para."
+        desc = root.find(".//item/description").text
+        assert desc.startswith("First para.")
+        assert "Source: https://youtube.com/watch?v=vid001" in desc
 
     def test_item_itunes_duration(self):
         meta = _make_playlist_meta()

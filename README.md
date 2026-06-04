@@ -178,7 +178,7 @@ cp config.env.example config.env
 | `REMOVE_ADS` | | `true` | Set to `false` to disable ad removal entirely |
 | `REMOVE_ADS_DRY_RUN` | | `false` | Set to `true` to detect and log ad segments without cutting the audio — useful for evaluating detection quality before enabling full removal |
 | `TRANSCRIBE_LANGUAGE_CODE` | | `en-US` | BCP-47 language code for AWS Transcribe |
-| `BEDROCK_MODEL_ID` | | `us.anthropic.claude-sonnet-4-20250514-v1:0` | Bedrock model ID for **second-pass verification** of long segments — accuracy matters here, Sonnet recommended |
+| `BEDROCK_MODEL_ID` | | `us.anthropic.claude-sonnet-4-6` | Bedrock model ID for **second-pass verification** of long segments — accuracy matters here, Sonnet recommended |
 | `BEDROCK_DETECT_MODEL_ID` | | *(same as `BEDROCK_MODEL_ID`)* | Bedrock model ID for **first-pass detection** across all transcript chunks. Override with a cheaper model (e.g. Claude Haiku) to reduce per-episode detection cost by ~80% with minimal quality loss |
 | `TRANSCRIBE_POLL_INTERVAL` | | `10` | Seconds between Transcribe job status polls |
 | `TRANSCRIBE_MAX_WAIT` | | `3600` | Max seconds to wait for a Transcribe job before giving up |

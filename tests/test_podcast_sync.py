@@ -257,7 +257,7 @@ class TestProcessPodcastFeedLive:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -324,7 +324,7 @@ class TestProcessPodcastFeedLive:
             patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", side_effect=fake_download),
-            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [])),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [], "")),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -472,7 +472,7 @@ class TestProcessPodcastFeedEnvDefaults:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -500,7 +500,7 @@ class TestProcessPodcastFeedEnvDefaults:
             patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", side_effect=fake_download),
-            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [])),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [], "")),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -549,7 +549,7 @@ class TestProcessPodcastFeedEdgeCases:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(original)),
-            patch("podcast_sync.remove_ads", return_value=(str(cleaned), [])),
+            patch("podcast_sync.remove_ads", return_value=(str(cleaned), [], "")),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -575,7 +575,7 @@ class TestProcessPodcastFeedEdgeCases:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
             patch("podcast_sync.os.path.getsize", side_effect=OSError("no file")),
         ):
             mock_s3 = MockS3.return_value
@@ -660,7 +660,7 @@ class TestProcessPodcastFeedManifest:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
@@ -708,7 +708,7 @@ class TestProcessPodcastFeedManifest:
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
-            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [])),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()

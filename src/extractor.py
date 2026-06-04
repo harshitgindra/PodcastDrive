@@ -129,6 +129,7 @@ def extract_video_metadata(video_url: str) -> dict | None:
             "duration": info.get("duration"),
             "title": info.get("title") or "",
             "live_status": info.get("live_status"),
+            "chapters": info.get("chapters") or [],
         }
     except Exception as exc:
         logger.warning("Failed to extract metadata for %s: %s", video_url, exc)

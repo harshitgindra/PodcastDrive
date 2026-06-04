@@ -98,6 +98,8 @@ def _build_podcast_feed_xml(
     slug: str,
     ep_sizes: dict[str, int] | None = None,
     channel_thumbnail: str = "",
+    language: str = "en",
+    manifest: dict | None = None,
 ) -> str:
     """Generate a minimal RSS 2.0 feed for *podcast* from cleaned episode list.
 
@@ -112,10 +114,13 @@ def _build_podcast_feed_xml(
         channel_thumbnail: Artwork URL for the channel-level ``<itunes:image>``
                            and RSS ``<image>`` elements.  Falls back to the first
                            episode's thumbnail when empty.
+        manifest:          Optional episode manifest dict for summary lookup.
 
     Returns:
         Pretty-printed RSS XML string.
     """
+    if manifest is None:
+        manifest = {}
     import xml.etree.ElementTree as ET
 
     if ep_sizes is None:
@@ -129,8 +134,9 @@ def _build_podcast_feed_xml(
 
     ET.SubElement(channel, "title").text = podcast.name
     ET.SubElement(channel, "link").text = podcast.url
-    ET.SubElement(channel, "description").text = podcast.name
-    ET.SubElement(channel, "language").text = "en"
+    ET.SubElement(channel, "description").text = podcast.description or podcast.name
+    ET.SubElement(channel, f"{{{_ITUNES_NS}}}summary").text = podcast.description or podcast.name
+    ET.SubElement(channel, "language").text = language
     ET.SubElement(channel, "generator").text = "PodcastDrive"
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(
         datetime.now(timezone.utc)
@@ -170,6 +176,10 @@ def _build_podcast_feed_xml(
             ep.duration
         )
         ET.SubElement(item, f"{{{_ITUNES_NS}}}explicit").text = "no"
+
+        # Episode description: prefer AI summary from manifest
+        desc = manifest.get(ep_id, {}).get("summary") or ep.title
+        ET.SubElement(item, "description").text = desc
 
         # Per-episode artwork (falls back to channel artwork if episode has none)
         ep_thumbnail = ep.thumbnail or artwork_url
@@ -363,7 +373,7 @@ def process_podcast_feed(
                 original_path = download_episode(ep.url, ep_id, tmp_dir)
 
                 logger.info("[PodcastSync] Running ad removal for %s", ep_id)
-                cleaned_path, ad_segments = remove_ads(original_path, ep_id, tmp_dir, ad_hints=podcast.ad_hints)
+                cleaned_path, ad_segments, summary = remove_ads(original_path, ep_id, tmp_dir, ad_hints=podcast.ad_hints)
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if cleaned_path != original_path:
@@ -394,7 +404,7 @@ def process_podcast_feed(
                     os.remove(cleaned_path)
 
                 logger.info("[PodcastSync] Done: %s", ep_id)
-                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size}
+                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size, "summary": summary}
 
             except Exception as exc:
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
@@ -421,6 +431,8 @@ def process_podcast_feed(
                             "pub_date": ep.pub_date.isoformat(),
                             "duration": ep.duration,
                         }
+                        if result.get("summary"):
+                            manifest[ep_id]["summary"] = result["summary"]
                         new_count += 1
                         uploaded_pairs.append((ep, ep_id))
                 else:
@@ -515,6 +527,8 @@ def process_podcast_feed(
             xml_content = _build_podcast_feed_xml(
                 podcast, feed_episodes, feed_ep_ids, cloudfront_base, slug, ep_sizes,
                 channel_thumbnail=channel_thumbnail,
+                language=podcast.language,
+                manifest=manifest,
             )
             s3.upload_feed(xml_content)
             logger.info("[PodcastSync] feed.xml uploaded")

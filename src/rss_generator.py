@@ -81,6 +81,7 @@ def generate_rss(
     episodes: list[EpisodeMeta],
     cloudfront_base: str,
     playlist_id: str,
+    language: str = "en",
 ) -> str:
     """Generate a podcast RSS 2.0 XML string with iTunes extensions.
 
@@ -107,7 +108,7 @@ def generate_rss(
     channel = ET.SubElement(rss, "channel")
 
     # --- Channel-level metadata ---
-    _add_channel_metadata(channel, playlist_meta, episodes, cloudfront_base, playlist_id)
+    _add_channel_metadata(channel, playlist_meta, episodes, cloudfront_base, playlist_id, language=language)
 
     # --- Item elements ---
     for episode in episodes:
@@ -133,6 +134,7 @@ def _add_channel_metadata(
     episodes: list[EpisodeMeta],
     cloudfront_base: str,
     playlist_id: str,
+    language: str = "en",
 ) -> None:
     """Populate channel-level RSS and iTunes ``<channel>`` child elements.
 
@@ -153,7 +155,7 @@ def _add_channel_metadata(
     ET.SubElement(channel, "title").text = meta.title
     ET.SubElement(channel, "link").text = channel_link
     ET.SubElement(channel, "description").text = meta.description or meta.title
-    ET.SubElement(channel, "language").text = "en"
+    ET.SubElement(channel, "language").text = language
     ET.SubElement(channel, "generator").text = "yt-podcast-lambda"
 
     now = datetime.now(timezone.utc)
@@ -220,8 +222,25 @@ def _add_item(
     pub_dt = parse_upload_date(episode.upload_date)
     ET.SubElement(item, "pubDate").text = format_datetime(pub_dt)
 
-    # Description: first paragraph of YouTube description
+    # Description: first paragraph of YouTube description + source link
     desc_text = _first_paragraph(episode.description)
+    if episode.webpage_url:
+        desc_text = f"{desc_text}\n\nSource: {episode.webpage_url}".strip()
+
+    # Fix 8: Append chapter markers if available
+    if hasattr(episode, "chapters") and episode.chapters:
+        lines = ["\n\nChapters:"]
+        for ch in episode.chapters:
+            mins, secs = divmod(int(ch.get("start_time", 0)), 60)
+            hrs, mins = divmod(mins, 60)
+            ts = f"{hrs}:{mins:02d}:{secs:02d}" if hrs else f"{mins}:{secs:02d}"
+            lines.append(f"{ts}  {ch.get('title', '')}")
+        desc_text += "\n".join(lines)
+
+    # Use AI-generated summary if available
+    if hasattr(episode, "summary") and episode.summary:
+        desc_text = episode.summary + "\n\n" + desc_text
+
     ET.SubElement(item, "description").text = desc_text
 
     # iTunes item tags
@@ -309,6 +328,7 @@ def build_episode_metadata(
                 s3_key=s3_key,
                 file_size=file_size,
                 cloudfront_url=cloudfront_url,
+                chapters=entry.chapters if hasattr(entry, "chapters") else [],
             )
         )
 
