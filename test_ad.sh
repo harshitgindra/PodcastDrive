@@ -14,6 +14,43 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# --- Help ---
+if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+    cat << 'HELPEOF'
+PodcastDrive — test_ad.sh
+
+Ad-cleaner end-to-end test harness. Downloads one episode, runs the full
+ad-removal pipeline, and saves a cleaned MP3 locally for manual listening.
+
+Usage:
+  ./test_ad.sh <source> [OPTIONS]
+
+Source (required — one of):
+  @ChannelHandle    YouTube channel handle (fetches latest upload)
+  https://...       YouTube video URL, playlist URL, or RSS feed URL
+  PLxxxxxxxxxx      YouTube playlist ID (fetches latest item)
+  "Podcast Name"   Searches iTunes for the podcast, fetches latest episode
+
+Options:
+  --help, -h         Show this help message and exit
+  --skip-transcribe  Reuse cached transcript (skips AWS Transcribe call)
+  --no-snap          Disable silence snapping (cut at exact detected boundaries)
+  --max-iter N       Max verification/retry passes (default: 3)
+  --out-dir DIR      Output directory for cleaned files (default: ./test_output)
+
+Environment:
+  Reads config.env for AWS credentials and ad-removal settings.
+  Key variables: BEDROCK_MODEL_ID, AD_SNAP_TO_SILENCE, MAX_AD_SEGMENT_SECS, etc.
+
+Examples:
+  ./test_ad.sh "@aliabdaal"
+  ./test_ad.sh "https://www.youtube.com/watch?v=LLjpnubsOWc"
+  ./test_ad.sh "The Tim Ferriss Show" --skip-transcribe
+  ./test_ad.sh "@hubaborern" --no-snap --max-iter 1
+HELPEOF
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── 1. Load config.env (AWS creds, S3_BUCKET, etc.) ──────────────────────────

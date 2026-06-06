@@ -132,7 +132,8 @@ def _build_podcast_feed_xml(
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
 
-    ET.SubElement(channel, "title").text = podcast.name
+    suffix = os.environ.get("FEED_TITLE_SUFFIX", " ✂️")
+    ET.SubElement(channel, "title").text = podcast.name + suffix
     ET.SubElement(channel, "link").text = podcast.url
     ET.SubElement(channel, "description").text = podcast.description or podcast.name
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}summary").text = podcast.description or podcast.name
@@ -146,11 +147,15 @@ def _build_podcast_feed_xml(
     if artwork_url:
         rss_image = ET.SubElement(channel, "image")
         ET.SubElement(rss_image, "url").text = artwork_url
-        ET.SubElement(rss_image, "title").text = podcast.name
+        ET.SubElement(rss_image, "title").text = podcast.name + suffix
         ET.SubElement(rss_image, "link").text = podcast.url
 
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}author").text = podcast.name
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}explicit").text = "no"
+
+    subtitle = os.environ.get("FEED_SUBTITLE", "Ad-free · PodcastDrive")
+    if subtitle:
+        ET.SubElement(channel, f"{{{_ITUNES_NS}}}subtitle").text = subtitle
 
     # iTunes channel artwork
     if artwork_url:

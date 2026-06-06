@@ -365,3 +365,179 @@ class TestFix8Chapters:
             result = extract_video_metadata("http://example.com")
 
         assert result["chapters"] == [{"start_time": 0, "end_time": 60, "title": "Ch1"}]
+
+
+# ---------------------------------------------------------------------------
+# Feed Title Differentiation
+# ---------------------------------------------------------------------------
+
+
+class TestFeedDifferentiation:
+    """Tests for FEED_TITLE_SUFFIX and FEED_SUBTITLE env vars."""
+
+    def _make_playlist_meta(self):
+        from models import PlaylistMeta
+        return PlaylistMeta(
+            title="My Podcast",
+            description="Desc",
+            uploader="Host",
+            channel_url="http://c",
+            webpage_url="http://w",
+            playlist_id="PL1",
+        )
+
+    def _make_episode(self):
+        from models import EpisodeMeta
+        return EpisodeMeta(
+            video_id="v1", title="Ep1", description="desc", duration=60,
+            upload_date="20250601", thumbnail="", webpage_url="http://v",
+            playlist_index=1, s3_key="k", file_size=100,
+            cloudfront_url="https://cdn.example.com/PL1/episodes/v1.mp3",
+        )
+
+    def _make_podcast_config(self):
+        from config_provider import PodcastConfig
+        return PodcastConfig(name="My Podcast", url="http://x")
+
+    def test_default_suffix_youtube(self, monkeypatch):
+        """Default suffix ' ✂️' applied to YouTube feed title."""
+        monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
+        monkeypatch.delenv("FEED_SUBTITLE", raising=False)
+        from rss_generator import generate_rss
+        meta = self._make_playlist_meta()
+        xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
+        root = ET.fromstring(xml_str)
+        assert root.find(".//channel/title").text == "My Podcast ✂️"
+
+    def test_default_suffix_podcast(self, monkeypatch):
+        """Default suffix ' ✂️' applied to podcast feed title."""
+        monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
+        monkeypatch.delenv("FEED_SUBTITLE", raising=False)
+        from podcast_sync import _build_podcast_feed_xml
+        podcast = self._make_podcast_config()
+        xml_str = _build_podcast_feed_xml(podcast, [], [], "https://cdn.example.com", "slug")
+        root = ET.fromstring(xml_str)
+        assert root.find(".//channel/title").text == "My Podcast ✂️"
+
+    def test_custom_suffix(self, monkeypatch):
+        """Custom suffix applied when FEED_TITLE_SUFFIX is set."""
+        monkeypatch.setenv("FEED_TITLE_SUFFIX", " [Clean]")
+        from rss_generator import generate_rss
+        meta = self._make_playlist_meta()
+        xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
+        root = ET.fromstring(xml_str)
+        assert root.find(".//channel/title").text == "My Podcast [Clean]"
+
+    def test_suffix_disabled(self, monkeypatch):
+        """Empty FEED_TITLE_SUFFIX means no suffix."""
+        monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
+        from rss_generator import generate_rss
+        meta = self._make_playlist_meta()
+        xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
+        root = ET.fromstring(xml_str)
+        assert root.find(".//channel/title").text == "My Podcast"
+
+    def test_subtitle_present(self, monkeypatch):
+        """Default FEED_SUBTITLE produces itunes:subtitle element."""
+        monkeypatch.delenv("FEED_SUBTITLE", raising=False)
+        monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
+        from rss_generator import generate_rss
+        meta = self._make_playlist_meta()
+        xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
+        # Parse with namespace
+        ns = {"itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"}
+        root = ET.fromstring(xml_str)
+        subtitle_el = root.find(".//channel/itunes:subtitle", ns)
+        assert subtitle_el is not None
+        assert subtitle_el.text == "Ad-free · PodcastDrive"
+
+    def test_subtitle_disabled(self, monkeypatch):
+        """Empty FEED_SUBTITLE means no itunes:subtitle element."""
+        monkeypatch.setenv("FEED_SUBTITLE", "")
+        monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
+        from rss_generator import generate_rss
+        meta = self._make_playlist_meta()
+        xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
+        ns = {"itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"}
+        root = ET.fromstring(xml_str)
+        subtitle_el = root.find(".//channel/itunes:subtitle", ns)
+        assert subtitle_el is None
+
+    def test_original_name_not_mutated_youtube(self, monkeypatch):
+        """PlaylistMeta.title is unchanged after generate_rss."""
+        monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
+        from rss_generator import generate_rss
+        meta = self._make_playlist_meta()
+        generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
+        assert meta.title == "My Podcast"
+
+    def test_original_name_not_mutated_podcast(self, monkeypatch):
+        """PodcastConfig.name is unchanged after _build_podcast_feed_xml."""
+        monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
+        from podcast_sync import _build_podcast_feed_xml
+        podcast = self._make_podcast_config()
+        _build_podcast_feed_xml(podcast, [], [], "https://cdn.example.com", "slug")
+        assert podcast.name == "My Podcast"
+
+
+# ---------------------------------------------------------------------------
+# Ad Removal Parity tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdRemovalParity:
+    """Regression guards ensuring test_ad_cleaner uses the canonical remove_ads() path."""
+
+    def test_remove_ads_is_the_entrypoint(self):
+        """test_ad_cleaner.py must not import internal ad_remover functions directly."""
+        import ast
+        source_path = os.path.join(os.path.dirname(__file__), "..", "test_ad_cleaner.py")
+        with open(source_path) as f:
+            tree = ast.parse(f.read())
+
+        # Collect all names imported from ad_remover
+        forbidden = {"transcribe_audio", "detect_ads", "splice_audio",
+                     "_merge_overlapping_ads", "snap_ad_boundaries", "detect_silence"}
+        imported_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "ad_remover":
+                for alias in node.names:
+                    imported_names.add(alias.name)
+
+        violations = imported_names & forbidden
+        assert not violations, (
+            f"test_ad_cleaner.py imports internal functions from ad_remover: {violations}. "
+            "It should only import remove_ads()."
+        )
+
+    def test_rss_episode_id_matches_production(self):
+        """episode_id_from_guid produces the same ID for test and production paths."""
+        from podcast_downloader import episode_id_from_guid
+
+        # URL-style GUID
+        guid1 = "https://rss.art19.com/episodes/abc123-def456"
+        id1 = episode_id_from_guid(guid1, "")
+        assert id1 == "abc123-def456"  # last path segment
+
+        # Plain UUID GUID
+        guid2 = "abc123-def456-789"
+        id2 = episode_id_from_guid(guid2, "")
+        # Should be consistent (no full-URL encoding like the old code)
+        assert "/" not in id2
+        assert len(id2) <= 64
+
+        # Short string
+        guid3 = "episode-42"
+        id3 = episode_id_from_guid(guid3, "")
+        assert id3  # non-empty
+        assert "/" not in id3
+
+    def test_sync_podcast_py_exits_nonzero(self):
+        """sync_podcast.py is retired and must exit non-zero with deprecation message."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), "..", "sync_podcast.py")],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode != 0
+        assert "DEPRECATED" in result.stderr

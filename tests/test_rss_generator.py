@@ -187,7 +187,8 @@ class TestGenerateRssStructure:
 class TestGenerateRssChannelMetadata:
     """Test channel-level metadata elements."""
 
-    def test_channel_title(self):
+    def test_channel_title(self, monkeypatch):
+        monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
         meta = _make_playlist_meta(title="My Podcast")
         xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
@@ -277,8 +278,9 @@ class TestGenerateRssChannelMetadata:
 
     # --- Standard RSS 2.0 <image> element tests ---
 
-    def test_rss_image_element_present_with_playlist_thumbnail(self):
+    def test_rss_image_element_present_with_playlist_thumbnail(self, monkeypatch):
         """Standard <image> block should be emitted when PlaylistMeta.thumbnail is set."""
+        monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
         meta = _make_playlist_meta(thumbnail="https://example.com/playlist_art.jpg")
         xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)

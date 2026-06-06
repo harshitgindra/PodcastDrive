@@ -81,7 +81,7 @@ A JSON report with improvement proposals is written to `reports/{slug}/{episode_
 │   ├── models.py               # Data models (PlaylistMeta, VideoEntry, EpisodeMeta)
 │   ├── logger_config.py        # Logging setup (rotating file + console)
 │   └── utils.py                # Utility functions (URL parsing, date parsing, AWS retry)
-├── tests/                      # Unit test suite (657 tests, 97% overall coverage)
+├── tests/                      # Unit test suite (684 tests, 97% overall coverage)
 │   ├── test_ad_remover.py      # Ad removal pipeline — 113 tests, 96% coverage
 │   ├── test_ad_evaluator.py    # Ad evaluator — 100% coverage
 │   ├── test_ad_fixes.py        # Regression tests for the 5 ad-removal fixes
@@ -227,6 +227,23 @@ cp podcasts.yaml.example podcasts.yaml
 ./run.sh PLyourPlaylistId
 ./run.sh @YourChannelHandle
 ./run.sh https://www.youtube.com/playlist?list=YOUR_PLAYLIST_ID
+
+# Reprocess — delete episodes + ad caches, then re-sync with current settings
+# Useful after tuning ad-detection parameters or upgrading the Bedrock model
+./run.sh --reprocess all                  # all enabled podcasts
+./run.sh --reprocess @YourChannelHandle   # one specific channel
+./run.sh --reprocess PLyourPlaylistId     # one specific playlist
+
+# Clear ad-segment caches (forces re-detection on next normal run, without re-downloading)
+./run.sh --clear-cache all
+./run.sh --clear-cache podcast-slug
+
+# Reset — wipe ALL S3 data for enabled podcasts (destructive!)
+./run.sh --reset                          # prompts for confirmation
+./run.sh --reset --force                  # skip confirmation
+
+# Show full usage help
+./run.sh --help
 ```
 
 `run.sh` handles:

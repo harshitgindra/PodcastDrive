@@ -5,6 +5,7 @@ information, using CloudFront URLs for audio enclosures.
 """
 
 import logging
+import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import format_datetime
@@ -151,8 +152,9 @@ def _add_channel_metadata(
         playlist_id: Playlist ID (unused here, kept for symmetry).
     """
     channel_link = meta.webpage_url or meta.channel_url
+    suffix = os.environ.get("FEED_TITLE_SUFFIX", " ✂️")
 
-    ET.SubElement(channel, "title").text = meta.title
+    ET.SubElement(channel, "title").text = meta.title + suffix
     ET.SubElement(channel, "link").text = channel_link
     ET.SubElement(channel, "description").text = meta.description or meta.title
     ET.SubElement(channel, "language").text = language
@@ -169,13 +171,17 @@ def _add_channel_metadata(
     if artwork_url:
         rss_image = ET.SubElement(channel, "image")
         ET.SubElement(rss_image, "url").text = artwork_url
-        ET.SubElement(rss_image, "title").text = meta.title
+        ET.SubElement(rss_image, "title").text = meta.title + suffix
         ET.SubElement(rss_image, "link").text = channel_link
 
     # iTunes tags
     ET.SubElement(channel, f"{{{ITUNES_NS}}}author").text = meta.uploader or meta.title
     ET.SubElement(channel, f"{{{ITUNES_NS}}}summary").text = meta.description or meta.title
     ET.SubElement(channel, f"{{{ITUNES_NS}}}explicit").text = "no"
+
+    subtitle = os.environ.get("FEED_SUBTITLE", "Ad-free · PodcastDrive")
+    if subtitle:
+        ET.SubElement(channel, f"{{{ITUNES_NS}}}subtitle").text = subtitle
 
     owner = ET.SubElement(channel, f"{{{ITUNES_NS}}}owner")
     ET.SubElement(owner, f"{{{ITUNES_NS}}}name").text = meta.uploader or meta.title

@@ -7,6 +7,8 @@
 #   ./run.sh --dry-run <playlist_id_or_url> [...] # preview specific playlists
 #   ./run.sh --reset                            # delete all S3 data for enabled podcasts (prompts)
 #   ./run.sh --reset --force                    # same, skip confirmation prompt
+#   ./run.sh --clear-cache <slug|all>           # delete ad-segments cache (forces re-detection)
+#   ./run.sh --reprocess [playlist|@handle|all] # delete episodes + cache, then re-sync with ad removal
 
 set -euo pipefail
 
@@ -45,11 +47,65 @@ if [ -f "$LOCK_FILE" ]; then
 fi
 echo $$ > "$LOCK_FILE"
 
+# --- Help ---
+show_help() {
+    cat << 'HELPEOF'
+PodcastDrive — run.sh
+
+Usage:
+  ./run.sh [OPTIONS] [TARGETS...]
+
+Options:
+  --help            Show this help message and exit
+  --dry-run         Preview mode — no downloads, uploads, or deletions
+  --reset           Delete ALL S3 data for enabled podcasts (prompts for confirmation)
+  --reset --force   Same as --reset but skip the confirmation prompt
+  --clear-cache <slug|all>
+                    Delete ad-segments cache for a podcast (forces re-detection on next run)
+  --reprocess <target|all>
+                    Delete episodes + ad cache, then re-sync with current ad-removal settings.
+                    Useful after tuning ad-detection parameters or upgrading the Bedrock model.
+
+Targets (optional — if omitted, processes all enabled podcasts from config):
+  PLxxxxxxxxxx      YouTube playlist ID
+  @ChannelHandle    YouTube channel handle
+  https://...       YouTube URL (playlist, channel, or video)
+
+Reprocess targets:
+  PLxxxxxxxxxx      YouTube playlist ID
+  @ChannelHandle    YouTube channel handle
+  podcast-slug      Slug of an RSS podcast (as shown in S3)
+  all               Reprocess all enabled podcasts
+
+Environment:
+  All behaviour is configured via config.env (see config.env.example).
+  Key variables: S3_BUCKET, CLOUDFRONT_BASE, REMOVE_ADS, MAX_AGE_DAYS, etc.
+  See README.md for the full environment variable reference.
+
+Examples:
+  ./run.sh                                  # sync all enabled podcasts
+  ./run.sh --dry-run                        # preview what would happen
+  ./run.sh @aliabdaal                       # sync a specific YouTube channel
+  ./run.sh --reprocess all                  # re-download + re-clean everything
+  ./run.sh --reprocess @aliabdaal           # re-clean one channel
+  ./run.sh --clear-cache all                # force ad re-detection on next run
+  ./run.sh --reset --force                  # wipe all S3 data (no prompt)
+HELPEOF
+    exit 0
+}
+
 # --- Parse flags: --dry-run, --reset, --force ---
 DRY_RUN=false
 DO_RESET=false
+DO_CLEAR_CACHE=false
+DO_REPROCESS=false
 FORCE=false
 ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--help" ]] || [[ "$arg" == "-h" ]]; then
+        show_help
+    fi
+done
 for arg in "$@"; do
     if [[ "$arg" == "--dry-run" ]]; then
         DRY_RUN=true
@@ -57,6 +113,10 @@ for arg in "$@"; do
         DO_RESET=true
     elif [[ "$arg" == "--force" ]]; then
         FORCE=true
+    elif [[ "$arg" == "--clear-cache" ]]; then
+        DO_CLEAR_CACHE=true
+    elif [[ "$arg" == "--reprocess" ]]; then
+        DO_REPROCESS=true
     else
         ARGS+=("$arg")
     fi
@@ -142,6 +202,144 @@ force = '--force' in sys.argv[1:]
 sys.exit(run_reset(force=force))
 " ${FORCE_FLAG}
     exit $?
+fi
+
+# --- Cache-bust mode: delete ad-segments cache for a podcast slug ---
+if [ "${DO_CLEAR_CACHE:-false}" = true ]; then
+    TARGET_SLUG="${1:-}"
+    if [ -z "$TARGET_SLUG" ]; then
+        fail "--clear-cache requires a podcast slug or 'all' as argument"
+    fi
+    if [ "$TARGET_SLUG" = "all" ]; then
+        PREFIX="transcribe-cache/"
+        echo "Clearing ALL ad-segments caches under s3://${S3_BUCKET}/${PREFIX}"
+        aws s3 rm "s3://${S3_BUCKET}/${PREFIX}" --recursive --exclude "*" --include "*_ads.json"
+    else
+        PREFIX="transcribe-cache/"
+        echo "Clearing ad-segments cache for: ${TARGET_SLUG}"
+        # List and delete only _ads.json files — transcript (.json) and text (.txt) are kept
+        aws s3 ls "s3://${S3_BUCKET}/${PREFIX}" | awk '{print $4}' |              grep "_ads\.json$" | while read -r key; do
+                aws s3 rm "s3://${S3_BUCKET}/${PREFIX}${key}"
+                echo "  Deleted: ${PREFIX}${key}"
+            done || true
+    fi
+    exit 0
+fi
+
+# --- Reprocess mode: delete episodes + cache, then fall through to normal sync ---
+if [ "${DO_REPROCESS:-false}" = true ]; then
+    # Determine which slug(s) to reprocess
+    REPROCESS_TARGETS=()
+    if [ $# -gt 0 ] && [ "$1" != "all" ]; then
+        REPROCESS_TARGETS=("$@")
+    fi
+
+    if [ ${#REPROCESS_TARGETS[@]} -eq 0 ] && [ "${1:-}" != "all" ] && [ $# -eq 0 ]; then
+        fail "--reprocess requires a playlist ID, @handle, or 'all' as argument.
+  Examples:
+    ./run.sh --reprocess PLxxxxxxxxx
+    ./run.sh --reprocess @channelHandle
+    ./run.sh --reprocess all"
+    fi
+
+    section "Reprocess: clearing S3 episodes + ad-segment caches"
+
+    # Resolve slugs
+    SLUGS=()
+    if [ "${1:-}" = "all" ]; then
+        info "Reprocessing ALL enabled podcasts"
+        # Collect all slugs from config
+        SLUG_LIST=$("${VENV_PYTHON}" -c "
+import sys, os, re
+from config_provider import get_config_provider, get_podcast_config_provider
+from utils import extract_playlist_id
+
+slugs = []
+try:
+    yt = get_config_provider()
+    for p in yt.get_podcasts():
+        if not p.enabled: continue
+        try:
+            slugs.append(extract_playlist_id(p.url))
+        except Exception:
+            pass
+except Exception:
+    pass
+try:
+    rss = get_podcast_config_provider()
+    for p in rss.get_podcasts():
+        if not p.enabled: continue
+        slug = p.name.lower()
+        slug = re.sub(r'[^a-z0-9]+', '-', slug).strip('-')[:60] or 'podcast'
+        slugs.append(slug)
+except Exception:
+    pass
+for s in slugs:
+    print(s)
+" 2>/dev/null)
+        while IFS= read -r slug; do
+            [ -n "$slug" ] && SLUGS+=("$slug")
+        done <<< "$SLUG_LIST"
+    else
+        for INPUT in "${REPROCESS_TARGETS[@]}"; do
+            if [[ "$INPUT" == @* ]]; then
+                SLUGS+=("$INPUT")
+            elif [[ "$INPUT" == PL* ]] || [[ "$INPUT" == UU* ]] || [[ "$INPUT" == UC* ]]; then
+                SLUGS+=("$INPUT")
+            elif [[ "$INPUT" == http* ]]; then
+                # Extract playlist ID from URL
+                SLUG=$("${VENV_PYTHON}" -c "
+from utils import extract_playlist_id
+print(extract_playlist_id('$INPUT'))
+" 2>/dev/null || echo "$INPUT")
+                SLUGS+=("$SLUG")
+            else
+                SLUGS+=("$INPUT")
+            fi
+        done
+    fi
+
+    if [ ${#SLUGS[@]} -eq 0 ]; then
+        fail "Could not resolve any podcast slugs to reprocess"
+    fi
+
+    echo "  Will reprocess ${#SLUGS[@]} podcast(s):"
+    for slug in "${SLUGS[@]}"; do
+        echo "    • $slug"
+    done
+    echo ""
+
+    for slug in "${SLUGS[@]}"; do
+        # Delete episode MP3s
+        EP_PREFIX="${slug}/episodes/"
+        EP_COUNT=$(aws s3 ls "s3://${S3_BUCKET}/${EP_PREFIX}" 2>/dev/null | wc -l | tr -d " " || true)
+        EP_COUNT="${EP_COUNT:-0}"
+        if [ "$EP_COUNT" -gt 0 ] 2>/dev/null; then
+            info "Deleting ${EP_COUNT} episode(s) from s3://${S3_BUCKET}/${EP_PREFIX}"
+            aws s3 rm "s3://${S3_BUCKET}/${EP_PREFIX}" --recursive --quiet
+        else
+            info "No episodes in S3 for ${slug} — nothing to delete"
+        fi
+
+        # Delete feed.xml and manifest
+        aws s3 rm "s3://${S3_BUCKET}/${slug}/feed.xml" --quiet 2>/dev/null || true
+        aws s3 rm "s3://${S3_BUCKET}/${slug}/manifest.json" --quiet 2>/dev/null || true
+
+        # Clear ad-segments cache (keep transcripts — they save Transcribe cost)
+        CACHE_PREFIX="transcribe-cache/"
+        aws s3 ls "s3://${S3_BUCKET}/${CACHE_PREFIX}" 2>/dev/null | awk '{print $4}' |              grep "_ads\.json$" | while read -r key; do
+                aws s3 rm "s3://${S3_BUCKET}/${CACHE_PREFIX}${key}" --quiet
+            done || true
+    done
+
+    ok "Cleared episodes + ad caches. Now re-syncing with ad removal..."
+    echo ""
+
+    # Clear positional args and fall through to normal sync
+    # (process all from config, which will now re-download the deleted episodes)
+    if [ "${1:-}" = "all" ]; then
+        set --
+    fi
 fi
 
 # --- Preflight checks ---
@@ -331,3 +529,15 @@ for i, podcast in enumerate(enabled):
     print()
 " || echo "ERROR: Failed processing RSS podcast feeds"
 fi
+
+# --- Run complete summary ---
+ELAPSED=$(( SECONDS ))
+ELAPSED_MIN=$(( ELAPSED / 60 ))
+ELAPSED_SEC=$(( ELAPSED % 60 ))
+echo ""
+section "Run Complete"
+ok "Finished in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
+echo "  Log dir: ${LOG_DIR}"
+echo "  Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+exit 0
