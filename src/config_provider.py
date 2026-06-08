@@ -25,6 +25,10 @@ class PodcastConfig:
     page_id: str | None = None  # Notion page ID (for write-back)
     source: str = "YouTube"  # "YouTube" or "Podcast"
     ad_hints: str = ""  # Free-text hints for the Bedrock ad-detection prompt (e.g. typical ad patterns)
+    trim_music_intro: bool = False  # Trim non-speech audio before first transcript word
+    trim_music_outro: bool = False  # Trim non-speech audio after last transcript word
+    min_music_intro_secs: float = 8.0  # Minimum intro gap duration to treat as music
+    min_music_outro_secs: float = 5.0  # Minimum outro gap duration to treat as music
     language: str = "en"  # BCP-47 language code for RSS feed <language> element
     description: str = ""  # Podcast description for RSS feed
 
@@ -104,6 +108,10 @@ class YamlConfigProvider(ConfigProvider):
                 max_age_days=entry.get("max_age_days", defaults.get("max_age_days")),
                 sleep_between=entry.get("sleep_between", defaults.get("sleep_between")),
                 ad_hints=entry.get("ad_hints", defaults.get("ad_hints", "")),
+                trim_music_intro=entry.get("trim_music_intro", defaults.get("trim_music_intro", False)),
+                trim_music_outro=entry.get("trim_music_outro", defaults.get("trim_music_outro", False)),
+                min_music_intro_secs=entry.get("min_music_intro_secs", defaults.get("min_music_intro_secs", 8.0)),
+                min_music_outro_secs=entry.get("min_music_outro_secs", defaults.get("min_music_outro_secs", 5.0)),
                 source=entry.get("source", defaults.get("source", "YouTube")),
                 language=entry.get("language", defaults.get("language", "en")),
                 description=entry.get("description", ""),

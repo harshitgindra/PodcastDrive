@@ -1906,3 +1906,103 @@ class TestWindowedTranscription:
         assert isinstance(result, list)
         # Normal transcription should have uploaded the full file
         s3.upload_file.assert_called()
+
+
+class TestDetectMusicBookends:
+    """Tests for detect_music_bookends()."""
+
+    def test_no_segments_returns_empty(self):
+        from ad_remover import detect_music_bookends
+        assert detect_music_bookends([], "/fake.mp3") == []
+
+    def test_intro_detected_when_gap_exceeds_min_and_has_audio(self, monkeypatch):
+        from ad_remover import detect_music_bookends
+        import ad_remover
+
+        segments = [{"start": 15.0, "end": 60.0, "text": "hello"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 120.0)
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
+
+        result = detect_music_bookends(segments, "/fake.mp3", min_intro_secs=8.0, min_outro_secs=9999.0)
+        assert len(result) == 1
+        assert result[0]["start"] == 0.0
+        assert result[0]["end"] == 15.0
+        assert result[0]["label"] == "music_intro"
+
+    def test_intro_skipped_when_gap_below_min(self, monkeypatch):
+        from ad_remover import detect_music_bookends
+        import ad_remover
+
+        segments = [{"start": 3.0, "end": 60.0, "text": "hello"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 120.0)
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
+
+        result = detect_music_bookends(segments, "/fake.mp3", min_intro_secs=8.0)
+        # No intro (3s < 8s), no outro (120-60=60s but min_outro default 5s — would detect)
+        # Actually outro would be detected. Let's just check no intro via high min_outro
+        result = detect_music_bookends(segments, "/fake.mp3", min_intro_secs=8.0, min_outro_secs=9999.0)
+        assert result == []
+
+    def test_intro_skipped_when_region_is_silent(self, monkeypatch):
+        from ad_remover import detect_music_bookends
+        import ad_remover
+
+        segments = [{"start": 12.0, "end": 60.0, "text": "hello"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 120.0)
+        # Entire intro region is silence
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [{"start": 0.0, "end": 12.0, "duration": 12.0}])
+
+        result = detect_music_bookends(segments, "/fake.mp3", min_intro_secs=8.0, min_outro_secs=9999.0)
+        assert result == []
+
+    def test_outro_detected_when_gap_exceeds_min_and_has_audio(self, monkeypatch):
+        from ad_remover import detect_music_bookends
+        import ad_remover
+
+        segments = [{"start": 5.0, "end": 50.0, "text": "hello"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 65.0)
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
+
+        result = detect_music_bookends(segments, "/fake.mp3", min_intro_secs=9999.0, min_outro_secs=5.0)
+        assert len(result) == 1
+        assert result[0]["start"] == 50.0
+        assert result[0]["end"] == 65.0
+        assert result[0]["label"] == "music_outro"
+
+    def test_outro_skipped_when_gap_below_min(self, monkeypatch):
+        from ad_remover import detect_music_bookends
+        import ad_remover
+
+        segments = [{"start": 5.0, "end": 62.0, "text": "hello"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 64.0)
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
+
+        result = detect_music_bookends(segments, "/fake.mp3", min_intro_secs=9999.0, min_outro_secs=5.0)
+        assert result == []  # outro is only 2s < 5s
+
+    def test_both_intro_and_outro_detected(self, monkeypatch):
+        from ad_remover import detect_music_bookends
+        import ad_remover
+
+        segments = [{"start": 10.0, "end": 55.0, "text": "hello"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 70.0)
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
+
+        result = detect_music_bookends(segments, "/fake.mp3", min_intro_secs=8.0, min_outro_secs=5.0)
+        assert len(result) == 2
+        assert result[0]["label"] == "music_intro"
+        assert result[0]["end"] == 10.0
+        assert result[1]["label"] == "music_outro"
+        assert result[1]["start"] == 55.0
+        assert result[1]["end"] == 70.0
+
+    def test_zero_duration_returns_empty(self, monkeypatch):
+        from ad_remover import detect_music_bookends
+        import ad_remover
+
+        segments = [{"start": 10.0, "end": 55.0, "text": "hello"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 0.0)
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
+
+        result = detect_music_bookends(segments, "/fake.mp3")
+        assert result == []

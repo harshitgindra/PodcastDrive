@@ -43,6 +43,13 @@ Environment variables (all optional — sensible defaults provided):
                                subsequent runs, eliminating repeated transcription costs for
                                reprocessed episodes.
     TRANSCRIBE_CACHE_PREFIX  – S3 key prefix for cached transcripts (default: "transcribe-cache").
+    TRIM_MUSIC_INTRO        – Set to "true" to trim non-speech audio before the first
+                              transcript word (default: "false").  Per-feed config
+                              trim_music_intro=true overrides this.
+    TRIM_MUSIC_OUTRO        – Set to "true" to trim non-speech audio after the last
+                              transcript word (default: "false").
+    MUSIC_INTRO_MIN_SECS    – Minimum intro gap in seconds to treat as music (default: "8.0").
+    MUSIC_OUTRO_MIN_SECS    – Minimum outro gap in seconds to treat as music (default: "5.0").
     SPLICE_LOUDNORM         – Set to "false" to disable EBU R128 loudness normalisation after
                               splicing (default: "true").  Loudnorm equalises loudness across
                               all kept intervals so volume discontinuities at cut points are
@@ -245,6 +252,73 @@ def snap_ad_boundaries(
             snapped.append({"start": new_start, "end": new_end})
 
     return snapped
+
+
+# ---------------------------------------------------------------------------
+# Music intro/outro detection
+# ---------------------------------------------------------------------------
+
+
+def detect_music_bookends(
+    segments: list[dict],
+    mp3_path: str,
+    min_intro_secs: float = 8.0,
+    min_outro_secs: float = 5.0,
+) -> list[AdSegment]:
+    """Detect music intro/outro by finding non-silent audio outside transcript boundaries.
+
+    The region [0, first_word_start] is a music intro if its duration >= min_intro_secs
+    and it is not entirely silent.  The region [last_word_end, audio_duration] is a music
+    outro by the same criteria using min_outro_secs.
+
+    Returns:
+        List of AdSegment dicts with an extra "label" key ("music_intro"/"music_outro").
+        Empty list if segments is empty or audio duration cannot be read.
+    """
+    if not segments:
+        return []
+
+    duration = _get_audio_duration(mp3_path)
+    if duration <= 0.0:
+        logger.warning("[AdRemover] Could not read audio duration for music detection: %s", mp3_path)
+        return []
+
+    first_speech = segments[0]["start"]
+    last_speech = segments[-1]["end"]
+    results: list[AdSegment] = []
+
+    silences = detect_silence(mp3_path)
+
+    def _region_has_audio(region_start: float, region_end: float) -> bool:
+        """Return True if [region_start, region_end] contains non-silent audio."""
+        region_dur = region_end - region_start
+        if region_dur <= 0:
+            return False
+        silence_secs = 0.0
+        for s in silences:
+            overlap_start = max(s["start"], region_start)
+            overlap_end = min(s["end"], region_end)
+            if overlap_end > overlap_start:
+                silence_secs += overlap_end - overlap_start
+        return (silence_secs / region_dur) < 0.85
+
+    # Intro
+    if first_speech >= min_intro_secs and _region_has_audio(0.0, first_speech):
+        logger.info(
+            "[AdRemover] Music intro detected: [0.0, %.2fs] (%.1fs)", first_speech, first_speech
+        )
+        results.append({"start": 0.0, "end": round(first_speech, 2), "label": "music_intro"})
+
+    # Outro
+    outro_dur = duration - last_speech
+    if outro_dur >= min_outro_secs and _region_has_audio(last_speech, duration):
+        logger.info(
+            "[AdRemover] Music outro detected: [%.2fs, %.2fs] (%.1fs)",
+            last_speech, duration, outro_dur,
+        )
+        results.append({"start": round(last_speech, 2), "end": round(duration, 2), "label": "music_outro"})
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -1455,7 +1529,16 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def remove_ads(mp3_path: str, video_id: str, tmp_dir: str, ad_hints: str = "") -> tuple[str, list[AdSegment], str]:
+def remove_ads(
+    mp3_path: str,
+    video_id: str,
+    tmp_dir: str,
+    ad_hints: str = "",
+    trim_music_intro: bool = False,
+    trim_music_outro: bool = False,
+    min_music_intro_secs: float = 8.0,
+    min_music_outro_secs: float = 5.0,
+) -> tuple[str, list[AdSegment], str]:
     """Run the full ad-removal pipeline on *mp3_path*.
 
     Steps:
@@ -1489,6 +1572,12 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str, ad_hints: str = "") -
     if dry_run:
         logger.info("[AdRemover] REMOVE_ADS_DRY_RUN=true — will detect ads but skip splicing for %s", video_id)
 
+    # Resolve music trimming flags (kwargs override env vars)
+    _trim_intro = trim_music_intro or os.environ.get("TRIM_MUSIC_INTRO", "false").lower() in ("true", "1", "yes")
+    _trim_outro = trim_music_outro or os.environ.get("TRIM_MUSIC_OUTRO", "false").lower() in ("true", "1", "yes")
+    _min_intro = min_music_intro_secs if min_music_intro_secs != 8.0 else float(os.environ.get("MUSIC_INTRO_MIN_SECS", "8.0"))
+    _min_outro = min_music_outro_secs if min_music_outro_secs != 5.0 else float(os.environ.get("MUSIC_OUTRO_MIN_SECS", "5.0"))
+
     logger.info("[AdRemover] Starting ad removal for %s", video_id)
 
     # Check ad-segments cache first (requires transcript cache to be enabled too).
@@ -1508,26 +1597,42 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str, ad_hints: str = "") -
                 ad_segments = cached_ads
                 # Skip transcription + detection — jump straight to snap + splice
                 logger.info("[AdRemover] Using cached ad-segments for %s — skipping Transcribe+Bedrock", video_id)
-                if not ad_segments:
+
+                # Music bookend detection using cached transcript
+                music_segments: list[AdSegment] = []
+                if _trim_intro or _trim_outro:
+                    cached_transcript = _load_transcript_cache(_s3, bucket, video_id)
+                    if cached_transcript:
+                        try:
+                            music_segments = detect_music_bookends(
+                                cached_transcript, mp3_path,
+                                min_intro_secs=_min_intro if _trim_intro else 9999.0,
+                                min_outro_secs=_min_outro if _trim_outro else 9999.0,
+                            )
+                        except Exception as exc:
+                            logger.warning("[AdRemover] Music detection failed (cached path) for %s: %s", video_id, exc)
+
+                all_cached = _merge_overlapping_ads(ad_segments + music_segments)
+                if not all_cached:
                     logger.info("[AdRemover] Cached ad-segments empty (no ads) for %s — using original file", video_id)
                     return mp3_path, [], ""
                 if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
-                    ad_segments = snap_ad_boundaries(ad_segments, mp3_path)
+                    all_cached = snap_ad_boundaries(all_cached, mp3_path)
                 if dry_run:
-                    total_ad_secs = sum(s["end"] - s["start"] for s in ad_segments)
+                    total_ad_secs = sum(s["end"] - s["start"] for s in all_cached)
                     logger.info(
-                        "[AdRemover] DRY-RUN: would remove %d cached ad segment(s) totalling %.1fs from %s",
-                        len(ad_segments), total_ad_secs, video_id,
+                        "[AdRemover] DRY-RUN: would remove %d cached segment(s) totalling %.1fs from %s",
+                        len(all_cached), total_ad_secs, video_id,
                     )
-                    return mp3_path, ad_segments, ""
+                    return mp3_path, all_cached, ""
                 cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
                 try:
-                    splice_audio(mp3_path, ad_segments, cleaned_path)
+                    splice_audio(mp3_path, all_cached, cleaned_path)
                 except Exception as exc:
                     logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
-                    return mp3_path, ad_segments, ""
+                    return mp3_path, all_cached, ""
                 logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
-                return cleaned_path, ad_segments, ""
+                return cleaned_path, all_cached, ""
 
     try:
         segments = transcribe_audio(mp3_path, video_id)
@@ -1549,7 +1654,22 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str, ad_hints: str = "") -
             _s3 = boto3.client("s3", region_name=region)
             _save_ad_segments_cache(_s3, bucket, video_id, ad_segments)
 
-    if not ad_segments:
+    # Detect music bookends (intro/outro) if enabled — merged with ad_segments for a single splice
+    music_segments: list[AdSegment] = []
+    if (_trim_intro or _trim_outro) and segments:
+        try:
+            music_segments = detect_music_bookends(
+                segments, mp3_path,
+                min_intro_secs=_min_intro if _trim_intro else 9999.0,
+                min_outro_secs=_min_outro if _trim_outro else 9999.0,
+            )
+        except Exception as exc:
+            logger.warning("[AdRemover] Music bookend detection failed for %s: %s — proceeding with ads only", video_id, exc)
+
+    # Merge ad + music segments for a single splice pass
+    all_segments = _merge_overlapping_ads(ad_segments + music_segments)
+
+    if not all_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
         # Generate summary even when no ads found (transcript is available)
         summary = ""
@@ -1571,22 +1691,22 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str, ad_hints: str = "") -
 
     # Fix #5: snap boundaries to silence gaps for cleaner cuts
     if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
-        ad_segments = snap_ad_boundaries(ad_segments, mp3_path)
+        all_segments = snap_ad_boundaries(all_segments, mp3_path)
 
     if dry_run:
-        total_ad_secs = sum(s["end"] - s["start"] for s in ad_segments)
+        total_secs = sum(s["end"] - s["start"] for s in all_segments)
         logger.info(
-            "[AdRemover] DRY-RUN: would remove %d ad segment(s) totalling %.1fs from %s — skipping splice",
-            len(ad_segments), total_ad_secs, video_id,
+            "[AdRemover] DRY-RUN: would remove %d segment(s) totalling %.1fs from %s — skipping splice",
+            len(all_segments), total_secs, video_id,
         )
-        return mp3_path, ad_segments, ""
+        return mp3_path, all_segments, ""
 
     cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
     try:
-        splice_audio(mp3_path, ad_segments, cleaned_path)
+        splice_audio(mp3_path, all_segments, cleaned_path)
     except Exception as exc:
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
-        return mp3_path, ad_segments, ""
+        return mp3_path, all_segments, ""
 
     # Generate AI summary if enabled
     summary = ""
@@ -1606,4 +1726,4 @@ def remove_ads(mp3_path: str, video_id: str, tmp_dir: str, ad_hints: str = "") -
                 logger.warning("[AdRemover] Summary generation failed for %s: %s", video_id, exc)
 
     logger.info("[AdRemover] Ad removal complete for %s → %s", video_id, cleaned_path)
-    return cleaned_path, ad_segments, summary
+    return cleaned_path, all_segments, summary
