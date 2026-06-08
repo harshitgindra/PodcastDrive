@@ -953,6 +953,84 @@ def _verify_ad_segment(
         return True
 
 
+_AD_NARROW_PROMPT = """ You previously identified an ad segment in a podcast transcript from {start:.1f}s to  {end:.1f}s ({duration:.0f}s total). However, this segment is too long to be a single ad —  it likely contains both regular content and one or more embedded ad reads.
+
+Below is the transcript text for ONLY that time range. Identify the EXACT ad portion(s)  within it. Return a JSON array of the narrowed ad boundaries. If there is no actual ad  in this text, return [].
+
+TRANSCRIPT ({start:.1f}s – {end:.1f}s):
+{text}
+
+Return ONLY a JSON array like: [{{"start": 123.4, "end": 234.5}}]
+Use the original timestamps from the transcript. Be precise — only include the ad read itself,  not the surrounding content.
+"""
+
+
+def _narrow_oversized_segment(
+    segment: AdSegment,
+    transcript_segments: list[dict],
+    bedrock_client,
+    model_id: str,
+) -> list[AdSegment]:
+    """Re-send an oversized segment to Bedrock to narrow its boundaries.
+
+    When the initial detection returns a segment that exceeds MAX_AD_SEGMENT_SECS,
+    this function extracts the transcript text for that range and asks Bedrock to
+    identify the precise ad portion(s) within it.
+
+    Returns:
+        A list of narrowed ad segments, or empty list on failure.
+    """
+    text = " ".join(
+        s["text"] for s in transcript_segments
+        if s["start"] >= segment["start"] - 2 and s["end"] <= segment["end"] + 2
+    )
+    if not text.strip():
+        logger.warning(
+            "[AdRemover] No transcript text for narrowing [%.1f–%.1f] — cannot narrow",
+            segment["start"], segment["end"],
+        )
+        return []
+
+    duration = segment["end"] - segment["start"]
+    prompt = _AD_NARROW_PROMPT.format(
+        start=segment["start"],
+        end=segment["end"],
+        duration=duration,
+        text=text[:4000],
+    )
+
+    try:
+        response = retry_aws_call(
+            lambda p=prompt: bedrock_client.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": p}]}],
+                inferenceConfig={"temperature": 0.0},
+            ),
+            label="bedrock.converse[narrow]",
+        )
+        raw = response["output"]["message"]["content"][0]["text"].strip()
+        narrowed = _parse_ad_response(raw)
+
+        if narrowed:
+            logger.info(
+                "[AdRemover] Narrowed oversized segment [%.1f–%.1f] (%.0fs) → %d sub-segment(s): %s",
+                segment["start"], segment["end"], duration, len(narrowed), narrowed,
+            )
+        else:
+            logger.info(
+                "[AdRemover] Narrowing found no ads within [%.1f–%.1f] — discarding",
+                segment["start"], segment["end"],
+            )
+        return narrowed
+
+    except Exception as exc:
+        logger.warning(
+            "[AdRemover] Narrowing call failed for [%.1f–%.1f]: %s — discarding segment",
+            segment["start"], segment["end"], exc,
+        )
+        return []
+
+
 def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
     """Ask AWS Bedrock to identify ad segments in *segments*.
 
@@ -1037,9 +1115,9 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
 
     merged = _merge_overlapping_ads(all_ads)
 
-    # Fix #2: guard rails on duration — ads almost never exceed 3 min
+    # Fix #2: guard rails on duration — ads almost never exceed 5 min
     _MIN_AD_SECONDS = float(os.environ.get("MIN_AD_SEGMENT_SECS", "5.0"))
-    max_ad_secs = float(os.environ.get("MAX_AD_SEGMENT_SECS", "180"))
+    max_ad_secs = float(os.environ.get("MAX_AD_SEGMENT_SECS", "300"))
     verify_threshold = float(os.environ.get("AD_VERIFY_THRESHOLD_SECS", "90"))
 
     valid = []
@@ -1053,11 +1131,25 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
             )
             continue
         if duration > max_ad_secs:
-            logger.warning(
-                "[AdRemover] Skipping suspiciously long ad segment "
-                "(%.1fs > %.1fs maximum): start=%.1f end=%.1f — likely a false positive",
-                duration, max_ad_secs, seg["start"], seg["end"],
-            )
+            # Instead of discarding, ask Bedrock to narrow boundaries
+            narrowed = _narrow_oversized_segment(seg, segments, bedrock, _default_model)
+            if narrowed:
+                for ns in narrowed:
+                    ns_dur = ns["end"] - ns["start"]
+                    if _MIN_AD_SECONDS <= ns_dur <= max_ad_secs:
+                        valid.append(ns)
+                    else:
+                        logger.warning(
+                            "[AdRemover] Narrowed sub-segment still out of bounds "
+                            "(%.1fs): [%.1f–%.1f] — skipping",
+                            ns_dur, ns["start"], ns["end"],
+                        )
+            else:
+                logger.warning(
+                    "[AdRemover] Skipping oversized ad segment "
+                    "(%.1fs > %.1fs maximum): start=%.1f end=%.1f — narrowing failed",
+                    duration, max_ad_secs, seg["start"], seg["end"],
+                )
             continue
         valid.append(seg)
 
