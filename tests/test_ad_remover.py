@@ -2006,3 +2006,725 @@ class TestDetectMusicBookends:
 
         result = detect_music_bookends(segments, "/fake.mp3")
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests – uncovered branches in ad_remover.py
+# ---------------------------------------------------------------------------
+
+class TestRegionHasAudioZeroDuration:
+    """Line 296: _region_has_audio returns False when region_dur <= 0."""
+
+    def test_zero_region_skipped_by_intro_check(self, monkeypatch):
+        """When first_speech == 0 no intro segment is emitted (region_dur == 0)."""
+        import ad_remover
+
+        segments = [{"start": 0.0, "end": 5.0, "text": "hi"}]
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 30.0)
+        monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
+
+        # With first_speech=0 the intro region [0,0] has duration 0 → no intro
+        result = ad_remover.detect_music_bookends(
+            segments, "/fake.mp3", min_intro_secs=0.0, min_outro_secs=9999.0
+        )
+        # The check `first_speech >= min_intro_secs` is True (0 >= 0), but
+        # _region_has_audio(0, 0) returns False → no intro appended
+        assert not any(s.get("label") == "music_intro" for s in result)
+
+
+class TestSummaryCacheExceptionPaths:
+    """Lines 391–421: _load_summary_cache / _save_summary_cache exception branches."""
+
+    def test_load_summary_cache_non_nosuchkey_error_is_ignored(self):
+        """ClientError with code other than NoSuchKey/404 is caught and returns None."""
+        import ad_remover
+        from botocore.exceptions import ClientError
+
+        s3 = MagicMock()
+        err = ClientError({"Error": {"Code": "AccessDenied", "Message": "Forbidden"}}, "GetObject")
+        s3.get_object.side_effect = err
+
+        result = ad_remover._load_summary_cache(s3, "my-bucket", "vid1")
+        assert result is None
+
+    def test_load_summary_cache_generic_exception_returns_none(self):
+        """Any non-ClientError exception is caught and returns None."""
+        import ad_remover
+
+        s3 = MagicMock()
+        s3.get_object.side_effect = RuntimeError("network blip")
+
+        result = ad_remover._load_summary_cache(s3, "my-bucket", "vid2")
+        assert result is None
+
+    def test_save_summary_cache_exception_is_swallowed(self):
+        """Errors saving summary cache are logged but not re-raised."""
+        import ad_remover
+
+        s3 = MagicMock()
+        s3.put_object.side_effect = RuntimeError("S3 write failed")
+
+        # Should not raise
+        ad_remover._save_summary_cache(s3, "my-bucket", "vid3", "Summary text")
+
+
+class TestSaveTranscriptTextException:
+    """Lines 437–438: _save_transcript_text exception path."""
+
+    def test_exception_is_swallowed(self):
+        """Errors writing transcript text to S3 are logged but not re-raised."""
+        import ad_remover
+
+        s3 = MagicMock()
+        s3.put_object.side_effect = RuntimeError("write error")
+
+        segments = [{"start": 0.0, "end": 5.0, "text": "hello"}]
+        # Should not raise
+        ad_remover._save_transcript_text(s3, "my-bucket", "vid4", segments)
+
+
+class TestAdSegmentsCacheExceptionPaths:
+    """Lines 463–478: _load_ad_segments_cache / _save_ad_segments_cache exception branches."""
+
+    def test_load_ad_segments_non_nosuchkey_error_returns_none(self):
+        """ClientError with unexpected code is logged and returns None."""
+        import ad_remover
+        from botocore.exceptions import ClientError
+
+        s3 = MagicMock()
+        err = ClientError({"Error": {"Code": "InternalError", "Message": "oops"}}, "GetObject")
+        s3.get_object.side_effect = err
+
+        result = ad_remover._load_ad_segments_cache(s3, "my-bucket", "vid5")
+        assert result is None
+
+    def test_load_ad_segments_generic_exception_returns_none(self):
+        """Generic exception during load returns None gracefully."""
+        import ad_remover
+
+        s3 = MagicMock()
+        s3.get_object.side_effect = RuntimeError("connection reset")
+
+        result = ad_remover._load_ad_segments_cache(s3, "my-bucket", "vid6")
+        assert result is None
+
+    def test_save_ad_segments_exception_is_swallowed(self):
+        """Errors saving ad segment cache to S3 are swallowed."""
+        import ad_remover
+
+        s3 = MagicMock()
+        s3.put_object.side_effect = RuntimeError("throttled")
+
+        # Should not raise
+        ad_remover._save_ad_segments_cache(s3, "my-bucket", "vid7", [{"start": 10.0, "end": 30.0}])
+
+
+class TestParseTranscribeWindowsEdgeCases:
+    """Lines 532, 545, 557–558: additional _parse_transcribe_windows branches."""
+
+    def test_trailing_comma_produces_empty_part_skipped(self):
+        """A trailing comma produces an empty part that is silently skipped (line 532)."""
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("0:300,", 3600.0)
+        assert windows == [(0.0, 300.0)]
+
+    def test_end_plus_token(self):
+        """end+N is clamped to total duration (line 545)."""
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("0:end+100", 600.0)
+        # end+100 → min(600, 600+100) = 600
+        assert windows == [(0.0, 600.0)]
+
+    def test_unparseable_value_raises_valueerror_skipped(self):
+        """Non-numeric value raises ValueError which is caught (lines 557–558)."""
+        from ad_remover import _parse_transcribe_windows
+        windows = _parse_transcribe_windows("abc:xyz,0:60", 600.0)
+        # abc:xyz raises ValueError → skipped; 0:60 is valid
+        assert windows == [(0.0, 60.0)]
+
+
+class TestWindowedTranscriptionTimeout:
+    """Line 686: windowed transcription job timeout raises RuntimeError."""
+
+    def test_windowed_job_timeout_raises(self, monkeypatch, tmp_path, mock_sleep):
+        """When the windowed Transcribe job never completes, a RuntimeError is raised."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "0:300")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+        # Force very low max wait so the loop exits quickly
+        monkeypatch.setenv("TRANSCRIBE_MAX_WAIT", "1")
+        monkeypatch.setenv("TRANSCRIBE_POLL_INTERVAL", "1")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        tc = MagicMock()
+        # Always returns IN_PROGRESS so the loop exhausts max_wait
+        tc.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "IN_PROGRESS",
+                "Transcript": {},
+            }
+        }
+        s3 = MagicMock()
+
+        def fake_client(service, **kw):
+            return s3 if service == "s3" else tc
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=fake_client))
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+
+        with pytest.raises(RuntimeError, match="timed out"):
+            ad_remover.transcribe_audio(str(fake_mp3), "vid_timeout_window")
+
+
+class TestWindowedTranscriptionCacheSave:
+    """Lines 718–719: windowed transcription saves cache after completion."""
+
+    def test_windowed_transcription_saves_cache(self, monkeypatch, tmp_path, mock_sleep):
+        """After windowed transcription completes, transcript cache is saved to S3."""
+        import ad_remover
+        import urllib.request as ur
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "0:60")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        transcript_data = {
+            "results": {
+                "items": [
+                    {"type": "pronunciation", "start_time": "1.0", "end_time": "2.0",
+                     "alternatives": [{"content": "Hello"}]},
+                ]
+            }
+        }
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = lambda s: s
+        fake_resp.__exit__ = MagicMock(return_value=False)
+        fake_resp.read.return_value = json.dumps(transcript_data).encode()
+
+        tc = MagicMock()
+        tc.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://fake/t.json"},
+            }
+        }
+        s3 = MagicMock()
+        # No cached transcript (cache miss)
+        from botocore.exceptions import ClientError
+        s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "not found"}}, "GetObject"
+        )
+
+        def fake_client(service, **kw):
+            return s3 if service == "s3" else tc
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=fake_client))
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+        monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=fake_resp))
+
+        ad_remover.transcribe_audio(str(fake_mp3), "vid_cache_save")
+
+        # put_object should have been called to save the transcript cache
+        assert s3.put_object.called
+
+
+class TestNarrowOversizedSegmentEmptyAndException:
+    """Lines 1094, 1100–1105: _narrow_oversized_segment edge cases."""
+
+    def _make_bedrock_empty(self):
+        """Bedrock responds with empty array (no ads in oversized segment)."""
+        client = MagicMock()
+        client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "[]"}]}}
+        }
+        return client
+
+    def test_empty_narrowed_result_logged(self):
+        """When Bedrock returns [] for narrowing, the function returns [] (line 1094)."""
+        import ad_remover
+        bedrock = self._make_bedrock_empty()
+        segments = [{"start": 0.0, "end": 400.0, "text": "lots of content here"}]
+        segment = {"start": 0.0, "end": 400.0}
+        result = ad_remover._narrow_oversized_segment(segment, segments, bedrock, "model-id")
+        assert result == []
+
+    def test_exception_during_narrowing_returns_empty(self):
+        """When Bedrock raises an exception during narrowing, [] is returned (lines 1100–1105)."""
+        import ad_remover
+        client = MagicMock()
+        client.converse.side_effect = RuntimeError("Bedrock unavailable")
+        segments = [{"start": 0.0, "end": 400.0, "text": "lots of content"}]
+        segment = {"start": 0.0, "end": 400.0}
+        result = ad_remover._narrow_oversized_segment(segment, segments, client, "model-id")
+        assert result == []
+
+
+class TestDetectAdsNarrowedValidSubsegment:
+    """Line 1214: detect_ads adds narrowed sub-segment when within bounds."""
+
+    def test_valid_narrowed_subsegment_is_included(self, monkeypatch):
+        """An oversized segment is narrowed; valid sub-segments are included in output."""
+        import ad_remover
+
+        # Create segments that will produce an oversized ad detection
+        segments = [
+            {"start": float(i * 5), "end": float(i * 5 + 4), "text": f"ad content {i}"}
+            for i in range(10)
+        ]
+
+        call_count = [0]
+
+        def fake_converse(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call: return an oversized ad segment (>300s default max)
+                return {"output": {"message": {"content": [{"text": '[{"start": 0.0, "end": 350.0}]'}]}}}
+            else:
+                # Narrowing call: return a valid sub-segment
+                return {"output": {"message": {"content": [{"text": '[{"start": 5.0, "end": 25.0}]'}]}}}
+
+        bedrock = MagicMock()
+        bedrock.converse.side_effect = fake_converse
+
+        with patch("ad_remover.boto3.client", return_value=bedrock):
+            result = ad_remover.detect_ads(segments)
+
+        # The narrowed sub-segment [5.0, 25.0] (20s) is within [1, 300] → included
+        assert any(s["start"] == pytest.approx(5.0) and s["end"] == pytest.approx(25.0) for s in result)
+
+
+class TestSpliceAudioMutagenFallback:
+    """Line 1458: splice_audio uses mutagen when both ffprobe attempts fail."""
+
+    def test_mutagen_fallback_used_when_ffprobe_fails(self, monkeypatch, tmp_path):
+        """When ffprobe CalledProcessError + generic exception, mutagen provides duration."""
+        import ad_remover
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 10000)
+
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+
+        call_count = [0]
+
+        def fake_run(cmd, **kwargs):
+            call_count[0] += 1
+            if cmd[0] == "ffprobe":
+                if call_count[0] == 1:
+                    # First ffprobe attempt (normal) → CalledProcessError
+                    raise subprocess.CalledProcessError(1, cmd)
+                else:
+                    # Second ffprobe attempt (-f mp3) → generic OSError
+                    raise OSError("ffprobe crashed")
+            # ffmpeg call succeeds
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        # Mock mutagen to return a duration
+        import mutagen.mp3 as _mut
+        mock_mp3 = MagicMock()
+        mock_mp3.info.length = 300.0
+        monkeypatch.setattr(_mut, "MP3", MagicMock(return_value=mock_mp3))
+
+        # Should succeed via mutagen fallback (ffmpeg call is also mocked to succeed)
+        ad_remover.splice_audio(str(fake_mp3), [{"start": 10.0, "end": 20.0}], str(tmp_path / "out.mp3"))
+
+
+class TestRemoveAdsCachedPaths:
+    """Lines 1604–1635: remove_ads cached ad-segment paths."""
+
+    def _setup_cached_env(self, monkeypatch, tmp_path, cached_ads, trim_intro=False, trim_outro=False):
+        """Helper: configure monkeypatches for cached-ads path."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        if trim_intro:
+            monkeypatch.setenv("TRIM_MUSIC_INTRO", "true")
+        if trim_outro:
+            monkeypatch.setenv("TRIM_MUSIC_OUTRO", "true")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = MagicMock()
+        from botocore.exceptions import ClientError
+
+        def fake_get(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(cached_ads).encode()))}
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": ""}}, "GetObject")
+
+        s3.get_object.side_effect = fake_get
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        return src, s3
+
+    def test_cached_empty_ads_returns_original(self, monkeypatch, tmp_path):
+        """When cached ad-segments is [], original file is returned (lines 1616–1618)."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = MagicMock()
+        from botocore.exceptions import ClientError
+
+        def fake_get(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps([]).encode()))}
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        s3.get_object.side_effect = fake_get
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a: (_ for _ in ()).throw(AssertionError("should not transcribe")))
+
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_empty_cached", str(tmp_path))
+        assert path == str(src)
+        assert segs == []
+
+    def test_cached_ads_dry_run(self, monkeypatch, tmp_path):
+        """Cached ads + DRY_RUN returns original path without splicing (lines 1621–1627)."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "true")
+
+        cached_ads = [{"start": 10.0, "end": 40.0}]
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = MagicMock()
+        from botocore.exceptions import ClientError
+
+        def fake_get(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(cached_ads).encode()))}
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        s3.get_object.side_effect = fake_get
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_dry_cached", str(tmp_path))
+        assert path == str(src)
+        assert segs == cached_ads
+
+    def test_cached_ads_splice_failure_returns_original(self, monkeypatch, tmp_path):
+        """Splice failure on cached path logs error and returns original (lines 1631–1633)."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "false")
+
+        cached_ads = [{"start": 10.0, "end": 40.0}]
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = MagicMock()
+        from botocore.exceptions import ClientError
+
+        def fake_get(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(cached_ads).encode()))}
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        s3.get_object.side_effect = fake_get
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+        monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(side_effect=RuntimeError("splice failed")))
+
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_splice_fail_cached", str(tmp_path))
+        assert path == str(src)
+        assert segs == cached_ads
+
+    def test_cached_ads_with_music_bookend_detection(self, monkeypatch, tmp_path):
+        """Cached path with TRIM_MUSIC_INTRO reads transcript cache for music detection (lines 1603–1613)."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("TRIM_MUSIC_INTRO", "true")
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "false")
+
+        cached_ads = [{"start": 10.0, "end": 40.0}]
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        transcript_segments = [{"start": 5.0, "end": 100.0, "text": "hello"}]
+
+        s3 = MagicMock()
+        from botocore.exceptions import ClientError
+
+        def fake_get(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(cached_ads).encode()))}
+            if Key.endswith(".json"):
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(transcript_segments).encode()))}
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        s3.get_object.side_effect = fake_get
+
+        spliced = []
+        def fake_splice(mp3_path, segs, out_path):
+            spliced.append(segs)
+            import pathlib
+            pathlib.Path(out_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "detect_music_bookends", MagicMock(return_value=[]))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_music_cached", str(tmp_path))
+        assert spliced, "splice_audio should be called"
+
+    def test_cached_ads_with_music_bookend_exception(self, monkeypatch, tmp_path):
+        """Music detection exception on cached path is swallowed (line 1613)."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("TRIM_MUSIC_INTRO", "true")
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "false")
+
+        cached_ads = [{"start": 10.0, "end": 40.0}]
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        transcript_segments = [{"start": 5.0, "end": 100.0, "text": "hello"}]
+
+        s3 = MagicMock()
+        from botocore.exceptions import ClientError
+
+        def fake_get(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(cached_ads).encode()))}
+            if Key.endswith(".json"):
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(transcript_segments).encode()))}
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        s3.get_object.side_effect = fake_get
+
+        def fake_splice(mp3_path, segs, out_path):
+            import pathlib
+            pathlib.Path(out_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "detect_music_bookends", MagicMock(side_effect=RuntimeError("detection failed")))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        # Should not raise — music detection exception is swallowed
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_music_exc_cached", str(tmp_path))
+        assert segs == cached_ads
+
+
+class TestRemoveAdsSaveAdSegmentsCache:
+    """Lines 1653–1655: remove_ads saves ad segments cache after fresh detection."""
+
+    def test_ad_segments_saved_to_cache_after_detection(self, monkeypatch, tmp_path):
+        """After fresh Bedrock detection, ad segments are saved to S3 cache."""
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = MagicMock()
+        from botocore.exceptions import ClientError
+        # No cached ads
+        s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        detected_ads = [{"start": 10.0, "end": 40.0}]
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=detected_ads))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+
+        def fake_splice(mp3_path, segs, out_path):
+            import pathlib
+            pathlib.Path(out_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        ad_remover.remove_ads(str(src), "ep_cache_save", str(tmp_path))
+
+        # put_object should have been called to save ad segments cache
+        assert s3.put_object.called
+
+
+class TestRemoveAdsMusicBookendOnFreshPath:
+    """Lines 1660–1667: music bookend detection on fresh transcription path."""
+
+    def test_music_bookend_detection_exception_is_swallowed(self, monkeypatch, tmp_path):
+        """Music detection exception on fresh path is logged and doesn't abort (lines 1666–1667)."""
+        import ad_remover
+
+        monkeypatch.setenv("TRIM_MUSIC_INTRO", "true")
+        monkeypatch.delenv("S3_BUCKET", raising=False)
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        detected_ads = [{"start": 10.0, "end": 40.0}]
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 5.0, "end": 10.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=detected_ads))
+        monkeypatch.setattr(ad_remover, "detect_music_bookends", MagicMock(side_effect=RuntimeError("music detect crash")))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+
+        def fake_splice(mp3_path, segs, out_path):
+            import pathlib
+            pathlib.Path(out_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        # Should not raise — music detection exception is swallowed
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_music_exc_fresh", str(tmp_path))
+        assert segs == detected_ads
+
+
+class TestRemoveAdsGenerateSummaryPaths:
+    """Lines 1677–1689, 1713–1726: GENERATE_SUMMARIES paths in remove_ads."""
+
+    def _make_s3(self):
+        from botocore.exceptions import ClientError
+        s3 = MagicMock()
+        # summary cache miss
+        s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        return s3
+
+    def test_summary_generated_when_no_ads_found(self, monkeypatch, tmp_path):
+        """When no ads detected and GENERATE_SUMMARIES=true, summary is generated (lines 1677–1690)."""
+        import ad_remover
+
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.delenv("TRANSCRIBE_CACHE_ENABLED", raising=False)
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._make_s3()
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
+
+        import sys
+        fake_summary_mod = MagicMock()
+        fake_summary_mod.generate_episode_summary.return_value = "Great episode!"
+        sys.modules["summary_generator"] = fake_summary_mod
+
+        try:
+            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_no_ads", str(tmp_path))
+            assert summary == "Great episode!"
+            assert path == str(src)
+        finally:
+            sys.modules.pop("summary_generator", None)
+
+    def test_summary_generation_exception_is_swallowed_no_ads(self, monkeypatch, tmp_path):
+        """Summary generation exception when no ads is swallowed (line 1689)."""
+        import ad_remover
+
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._make_s3()
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
+
+        import sys
+        fake_summary_mod = MagicMock()
+        fake_summary_mod.generate_episode_summary.side_effect = RuntimeError("summary failed")
+        sys.modules["summary_generator"] = fake_summary_mod
+
+        try:
+            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_exc_no_ads", str(tmp_path))
+            assert summary == ""
+        finally:
+            sys.modules.pop("summary_generator", None)
+
+    def test_summary_generated_after_splice(self, monkeypatch, tmp_path):
+        """After successful splice with GENERATE_SUMMARIES=true, summary is returned (lines 1713–1726)."""
+        import ad_remover
+
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.delenv("TRANSCRIBE_CACHE_ENABLED", raising=False)
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._make_s3()
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 40.0}]))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+
+        def fake_splice(mp3_path, segs, out_path):
+            import pathlib
+            pathlib.Path(out_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        import sys
+        fake_summary_mod = MagicMock()
+        fake_summary_mod.generate_episode_summary.return_value = "Spliced episode summary!"
+        sys.modules["summary_generator"] = fake_summary_mod
+
+        try:
+            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_after_splice", str(tmp_path))
+            assert summary == "Spliced episode summary!"
+        finally:
+            sys.modules.pop("summary_generator", None)
+
+    def test_summary_generation_exception_is_swallowed_after_splice(self, monkeypatch, tmp_path):
+        """Summary generation exception after splice is swallowed (line 1726)."""
+        import ad_remover
+
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._make_s3()
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 40.0}]))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path: segs)
+
+        def fake_splice(mp3_path, segs, out_path):
+            import pathlib
+            pathlib.Path(out_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        import sys
+        fake_summary_mod = MagicMock()
+        fake_summary_mod.generate_episode_summary.side_effect = RuntimeError("summariser crashed")
+        sys.modules["summary_generator"] = fake_summary_mod
+
+        try:
+            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_exc_splice", str(tmp_path))
+            assert summary == ""
+        finally:
+            sys.modules.pop("summary_generator", None)
