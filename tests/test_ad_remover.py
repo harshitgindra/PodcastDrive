@@ -59,13 +59,20 @@ def _make_transcribe_client(status_sequence=("COMPLETED",), failure_reason=None)
     return client
 
 
-def _make_bedrock_client(content: str = "[]"):
-    """Return a mock boto3 bedrock-runtime client."""
+def _make_bedrock_client(content: str = "[]", prefill: str = "["):
+    """Return a mock boto3 bedrock-runtime client.
+
+    The actual code prepends *prefill* to the model output (assistant-turn prefill).
+    This helper strips the prefill from *content* so the caller can pass the full
+    expected JSON and the mock simulates the model returning everything after the prefill.
+    """
+    # Strip leading prefill character from mock content (code will re-add it)
+    mock_text = content[len(prefill):] if content.startswith(prefill) else content
     client = MagicMock()
     client.converse.return_value = {
         "output": {
             "message": {
-                "content": [{"text": content}]
+                "content": [{"text": mock_text}]
             }
         }
     }
@@ -832,10 +839,14 @@ class TestMergeOverlappingAds:
 
 class TestDetectAdsChunking:
     def _patch_bedrock(self, monkeypatch, responses: list[str]):
-        """Patch bedrock to return different responses for each chunk call."""
+        """Patch bedrock to return different responses for each chunk call.
+
+        Strips the leading '[' from each response to simulate assistant prefill
+        (the code prepends '[' to whatever the model returns).
+        """
         bc = MagicMock()
         bc.converse.side_effect = [
-            {"output": {"message": {"content": [{"text": r}]}}}
+            {"output": {"message": {"content": [{"text": r[1:] if r.startswith("[") else r}]}}}
             for r in responses
         ]
         import boto3 as _boto3
@@ -2728,3 +2739,229 @@ class TestRemoveAdsGenerateSummaryPaths:
             assert summary == ""
         finally:
             sys.modules.pop("summary_generator", None)
+
+
+class TestPromptImprovements:
+    """Tests for Bedrock prompt quality improvements (Changes 1-8)."""
+
+    def test_no_boundary_padding_rule(self):
+        """Change 2: Rule 2 about extending start/end times is removed."""
+        import ad_remover
+        assert "Extend each segment" not in ad_remover._AD_DETECTION_PROMPT
+
+    def test_negative_examples_section_present(self):
+        """Change 5: 'What is NOT an ad' section exists with subscribe example."""
+        import ad_remover
+        assert "What is NOT an ad" in ad_remover._AD_DETECTION_PROMPT
+        assert "subscribe" in ad_remover._AD_DETECTION_PROMPT
+
+    def test_hints_section_before_rules(self):
+        """Change 8: {hints_section} appears before '## Rules' in the prompt."""
+        import ad_remover
+        hints_pos = ad_remover._AD_DETECTION_PROMPT.index("{hints_section}")
+        rules_pos = ad_remover._AD_DETECTION_PROMPT.index("## Rules")
+        assert hints_pos < rules_pos
+
+    def test_detection_prefill_in_messages(self, monkeypatch):
+        """Change 3: detect_ads sends assistant prefill '[' in messages."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+        monkeypatch.setattr("boto3.client", lambda svc, **kw: mock_client)
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover.detect_ads([{"start": 0.0, "end": 5.0, "text": "hi"}])
+
+        msgs = captured_kwargs[0]["messages"]
+        assert len(msgs) == 2
+        assert msgs[1] == {"role": "assistant", "content": [{"text": "["}]}
+
+    def test_detection_system_prompt_present(self, monkeypatch):
+        """Change 4: detect_ads sends a system prompt."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+        monkeypatch.setattr("boto3.client", lambda svc, **kw: mock_client)
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover.detect_ads([{"start": 0.0, "end": 5.0, "text": "hi"}])
+
+        assert "system" in captured_kwargs[0]
+        assert len(captured_kwargs[0]["system"]) > 0
+        assert "text" in captured_kwargs[0]["system"][0]
+
+    def test_narrowing_prefill_in_messages(self, monkeypatch):
+        """Change 3: _narrow_oversized_segment sends assistant prefill '[' in messages."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+
+        seg = {"start": 100.0, "end": 400.0}
+        segs = [{"start": 100.0, "end": 200.0, "text": "some text"}, {"start": 200.0, "end": 400.0, "text": "more text"}]
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover._narrow_oversized_segment(seg, segs, mock_client, "test-model")
+
+        msgs = captured_kwargs[0]["messages"]
+        assert len(msgs) == 2
+        assert msgs[1] == {"role": "assistant", "content": [{"text": "["}]}
+
+    def test_narrowing_system_prompt_present(self, monkeypatch):
+        """Change 4: _narrow_oversized_segment sends a system prompt."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+
+        seg = {"start": 100.0, "end": 400.0}
+        segs = [{"start": 100.0, "end": 400.0, "text": "content"}]
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover._narrow_oversized_segment(seg, segs, mock_client, "test-model")
+
+        assert "system" in captured_kwargs[0]
+        assert len(captured_kwargs[0]["system"]) > 0
+
+    def test_verification_prefill_in_messages(self, monkeypatch):
+        """Change 3: _verify_ad_segment sends assistant prefill '{' in messages."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": '"is_ad": true, "reason": "test"}'}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+
+        seg = {"start": 100.0, "end": 250.0}
+        segs = [{"start": 100.0, "end": 250.0, "text": "sponsor content"}]
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover._verify_ad_segment(seg, segs, mock_client, "test-model")
+
+        msgs = captured_kwargs[0]["messages"]
+        assert len(msgs) == 2
+        assert msgs[1] == {"role": "assistant", "content": [{"text": "{"}]}
+
+    def test_verification_system_prompt_present(self, monkeypatch):
+        """Change 4: _verify_ad_segment sends a system prompt."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": '"is_ad": true, "reason": "x"}'}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+
+        seg = {"start": 100.0, "end": 250.0}
+        segs = [{"start": 100.0, "end": 250.0, "text": "sponsor content"}]
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover._verify_ad_segment(seg, segs, mock_client, "test-model")
+
+        assert "system" in captured_kwargs[0]
+        assert len(captured_kwargs[0]["system"]) > 0
+
+    def test_narrow_timestamp_format_in_prompt(self, monkeypatch):
+        """Change 1: _narrow_oversized_segment sends timestamped transcript lines."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+
+        seg = {"start": 100.0, "end": 200.0}
+        segs = [{"start": 105.5, "end": 150.3, "text": "hello world"}]
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover._narrow_oversized_segment(seg, segs, mock_client, "test-model")
+
+        prompt_text = captured_kwargs[0]["messages"][0]["content"][0]["text"]
+        assert "[105.5 - 150.3]" in prompt_text
+        assert "hello world" in prompt_text
+
+    def test_verify_timestamp_format_in_prompt(self, monkeypatch):
+        """Change 6: _verify_ad_segment sends timestamped transcript lines."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": '"is_ad": true, "reason": "x"}'}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+
+        seg = {"start": 100.0, "end": 250.0}
+        segs = [{"start": 102.5, "end": 180.7, "text": "use code SAVE20"}]
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover._verify_ad_segment(seg, segs, mock_client, "test-model")
+
+        prompt_text = captured_kwargs[0]["messages"][0]["content"][0]["text"]
+        assert "[102.5 - 180.7]" in prompt_text
+        assert "use code SAVE20" in prompt_text
+
+    def test_episode_context_in_detection_prompt(self, monkeypatch):
+        """Change 7: detect_ads adds episode context header to each chunk."""
+        import importlib, ad_remover
+        importlib.reload(ad_remover)
+
+        captured_kwargs = []
+        def fake_converse(**kwargs):
+            captured_kwargs.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "]"}]}}}
+
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = fake_converse
+        monkeypatch.setattr("boto3.client", lambda svc, **kw: mock_client)
+
+        segs = [
+            {"start": 0.0, "end": 1800.0, "text": "first half"},
+            {"start": 1800.0, "end": 3600.0, "text": "second half"},
+        ]
+
+        with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+            ad_remover.detect_ads(segs)
+
+        prompt_text = captured_kwargs[0]["messages"][0]["content"][0]["text"]
+        assert "Total episode duration:" in prompt_text
+        assert "chunk 1 of" in prompt_text

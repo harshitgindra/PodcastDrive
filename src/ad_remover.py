@@ -866,8 +866,7 @@ def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[di
 # Step 2 – Ad detection (AWS Bedrock)
 # ---------------------------------------------------------------------------
 
-_AD_DETECTION_PROMPT = """\
-You are an expert podcast audio editor specialising in ad removal.
+_AD_DETECTION_PROMPT = """You are an expert podcast audio editor specialising in ad removal.
 
 Below is the word-level transcript of a podcast episode. Each line has the
 format:  [start_seconds - end_seconds]  text
@@ -889,19 +888,28 @@ where the host personally delivers the ad copy in their own voice.
 - Ad outros / transitions back to content: "now back to", "and we're back",
   "alright let's get into it", "back to the show", "let's continue"
 
+## What is NOT an ad
+Do NOT flag these as ads:
+- Calls to subscribe, follow, or leave a review ("subscribe to the podcast",
+  "five-star review", "follow us on Twitter/X", "hit the like button")
+- Mentions of the host's own book, course, or newsletter without external
+  sponsor language or discount codes
+- Casual organic product mentions without promotion ("I use Notion for this",
+  "I love my AeroPress")
+- News discussion, editorial commentary, or analysis about a company or brand
+- Introductions or transitions between topics, guests, or segments
+{hints_section}
 ## Rules
 1. Only flag segments where you have clear evidence of advertising. Do NOT flag
    editorial discussion, interview content, or product mentions unless they are
    clearly promotional with a call-to-action. If a segment is ambiguous, leave it out.
-2. Extend each segment's start time back by 2 seconds and end time forward
-   by 5 seconds to avoid clipped transitions (but never below 0).
-3. Return each ad break as a separate segment. Do NOT merge adjacent ad breaks —
+2. Return each ad break as a separate segment. Do NOT merge adjacent ad breaks —
    the code will handle merging. Keeping them separate lets each be verified independently.
-4. Host-read ads blend naturally into the show's tone — look for the signals
+3. Host-read ads blend naturally into the show's tone — look for the signals
    above even when the voice and style match the rest of the episode.
-5. A single ad segment should rarely exceed 3 minutes (180 seconds). If you find
+4. A single ad segment should rarely exceed 3 minutes (180 seconds). If you find
    yourself marking a very long stretch as an ad, double-check it is not content.
-{hints_section}
+
 ## Reasoning step (do NOT include in output)
 Before writing the JSON, briefly note each candidate segment and why you
 think it is an ad. Then output ONLY the final JSON array.
@@ -968,8 +976,9 @@ def _verify_ad_segment(
         ``True`` if confirmed as an ad, ``False`` if the model rejects it.
         Defaults to ``True`` on any error so we never silently discard a real ad.
     """
-    text = " ".join(
-        s["text"] for s in transcript_segments
+    text = "\n".join(
+        f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}"
+        for s in transcript_segments
         if s["start"] >= segment["start"] - 5 and s["end"] <= segment["end"] + 5
     )
     if not text.strip():
@@ -983,19 +992,23 @@ def _verify_ad_segment(
     prompt = _AD_VERIFICATION_PROMPT.format(
         start=segment["start"],
         end=segment["end"],
-        text=text[:2000],
+        text=text[:4000],
     )
 
     try:
         response = retry_aws_call(
             lambda p=prompt: bedrock_client.converse(
                 modelId=model_id,
-                messages=[{"role": "user", "content": [{"text": p}]}],
+                system=[{"text": "You are an expert podcast editor reviewing transcript segments. Output ONLY a single valid JSON object. No prose, no markdown, no explanation outside the JSON."}],
+                messages=[
+                    {"role": "user", "content": [{"text": p}]},
+                    {"role": "assistant", "content": [{"text": "{"}]},
+                ],
                 inferenceConfig={"temperature": 0.0},
             ),
             label="bedrock.converse[verify]",
         )
-        raw = response["output"]["message"]["content"][0]["text"].strip()
+        raw = "{" + response["output"]["message"]["content"][0]["text"].strip()
 
         # Parse the JSON response (model may wrap it in markdown)
         start_idx = raw.find("{")
@@ -1054,8 +1067,9 @@ def _narrow_oversized_segment(
     Returns:
         A list of narrowed ad segments, or empty list on failure.
     """
-    text = " ".join(
-        s["text"] for s in transcript_segments
+    text = "\n".join(
+        f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}"
+        for s in transcript_segments
         if s["start"] >= segment["start"] - 2 and s["end"] <= segment["end"] + 2
     )
     if not text.strip():
@@ -1070,19 +1084,23 @@ def _narrow_oversized_segment(
         start=segment["start"],
         end=segment["end"],
         duration=duration,
-        text=text[:4000],
+        text=text[:6000],
     )
 
     try:
         response = retry_aws_call(
             lambda p=prompt: bedrock_client.converse(
                 modelId=model_id,
-                messages=[{"role": "user", "content": [{"text": p}]}],
+                system=[{"text": "You are an expert podcast editor. Output ONLY valid JSON. No prose, no markdown, no commentary outside the JSON structure."}],
+                messages=[
+                    {"role": "user", "content": [{"text": p}]},
+                    {"role": "assistant", "content": [{"text": "["}]},
+                ],
                 inferenceConfig={"temperature": 0.0},
             ),
             label="bedrock.converse[narrow]",
         )
-        raw = response["output"]["message"]["content"][0]["text"].strip()
+        raw = "[" + response["output"]["message"]["content"][0]["text"].strip()
         narrowed = _parse_ad_response(raw)
 
         if narrowed:
@@ -1157,6 +1175,7 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
 
     bedrock = boto3.client("bedrock-runtime", region_name=region)
     all_ads: list[AdSegment] = []
+    episode_duration = segments[-1]["end"] if segments else 0.0
 
     for i, chunk in enumerate(chunks):
         transcript_lines = "\n".join(
@@ -1165,7 +1184,15 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
         hints_section = (
             _AD_HINTS_SECTION.format(hints=ad_hints.strip()) if ad_hints and ad_hints.strip() else ""
         )
-        prompt = _AD_DETECTION_PROMPT.format(transcript=transcript_lines, hints_section=hints_section)
+        chunk_start = chunk[0]["start"]
+        chunk_end = chunk[-1]["end"]
+        context_header = (
+            f"## Episode context\n"
+            f"Total episode duration: {episode_duration:.0f}s | "
+            f"This chunk: {chunk_start:.0f}s \u2013 {chunk_end:.0f}s "
+            f"(chunk {i + 1} of {len(chunks)})\n\n"
+        )
+        prompt = context_header + _AD_DETECTION_PROMPT.format(transcript=transcript_lines, hints_section=hints_section)
 
         logger.info(
             "[AdRemover] Sending chunk %d/%d to Bedrock (model=%s, segments=%d, chars=%d)",
@@ -1175,13 +1202,17 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
         response = retry_aws_call(
             lambda p=prompt: bedrock.converse(
                 modelId=model_id,
-                messages=[{"role": "user", "content": [{"text": p}]}],
+                system=[{"text": "You are an expert podcast editor. Output ONLY valid JSON. No prose, no markdown, no commentary outside the JSON structure."}],
+                messages=[
+                    {"role": "user", "content": [{"text": p}]},
+                    {"role": "assistant", "content": [{"text": "["}]},
+                ],
                 inferenceConfig={"temperature": 0.0},
             ),
             label=f"bedrock.converse[chunk-{i+1}]",
         )
 
-        raw = response["output"]["message"]["content"][0]["text"]
+        raw = "[" + response["output"]["message"]["content"][0]["text"]
         logger.debug("[AdRemover] Bedrock raw response (chunk %d): %s", i + 1, raw)
 
         chunk_ads = _parse_ad_response(raw)

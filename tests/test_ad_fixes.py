@@ -291,7 +291,8 @@ class TestSecondPassVerification:
         seg = segment or {"start": 100.0, "end": 250.0}
         segs = transcript_segs or _make_segments((100.0, 250.0, "sponsor content here"))
 
-        json_resp = json.dumps({"is_ad": is_ad_response, "reason": "test reason"})
+        # Response text excludes leading "{" since remove_ads prepends it (assistant prefill)
+        json_resp = json.dumps({"is_ad": is_ad_response, "reason": "test reason"})[1:]  # strip leading {
         mock_bedrock = MagicMock()
         mock_bedrock.converse.return_value = _bedrock_response(json_resp)
 
@@ -335,9 +336,9 @@ class TestSecondPassVerification:
         importlib.reload(ad_remover)
 
         segs = _make_segments((50.0, 55.0, "intro"), (200.0, 205.0, "content"))
-        detection_json = '[{"start": 50.0, "end": 170.0}]'  # 120s → above 60s threshold
+        detection_json = '{"start": 50.0, "end": 170.0}]'  # 120s → above 60s threshold (no leading [ — prefill)
 
-        verify_json = json.dumps({"is_ad": True, "reason": "confirmed ad"})
+        verify_json = json.dumps({"is_ad": True, "reason": "confirmed ad"})[1:]  # strip leading { — prefill
         mock_bedrock = MagicMock()
         # First call = detection, second call = verification
         mock_bedrock.converse.side_effect = [
@@ -362,8 +363,8 @@ class TestSecondPassVerification:
         importlib.reload(ad_remover)
 
         segs = _make_segments((100.0, 110.0, "discussion"))
-        detection_json = '[{"start": 100.0, "end": 220.0}]'  # 120s → triggers verify
-        reject_json = json.dumps({"is_ad": False, "reason": "this is normal content"})
+        detection_json = '{"start": 100.0, "end": 220.0}]'  # 120s → triggers verify (no leading [ — prefill)
+        reject_json = json.dumps({"is_ad": False, "reason": "this is normal content"})[1:]  # strip leading { — prefill
 
         mock_bedrock = MagicMock()
         mock_bedrock.converse.side_effect = [
@@ -386,7 +387,7 @@ class TestSecondPassVerification:
         importlib.reload(ad_remover)
 
         segs = _make_segments((10.0, 20.0, "ad text"))
-        detection_json = '[{"start": 10.0, "end": 70.0}]'  # 60s < 120s threshold
+        detection_json = '{"start": 10.0, "end": 70.0}]'  # 60s < 120s threshold (no leading [ — prefill)
 
         mock_bedrock = MagicMock()
         mock_bedrock.converse.return_value = _bedrock_response(detection_json)
@@ -566,7 +567,12 @@ class TestE2EScenarios:
         transcript_text: str = "sponsor content",
         ad_snap: str = "false",
     ) -> list[dict]:
-        """Run detect_ads with mocked Bedrock and return the final ad list."""
+        """Run detect_ads with mocked Bedrock and return the final ad list.
+
+        Note: detection_json and verify_json should be the FULL expected JSON.
+        This helper strips the leading '[' / '{' to simulate assistant prefill
+        (the code prepends these characters to the model output).
+        """
         monkeypatch.setenv("MAX_AD_SEGMENT_SECS", max_secs)
         monkeypatch.setenv("AD_VERIFY_THRESHOLD_SECS", verify_threshold)
         monkeypatch.setenv("AD_SNAP_TO_SILENCE", ad_snap)
@@ -576,9 +582,12 @@ class TestE2EScenarios:
 
         segs = _make_segments((50.0, 60.0, transcript_text))
 
-        responses = [_bedrock_response(detection_json)]
+        # Strip leading prefill characters that the code will re-add
+        detect_resp = detection_json[1:] if detection_json.startswith("[") else detection_json
+        responses = [_bedrock_response(detect_resp)]
         if verify_json:
-            responses.append(_bedrock_response(verify_json))
+            verify_resp = verify_json[1:] if verify_json.startswith("{") else verify_json
+            responses.append(_bedrock_response(verify_resp))
 
         mock_bedrock = MagicMock()
         mock_bedrock.converse.side_effect = responses
@@ -617,8 +626,8 @@ class TestE2EScenarios:
 
         # Transcript inside the ad window so verification receives text to evaluate
         segs = _make_segments((110.0, 200.0, "we discussed the architecture and tradeoffs"))
-        detection_json = '[{"start": 100.0, "end": 210.0}]'  # 110s triggers verify
-        reject_json = json.dumps({"is_ad": False, "reason": "editorial discussion not ad"})
+        detection_json = '{"start": 100.0, "end": 210.0}]'  # 110s triggers verify (no leading [ — prefill)
+        reject_json = json.dumps({"is_ad": False, "reason": "editorial discussion not ad"})[1:]  # strip leading { — prefill
 
         mock_bedrock = MagicMock()
         mock_bedrock.converse.side_effect = [
