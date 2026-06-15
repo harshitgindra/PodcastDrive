@@ -2965,3 +2965,24 @@ class TestPromptImprovements:
         prompt_text = captured_kwargs[0]["messages"][0]["content"][0]["text"]
         assert "Total episode duration:" in prompt_text
         assert "chunk 1 of" in prompt_text
+
+
+class TestAdSegmentsCache:
+    """Tests for _save_ad_segments_cache."""
+
+    def test_save_ad_segments_cache_empty_list_not_saved(self):
+        """_save_ad_segments_cache must NOT write to S3 when ad_segments is empty."""
+        from ad_remover import _save_ad_segments_cache
+        mock_s3 = MagicMock()
+        _save_ad_segments_cache(mock_s3, "my-bucket", "vid123", [])
+        mock_s3.put_object.assert_not_called()
+
+    def test_save_ad_segments_cache_non_empty_list_saved(self):
+        """_save_ad_segments_cache must write to S3 when ad_segments is non-empty."""
+        from ad_remover import _save_ad_segments_cache
+        mock_s3 = MagicMock()
+        _save_ad_segments_cache(mock_s3, "my-bucket", "vid123", [{"start": 10.0, "end": 45.0}])
+        mock_s3.put_object.assert_called_once()
+        call_kwargs = mock_s3.put_object.call_args[1]
+        assert call_kwargs["Bucket"] == "my-bucket"
+        assert b'"start"' in call_kwargs["Body"]

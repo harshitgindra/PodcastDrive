@@ -466,7 +466,19 @@ def _load_ad_segments_cache(s3_client, bucket: str, video_id: str) -> list[AdSeg
 
 
 def _save_ad_segments_cache(s3_client, bucket: str, video_id: str, ad_segments: list[AdSegment]) -> None:
-    """Persist detected ad-segments to S3 for future reuse."""
+    """Persist detected ad-segments to S3 for future reuse.
+
+    Empty results are intentionally not cached: a cache miss is always safer
+    than permanently treating a false-negative detection as confirmed "no ads".
+    On the next run, Bedrock will be called again and given another chance to
+    detect ads with the latest prompt and model.
+    """
+    if not ad_segments:
+        logger.debug(
+            "[AdRemover] Ad-segments cache skipped for %s (empty result — not persisting to avoid false-negative lock-in)",
+            video_id,
+        )
+        return
     key = _transcript_cache_key(video_id).replace(".json", "_ads.json")
     try:
         body = json.dumps(ad_segments).encode("utf-8")
