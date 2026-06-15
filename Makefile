@@ -26,3 +26,15 @@ coverage:
 ## help: Show this help message
 help:
 	@grep -E '^## ' Makefile | sed 's/## /  /'
+
+## e2e-test: Run Tier-1 E2E tests (cached transcript, Bedrock + ffmpeg only)
+e2e-test:
+	./eval/run_e2e_tests.sh
+
+## e2e-test-full: Run Tier-2 E2E tests (full pipeline including AWS Transcribe)
+e2e-test-full:
+	./eval/run_e2e_tests.sh --full
+
+## e2e-update-gt: Re-run detection and update ground_truth.json baseline
+e2e-update-gt:
+	./eval/run_e2e_tests.sh --update-gt

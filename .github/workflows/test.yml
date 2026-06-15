@@ -45,6 +45,13 @@ jobs:
           path: .coverage
           retention-days: 7
 
+  # NOTE: End-to-end tests (eval/run_e2e_tests.sh) are intentionally NOT run in CI.
+  # They require AWS credentials (Bedrock + optionally Transcribe), cost ~$0.50–$2.00
+  # per run, and take 5–30 minutes. Run them manually before shipping:
+  #   ./eval/run_e2e_tests.sh                  # fast tier (cached transcript)
+  #   ./eval/run_e2e_tests.sh --full            # full pipeline
+  # See README.md § "End-to-End Regression Tests" for full instructions.
+
   # Single stable check used as the required GitHub branch-protection status.
   # Add "ci-gate" as the required status check in your branch protection rules.
   # This job only passes when ALL matrix jobs above pass.

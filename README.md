@@ -703,6 +703,58 @@ Key log prefixes to grep for:
 
 ---
 
+## End-to-End Regression Tests
+
+Unit tests (`make test`) run fully offline with mocked AWS. For regression
+testing the full ad-removal pipeline against real audio, use the E2E harness.
+
+### Running the Tests
+
+```bash
+# Tier 1 — fast (~30s, ~$0.02): uses cached transcripts, only calls Bedrock + ffmpeg
+./eval/run_e2e_tests.sh
+
+# Tier 2 — full pipeline (~10 min, ~$0.50/fixture): includes real AWS Transcribe
+./eval/run_e2e_tests.sh --full
+
+# Override quality thresholds
+./eval/run_e2e_tests.sh --f1-threshold 0.80 --recall-threshold 0.75
+
+# Re-accept current output as new ground truth (after intentional improvements)
+./eval/run_e2e_tests.sh --update-gt
+```
+
+### Ground Truth Annotation (one-time setup)
+
+```bash
+# Step 1 — run detection + splice against cached transcripts
+python eval/run_eval.py --splice --skip-transcribe
+
+# Step 2 — listen to eval/results/*_cleaned.mp3 vs the originals
+# Step 3 — generate ground_truth.json from the latest detection run
+python eval/run_eval.py --update-ground-truth --skip-transcribe
+
+# Step 4 — review eval/ground_truth.json, verify timestamps, fill in:
+#   "ad_phrases":      words from each ad (must NOT appear in cleaned audio)
+#   "content_phrases": words from content (must survive the cut)
+# Step 5 — commit eval/ground_truth.json
+```
+
+### What a Failure Means
+
+| Failure type | Likely cause |
+|---|---|
+| F1 below threshold | Model or prompt regression — ads no longer detected |
+| Recall below threshold | Specific ads are being missed |
+| Ad phrase found in cleaned transcript | Splice failed or segment boundary was wrong |
+| Content phrase missing | Over-removal — content was cut along with an ad |
+| Duration deviation exceeded | Boundary snapping or detection changed significantly |
+
+**These tests do not run in CI** (they require AWS credentials and ~$1 per run).
+Run them manually before shipping prompt changes, model upgrades, or splice logic changes.
+
+---
+
 ## Contributing
 
 Contributions, bug reports, and feature requests are welcome. Please open an issue or pull request on GitHub. By contributing, you agree that your contributions will be licensed under the same licence as this project.

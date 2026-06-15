@@ -1,0 +1,26 @@
+{
+  "_schema_version": 1,
+  "_instructions": [
+    "This file contains human-verified ground truth for E2E regression tests.",
+    "HOW TO POPULATE:",
+    "  1. Run: python eval/run_eval.py --splice --skip-transcribe",
+    "  2. Listen to the original and cleaned files.",
+    "  3. Run: python eval/run_eval.py --update-ground-truth --skip-transcribe",
+    "  4. Review the generated timestamps. Fill in ad_phrases and content_phrases.",
+    "  5. Commit this file — it is the regression baseline."
+  ],
+  "20260515_amalfi_please.mp3": {
+    "_status": "NEEDS_ANNOTATION — run steps in _instructions above",
+    "segments": [],
+    "expected_removed_secs": 0,
+    "ad_phrases": [],
+    "content_phrases": []
+  },
+  "20260518_hot_scarf_summer.mp3": {
+    "_status": "NEEDS_ANNOTATION — run steps in _instructions above",
+    "segments": [],
+    "expected_removed_secs": 0,
+    "ad_phrases": [],
+    "content_phrases": []
+  }
+}
