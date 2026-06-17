@@ -294,7 +294,11 @@ print(extract_playlist_id('$INPUT'))
 " 2>/dev/null || echo "$INPUT")
                 SLUGS+=("$SLUG")
             else
+                # Raw RSS podcast slug (e.g. a podcast name or slug like "the-best-one-yet").
+                # Mark it so we clear positional args after cleanup — the sync phase must NOT
+                # try to treat this as a YouTube playlist ID.
                 SLUGS+=("$INPUT")
+                HAS_RSS_SLUG=true
             fi
         done
     fi
@@ -337,7 +341,14 @@ print(extract_playlist_id('$INPUT'))
 
     # Clear positional args and fall through to normal sync
     # (process all from config, which will now re-download the deleted episodes)
-    if [ "${1:-}" = "all" ]; then
+    #
+    # We clear args in two cases:
+    #   1. The target was "all"
+    #   2. The target was a raw RSS podcast slug (e.g. "The Best One Yet" / "the-best-one-yet")
+    #      — these are NOT valid YouTube playlist IDs and must not be passed to the sync phase,
+    #      which would try to call extract_playlist_id() on them and raise:
+    #      "Playlist ID contains unsafe characters".
+    if [ "${1:-}" = "all" ] || [ "${HAS_RSS_SLUG:-false}" = "true" ]; then
         set --
     fi
 fi
