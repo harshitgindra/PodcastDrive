@@ -515,7 +515,19 @@ def main():
             sys.exit(1)
 
         with open(GROUND_TRUTH_FILE) as f:
-            ground_truth = json.load(f)
+            ground_truth_raw = json.load(f)
+
+        # Normalise ground truth: the file uses {episode: {"segments": [...]}}
+        # but score_against_ground_truth expects {episode: [segments...]}.
+        # Also filter out metadata keys (starting with '_').
+        ground_truth = {}
+        for key, value in ground_truth_raw.items():
+            if key.startswith("_"):
+                continue
+            if isinstance(value, dict):
+                ground_truth[key] = value.get("segments", [])
+            else:
+                ground_truth[key] = value  # already a list (legacy format)
 
         scores = score_against_ground_truth(all_results, ground_truth)
 

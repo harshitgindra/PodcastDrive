@@ -49,3 +49,4 @@ class EpisodeMeta:
     cloudfront_url: str  # full URL for enclosure
     chapters: list[dict] = field(default_factory=list)  # YouTube chapter markers
     summary: str = ""  # AI-generated episode summary
+    ads_removed: bool = False  # True when ad removal actually spliced out ads

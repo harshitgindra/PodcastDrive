@@ -188,6 +188,10 @@ cp config.env.example config.env
 | `SPLICE_LOUDNORM` | | `true` | Apply EBU R128 loudness normalisation (ffmpeg `loudnorm` filter) after splicing to equalise volume across all kept intervals. Set to `false` to skip (saves ~10–20% ffmpeg time) |
 | `EVALUATE_AD_REMOVAL` | | `false` | Set to `true` to re-transcribe cleaned episodes and check for residual ads. Writes a JSON report to `reports/{slug}/{episode_id}_eval.json`. Disabled by default to avoid extra AWS costs. |
 | `EVAL_REPORTS_DIR` | | `reports` | Local directory where ad-removal evaluation JSON reports are written |
+| **Feed Customisation** | | | |
+| `FEED_TITLE_SUFFIX` | | ` ✂️` | Suffix appended to the **channel** title in the RSS feed (e.g. "My Podcast ✂️"). Set to empty string to disable |
+| `FEED_SUBTITLE` | | `Ad-free · PodcastDrive` | iTunes subtitle shown below the channel title in podcast apps |
+| `EPISODE_AD_REMOVED_SUFFIX` | | ` ✂️` | Suffix appended to individual **episode** titles when ads were successfully removed. Helps distinguish cleaned episodes at a glance. Set to empty string to disable |
 | **Config Provider** | | | |
 | `CONFIG_PROVIDER` | | `yaml` | Config source: `yaml` or `notion` |
 | `PODCASTS_YAML` | | `podcasts.yaml` | Path to YAML subscriptions file (when `CONFIG_PROVIDER=yaml`) |

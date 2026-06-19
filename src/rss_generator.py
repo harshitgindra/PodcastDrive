@@ -213,7 +213,12 @@ def _add_item(
     """
     item = ET.SubElement(channel, "item")
 
-    ET.SubElement(item, "title").text = episode.title
+    ep_title = episode.title
+    if episode.ads_removed:
+        ep_ad_suffix = os.environ.get("EPISODE_AD_REMOVED_SUFFIX", " ✂️")
+        if ep_ad_suffix:
+            ep_title += ep_ad_suffix
+    ET.SubElement(item, "title").text = ep_title
 
     guid = ET.SubElement(item, "guid")
     guid.set("isPermaLink", "false")
@@ -272,6 +277,7 @@ def build_episode_metadata(
     cloudfront_base: str,
     playlist_id: str,
     s3: S3Manager,
+    ads_removed_ids: set[str] | None = None,
 ) -> list[EpisodeMeta]:
     """Build a sorted list of :class:`EpisodeMeta` for episodes in S3.
 
@@ -335,6 +341,7 @@ def build_episode_metadata(
                 file_size=file_size,
                 cloudfront_url=cloudfront_url,
                 chapters=entry.chapters if hasattr(entry, "chapters") else [],
+                ads_removed=video_id in (ads_removed_ids or set()),
             )
         )
 

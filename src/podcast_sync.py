@@ -162,9 +162,14 @@ def _build_podcast_feed_xml(
         img_el = ET.SubElement(channel, f"{{{_ITUNES_NS}}}image")
         img_el.set("href", artwork_url)
 
+    ep_ad_suffix = os.environ.get("EPISODE_AD_REMOVED_SUFFIX", " ✂️")
+
     for ep, ep_id in zip(episodes, episode_ids, strict=True):
         item = ET.SubElement(channel, "item")
-        ET.SubElement(item, "title").text = ep.title
+        title = ep.title
+        if ep_ad_suffix and manifest.get(ep_id, {}).get("ads_removed"):
+            title += ep_ad_suffix
+        ET.SubElement(item, "title").text = title
 
         guid_el = ET.SubElement(item, "guid")
         guid_el.set("isPermaLink", "false")
@@ -416,7 +421,8 @@ def process_podcast_feed(
                     os.remove(cleaned_path)
 
                 logger.info("[PodcastSync] Done: %s", ep_id)
-                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size, "summary": summary}
+                ads_removed = bool(ad_segments) and cleaned_path != original_path
+                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size, "summary": summary, "ads_removed": ads_removed}
 
             except Exception as exc:
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
@@ -442,6 +448,7 @@ def process_podcast_feed(
                             "guid": ep.guid,
                             "pub_date": ep.pub_date.isoformat(),
                             "duration": ep.duration,
+                            "ads_removed": result.get("ads_removed", False),
                         }
                         if result.get("summary"):
                             manifest[ep_id]["summary"] = result["summary"]

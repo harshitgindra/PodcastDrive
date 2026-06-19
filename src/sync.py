@@ -86,6 +86,7 @@ def process_playlist(
     s3 = S3Manager(bucket=bucket, playlist_id=playlist_id)
     tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{playlist_id}-")
     _run_start = time.monotonic()
+    manifest = s3.load_manifest()
 
     try:
 
@@ -206,6 +207,10 @@ def process_playlist(
                 original_mp3 = mp3_path
                 mp3_path, ad_segments, _summary = remove_ads(mp3_path, video.video_id, tmp_dir)
 
+                # Track ad removal status in manifest
+                ads_were_removed = bool(ad_segments) and mp3_path != original_mp3
+                manifest.setdefault(video.video_id, {})["ads_removed"] = ads_were_removed
+
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if mp3_path != original_mp3:
                     try:
@@ -239,6 +244,10 @@ def process_playlist(
             new_count, skipped_old, skipped_unavailable, failed_count,
         )
 
+        # Persist manifest with ads_removed metadata
+        if new_count > 0:
+            s3.save_manifest(manifest)
+
         # --- Step 5: Reconciliation ---
         if dry_run:
             logger.info("[DRY-RUN] Skipping reconciliation and feed upload.")
@@ -247,6 +256,7 @@ def process_playlist(
             logger.info("[Step 5] Starting reconciliation...")
             _reconcile(
                 s3, video_entries, cloudfront_base, playlist_id, playlist_meta,
+                manifest=manifest,
             )
             final_keys = s3.list_existing_episodes()
 
@@ -276,11 +286,17 @@ def _rebuild_feed(
     cloudfront_base: str,
     playlist_id: str,
     playlist_meta: PlaylistMeta,
+    manifest: dict | None = None,
 ) -> int:
     """Re-list S3, generate and upload feed.xml using metadata already in memory."""
     final_keys = s3.list_existing_episodes()
+    # Build set of video_ids that had ads removed (from manifest)
+    ads_removed_ids: set[str] = set()
+    if manifest:
+        ads_removed_ids = {k for k, v in manifest.items() if isinstance(v, dict) and v.get("ads_removed")}
     episodes = build_episode_metadata(
-        video_entries, final_keys, cloudfront_base, playlist_id, s3
+        video_entries, final_keys, cloudfront_base, playlist_id, s3,
+        ads_removed_ids=ads_removed_ids,
     )
     xml = generate_rss(playlist_meta, episodes, cloudfront_base, playlist_id)
     s3.upload_feed(xml)
@@ -300,6 +316,7 @@ def _reconcile(
     cloudfront_base: str,
     playlist_id: str,
     playlist_meta: PlaylistMeta,
+    manifest: dict | None = None,
 ) -> None:
     """Reconcile S3 files and RSS feed entries.
 
@@ -327,5 +344,5 @@ def _reconcile(
     if orphaned_files:
         logger.info("[Reconcile] Deleted %d orphaned files", len(orphaned_files))
 
-    ep_count = _rebuild_feed(s3, video_entries, cloudfront_base, playlist_id, playlist_meta)
+    ep_count = _rebuild_feed(s3, video_entries, cloudfront_base, playlist_id, playlist_meta, manifest=manifest)
     logger.info("[Reconcile] Done. Feed has %d entries", ep_count)
