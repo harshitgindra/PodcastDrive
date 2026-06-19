@@ -328,15 +328,29 @@ def process_podcast_feed(
         existing_ids = s3.list_existing_episodes()
         logger.info("[PodcastSync] S3 has %d existing episodes", len(existing_ids))
 
+        # Load manifest to check for splice failures that need reprocessing
+        manifest = s3.load_manifest()
+        splice_retry_ids = {
+            k for k, v in manifest.items()
+            if isinstance(v, dict) and v.get("splice_failed")
+        }
+        if splice_retry_ids:
+            logger.info(
+                "[PodcastSync] %d episode(s) marked for splice retry: %s",
+                len(splice_retry_ids), splice_retry_ids,
+            )
+
         # Build (episode, episode_id) pairs for candidates
         candidates: list[tuple[EpisodeMeta, str]] = []
         skipped = 0
         for ep in episodes:
             ep_id = episode_id_from_guid(ep.guid, slug)
-            if ep_id in existing_ids:
+            if ep_id in existing_ids and ep_id not in splice_retry_ids:
                 skipped += 1
                 logger.debug("[PodcastSync] Already in S3, skipping: %s", ep_id)
                 continue
+            if ep_id in splice_retry_ids:
+                logger.info("[PodcastSync] Re-queuing %s for splice retry", ep_id)
             candidates.append((ep, ep_id))
             if len(candidates) >= max_episodes:
                 break
@@ -365,7 +379,6 @@ def process_podcast_feed(
         # yields significant throughput gains with minimal resource cost.
         # Manifest updates are serialised with a lock.
         # ------------------------------------------------------------------
-        manifest = s3.load_manifest()
         manifest_lock = threading.Lock()
 
         new_count = 0
@@ -391,6 +404,30 @@ def process_podcast_feed(
                     min_music_intro_secs=podcast.min_music_intro_secs,
                     min_music_outro_secs=podcast.min_music_outro_secs,
                 )
+
+                # Detect splice failure: ads were found but the file wasn't changed.
+                # This happens when ffmpeg fails transiently. Retry once.
+                splice_failed = bool(ad_segments) and cleaned_path == original_path
+                if splice_failed:
+                    logger.warning(
+                        "[PodcastSync] Splice appears to have failed for %s "
+                        "(%d ads detected but original file returned) — retrying",
+                        ep_id, len(ad_segments),
+                    )
+                    cleaned_path, ad_segments, summary = remove_ads(
+                        original_path, ep_id, tmp_dir,
+                        ad_hints=podcast.ad_hints,
+                        trim_music_intro=podcast.trim_music_intro,
+                        trim_music_outro=podcast.trim_music_outro,
+                        min_music_intro_secs=podcast.min_music_intro_secs,
+                        min_music_outro_secs=podcast.min_music_outro_secs,
+                    )
+                    splice_failed = bool(ad_segments) and cleaned_path == original_path
+                    if splice_failed:
+                        logger.error(
+                            "[PodcastSync] Splice retry also failed for %s — uploading original",
+                            ep_id,
+                        )
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if cleaned_path != original_path:
@@ -422,7 +459,7 @@ def process_podcast_feed(
 
                 logger.info("[PodcastSync] Done: %s", ep_id)
                 ads_removed = bool(ad_segments) and cleaned_path != original_path
-                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size, "summary": summary, "ads_removed": ads_removed}
+                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size, "summary": summary, "ads_removed": ads_removed, "splice_failed": splice_failed}
 
             except Exception as exc:
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
@@ -449,6 +486,7 @@ def process_podcast_feed(
                             "pub_date": ep.pub_date.isoformat(),
                             "duration": ep.duration,
                             "ads_removed": result.get("ads_removed", False),
+                            "splice_failed": result.get("splice_failed", False),
                         }
                         if result.get("summary"):
                             manifest[ep_id]["summary"] = result["summary"]
@@ -552,16 +590,33 @@ def process_podcast_feed(
             s3.upload_feed(xml_content)
             logger.info("[PodcastSync] feed.xml uploaded")
 
+        # Check if any episodes had splice failures
+        splice_failed_count = sum(
+            1 for v in manifest.values()
+            if isinstance(v, dict) and v.get("splice_failed")
+        )
+        if splice_failed_count and provider:
+            try:
+                provider.update_status(podcast, "Splice Failed")
+            except Exception as exc:
+                logger.warning("[PodcastSync] Failed to update Notion status: %s", exc)
+        elif new_count > 0 and provider:
+            try:
+                provider.update_status(podcast, "Done")
+            except Exception as exc:
+                logger.warning("[PodcastSync] Failed to update Notion status: %s", exc)
+
         elapsed = time.monotonic() - _run_start
         logger.info(
-            "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d elapsed=%.1fs",
-            slug, new_count, skipped, failed_count, elapsed,
+            "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d splice_failed=%d elapsed=%.1fs",
+            slug, new_count, skipped, failed_count, splice_failed_count, elapsed,
         )
         return {
             "slug": slug,
             "new_episodes": new_count,
             "skipped": skipped,
             "failed": failed_count,
+            "splice_failed": splice_failed_count,
             "elapsed_seconds": round(elapsed, 1),
         }
 
