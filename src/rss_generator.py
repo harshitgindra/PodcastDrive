@@ -278,6 +278,7 @@ def build_episode_metadata(
     playlist_id: str,
     s3: S3Manager,
     ads_removed_ids: set[str] | None = None,
+    manifest: dict | None = None,
 ) -> list[EpisodeMeta]:
     """Build a sorted list of :class:`EpisodeMeta` for episodes in S3.
 
@@ -322,6 +323,13 @@ def build_episode_metadata(
             )
             continue
         seen_titles.add(normalised_title)
+
+        # Use manifest upload_date if entry has empty date (flat extraction doesn't include it)
+        upload_date = entry.upload_date
+        if not upload_date and manifest:
+            upload_date = manifest.get(video_id, {}).get("upload_date", "")
+        if upload_date and upload_date != entry.upload_date:
+            entry.upload_date = upload_date
 
         s3_key = f"{playlist_id}/episodes/{video_id}.mp3"
         file_size = s3.get_object_size(s3_key)

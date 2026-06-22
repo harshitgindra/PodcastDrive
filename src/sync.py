@@ -207,9 +207,10 @@ def process_playlist(
                 original_mp3 = mp3_path
                 mp3_path, ad_segments, _summary = remove_ads(mp3_path, video.video_id, tmp_dir)
 
-                # Track ad removal status in manifest
+                # Track ad removal status and upload_date in manifest
                 ads_were_removed = bool(ad_segments) and mp3_path != original_mp3
                 manifest.setdefault(video.video_id, {})["ads_removed"] = ads_were_removed
+                manifest[video.video_id]["upload_date"] = video.upload_date
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if mp3_path != original_mp3:
@@ -297,6 +298,7 @@ def _rebuild_feed(
     episodes = build_episode_metadata(
         video_entries, final_keys, cloudfront_base, playlist_id, s3,
         ads_removed_ids=ads_removed_ids,
+        manifest=manifest,
     )
     xml = generate_rss(playlist_meta, episodes, cloudfront_base, playlist_id)
     s3.upload_feed(xml)
