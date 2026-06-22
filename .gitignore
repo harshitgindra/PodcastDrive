@@ -231,3 +231,4 @@ reports/
 .syncstuffs_meta.json
 /test_output
 .syncstuffs.bundle
+deploy/.instance-info
