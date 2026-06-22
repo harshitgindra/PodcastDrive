@@ -108,7 +108,7 @@ def setup_logging(
     if root_logger.handlers:
         return
 
-    root_logger.addFilter(_RunnerFilter())
+    _runner_filter = _RunnerFilter()
 
     formatter: logging.Formatter
     if use_json:
@@ -120,6 +120,7 @@ def setup_logging(
     console_handler = logging.StreamHandler()
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(_runner_filter)
     root_logger.addHandler(console_handler)
 
     # --- Rotating file handler (local runs only) ---
@@ -139,6 +140,7 @@ def setup_logging(
         file_handler.suffix = "%Y-%m-%d"
         file_handler.setLevel(numeric_level)
         file_handler.setFormatter(formatter)
+        file_handler.addFilter(_runner_filter)
         root_logger.addHandler(file_handler)
 
         logging.getLogger(__name__).info(
