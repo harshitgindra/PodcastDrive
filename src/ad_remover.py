@@ -201,6 +201,7 @@ def snap_ad_boundaries(
     ad_segments: list[AdSegment],
     mp3_path: str,
     snap_window: float = 3.0,
+    silences: list[dict] | None = None,
 ) -> list[AdSegment]:
     """Snap each ad-segment boundary to the nearest silence gap.
 
@@ -212,6 +213,7 @@ def snap_ad_boundaries(
         ad_segments:  Candidate ad segments to adjust.
         mp3_path:     Source audio file (used to detect silences).
         snap_window:  Maximum seconds to move a boundary (default: 3.0).
+        silences:     Pre-computed silence intervals (avoids redundant ffmpeg call).
 
     Returns:
         Adjusted segment list.  Any segment shrunk below ``_MIN_AD_SECONDS``
@@ -220,11 +222,12 @@ def snap_ad_boundaries(
     if not ad_segments:
         return ad_segments
 
-    try:
-        silences = detect_silence(mp3_path)
-    except Exception as exc:
-        logger.warning("[AdRemover] Silence detection failed — keeping original boundaries: %s", exc)
-        return ad_segments
+    if silences is None:
+        try:
+            silences = detect_silence(mp3_path)
+        except Exception as exc:
+            logger.warning("[AdRemover] Silence detection failed — keeping original boundaries: %s", exc)
+            return ad_segments
 
     if not silences:
         logger.debug("[AdRemover] No silence intervals found — skipping boundary snapping")
@@ -241,7 +244,7 @@ def snap_ad_boundaries(
             logger.warning(
                 "[AdRemover] Silence snap would shrink [%.1f–%.1f] to %.1fs — keeping original",
                 seg["start"], seg["end"], new_end - new_start,
-            ) 
+            )
             snapped.append(seg)
         else:
             if new_start != seg["start"] or new_end != seg["end"]:
@@ -264,6 +267,7 @@ def detect_music_bookends(
     mp3_path: str,
     min_intro_secs: float = 8.0,
     min_outro_secs: float = 5.0,
+    silences: list[dict] | None = None,
 ) -> list[AdSegment]:
     """Detect music intro/outro by finding non-silent audio outside transcript boundaries.
 
@@ -287,7 +291,8 @@ def detect_music_bookends(
     last_speech = segments[-1]["end"]
     results: list[AdSegment] = []
 
-    silences = detect_silence(mp3_path)
+    if silences is None:
+        silences = detect_silence(mp3_path)
 
     def _region_has_audio(region_start: float, region_end: float) -> bool:
         """Return True if [region_start, region_end] contains non-silent audio."""
@@ -620,6 +625,8 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
     Raises:
         RuntimeError: On any AWS API error or if the Transcribe job fails.
     """
+    from botocore.exceptions import ClientError
+
     bucket = os.environ.get("S3_BUCKET", "")
     if not bucket:
         raise RuntimeError("S3_BUCKET must be set to use AWS Transcribe")
@@ -760,12 +767,27 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
 
         # 3. Poll until complete
         elapsed = 0
+        consecutive_poll_errors = 0
+        _MAX_POLL_ERRORS = 5
         while elapsed < max_wait:
             time.sleep(poll_interval)
             elapsed += poll_interval
-            status_resp = transcribe_client.get_transcription_job(
-                TranscriptionJobName=job_name
-            )
+            try:
+                status_resp = transcribe_client.get_transcription_job(
+                    TranscriptionJobName=job_name
+                )
+                consecutive_poll_errors = 0
+            except (ClientError, ConnectionError, OSError) as exc:
+                consecutive_poll_errors += 1
+                if consecutive_poll_errors >= _MAX_POLL_ERRORS:
+                    raise RuntimeError(
+                        f"Transcribe poll failed {consecutive_poll_errors} consecutive times: {exc}"
+                    ) from exc
+                logger.warning(
+                    "[AdRemover] Transcribe poll error (attempt %d/%d): %s — retrying",
+                    consecutive_poll_errors, _MAX_POLL_ERRORS, exc,
+                )
+                continue
             status = status_resp["TranscriptionJob"]["TranscriptionJobStatus"]
             logger.info("[AdRemover] Transcribe job %s status: %s (elapsed %ds)", job_name, status, elapsed)
 
@@ -774,7 +796,6 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
             if status == "FAILED":
                 reason = status_resp["TranscriptionJob"].get("FailureReason", "unknown")
                 raise RuntimeError(f"Transcribe job {job_name} failed: {reason}")
-            # Ignore transient API errors on individual poll calls — keep looping
 
         else:
             raise RuntimeError(f"Transcribe job {job_name} timed out after {max_wait}s")
@@ -1388,11 +1409,12 @@ def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
     if not ads:
         return []
 
+    merge_gap = float(os.environ.get("AD_MERGE_GAP_SECS", "2"))
     sorted_ads = sorted(ads, key=lambda s: s["start"])
     merged: list[AdSegment] = [{"start": sorted_ads[0]["start"], "end": sorted_ads[0]["end"]}]
 
     for seg in sorted_ads[1:]:
-        if seg["start"] <= merged[-1]["end"] + 2:  # Fix #3: 5s→2s — was merging unrelated ad blocks
+        if seg["start"] <= merged[-1]["end"] + merge_gap:
             merged[-1]["end"] = max(merged[-1]["end"], seg["end"])
         else:
             merged.append({"start": seg["start"], "end": seg["end"]})
@@ -1572,6 +1594,35 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+
+def _generate_summary(segments: list[dict], video_id: str) -> str:
+    """Generate an AI episode summary if enabled, with S3 caching."""
+    if os.environ.get("GENERATE_SUMMARIES", "false").lower() not in ("true", "1", "yes"):
+        return ""
+    if not segments:
+        return ""
+
+    bucket = os.environ.get("S3_BUCKET", "")
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    if not bucket:
+        return ""
+
+    s3_client = boto3.client("s3", region_name=region)
+    summary = _load_summary_cache(s3_client, bucket, video_id) or ""
+    if summary:
+        return summary
+
+    try:
+        from summary_generator import generate_episode_summary
+        summary = generate_episode_summary(segments, video_id)
+        if summary:
+            _save_summary_cache(s3_client, bucket, video_id, summary)
+    except Exception as exc:
+        logger.warning("[AdRemover] Summary generation failed for %s: %s", video_id, exc)
+
+    return summary
+
+
 def remove_ads(
     mp3_path: str,
     video_id: str,
@@ -1630,52 +1681,53 @@ def remove_ads(
     ad_segments: list[AdSegment] = []
     segments: list[dict] = []
 
-    if use_cache:
-        bucket = os.environ.get("S3_BUCKET", "")
-        if bucket:
-            region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-            _s3 = boto3.client("s3", region_name=region)
-            cached_ads = _load_ad_segments_cache(_s3, bucket, video_id)
-            if cached_ads is not None:
-                ad_segments = cached_ads
-                # Skip transcription + detection — jump straight to snap + splice
-                logger.info("[AdRemover] Using cached ad-segments for %s — skipping Transcribe+Bedrock", video_id)
+    # Create S3 client once for all cache operations in this function
+    _bucket = os.environ.get("S3_BUCKET", "")
+    _region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    _s3 = boto3.client("s3", region_name=_region) if _bucket else None
 
-                # Music bookend detection using cached transcript
-                music_segments: list[AdSegment] = []
-                if _trim_intro or _trim_outro:
-                    cached_transcript = _load_transcript_cache(_s3, bucket, video_id)
-                    if cached_transcript:
-                        try:
-                            music_segments = detect_music_bookends(
-                                cached_transcript, mp3_path,
-                                min_intro_secs=_min_intro if _trim_intro else 9999.0,
-                                min_outro_secs=_min_outro if _trim_outro else 9999.0,
-                            )
-                        except Exception as exc:
-                            logger.warning("[AdRemover] Music detection failed (cached path) for %s: %s", video_id, exc)
+    if use_cache and _bucket and _s3:
+        cached_ads = _load_ad_segments_cache(_s3, _bucket, video_id)
+        if cached_ads is not None:
+            ad_segments = cached_ads
+            # Skip transcription + detection — jump straight to snap + splice
+            logger.info("[AdRemover] Using cached ad-segments for %s — skipping Transcribe+Bedrock", video_id)
 
-                all_cached = _merge_overlapping_ads(ad_segments + music_segments)
-                if not all_cached:
-                    logger.info("[AdRemover] Cached ad-segments empty (no ads) for %s — using original file", video_id)
-                    return mp3_path, [], ""
-                if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
-                    all_cached = snap_ad_boundaries(all_cached, mp3_path)
-                if dry_run:
-                    total_ad_secs = sum(s["end"] - s["start"] for s in all_cached)
-                    logger.info(
-                        "[AdRemover] DRY-RUN: would remove %d cached segment(s) totalling %.1fs from %s",
-                        len(all_cached), total_ad_secs, video_id,
-                    )
-                    return mp3_path, all_cached, ""
-                cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
-                try:
-                    splice_audio(mp3_path, all_cached, cleaned_path)
-                except Exception as exc:
-                    logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
-                    return mp3_path, all_cached, ""
-                logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
-                return cleaned_path, all_cached, ""
+            # Music bookend detection using cached transcript
+            music_segments: list[AdSegment] = []
+            if _trim_intro or _trim_outro:
+                cached_transcript = _load_transcript_cache(_s3, _bucket, video_id)
+                if cached_transcript:
+                    try:
+                        music_segments = detect_music_bookends(
+                            cached_transcript, mp3_path,
+                            min_intro_secs=_min_intro if _trim_intro else 9999.0,
+                            min_outro_secs=_min_outro if _trim_outro else 9999.0,
+                        )
+                    except Exception as exc:
+                        logger.warning("[AdRemover] Music detection failed (cached path) for %s: %s", video_id, exc)
+
+            all_cached = _merge_overlapping_ads(ad_segments + music_segments)
+            if not all_cached:
+                logger.info("[AdRemover] Cached ad-segments empty (no ads) for %s — using original file", video_id)
+                return mp3_path, [], ""
+            if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
+                all_cached = snap_ad_boundaries(all_cached, mp3_path)
+            if dry_run:
+                total_ad_secs = sum(s["end"] - s["start"] for s in all_cached)
+                logger.info(
+                    "[AdRemover] DRY-RUN: would remove %d cached segment(s) totalling %.1fs from %s",
+                    len(all_cached), total_ad_secs, video_id,
+                )
+                return mp3_path, all_cached, ""
+            cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
+            try:
+                splice_audio(mp3_path, all_cached, cleaned_path)
+            except Exception as exc:
+                logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
+                return mp3_path, all_cached, ""
+            logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
+            return cleaned_path, all_cached, ""
 
     try:
         segments = transcribe_audio(mp3_path, video_id)
@@ -1690,12 +1742,21 @@ def remove_ads(
         return mp3_path, [], "DETECT_FAILED"
 
     # Save detection result to cache so retries (after splice failure) skip Bedrock
-    if use_cache:
-        bucket = os.environ.get("S3_BUCKET", "")
-        if bucket:
-            region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-            _s3 = boto3.client("s3", region_name=region)
-            _save_ad_segments_cache(_s3, bucket, video_id, ad_segments)
+    if use_cache and _bucket and _s3:
+        _save_ad_segments_cache(_s3, _bucket, video_id, ad_segments)
+
+    # Detect silence once for reuse in both music detection and boundary snapping
+    _silences: list[dict] | None = None
+    _need_silence = (
+        (_trim_intro or _trim_outro)
+        or os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no")
+    )
+    if _need_silence:
+        try:
+            _silences = detect_silence(mp3_path)
+        except Exception as exc:
+            logger.warning("[AdRemover] Silence detection failed for %s: %s", video_id, exc)
+            _silences = []
 
     # Detect music bookends (intro/outro) if enabled — merged with ad_segments for a single splice
     music_segments: list[AdSegment] = []
@@ -1705,6 +1766,7 @@ def remove_ads(
                 segments, mp3_path,
                 min_intro_secs=_min_intro if _trim_intro else 9999.0,
                 min_outro_secs=_min_outro if _trim_outro else 9999.0,
+                silences=_silences,
             )
         except Exception as exc:
             logger.warning("[AdRemover] Music bookend detection failed for %s: %s — proceeding with ads only", video_id, exc)
@@ -1714,27 +1776,12 @@ def remove_ads(
 
     if not all_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
-        # Generate summary even when no ads found (transcript is available)
-        summary = ""
-        if os.environ.get("GENERATE_SUMMARIES", "false").lower() in ("true", "1", "yes") and segments:
-            bucket = os.environ.get("S3_BUCKET", "")
-            region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-            _s3_sum = boto3.client("s3", region_name=region) if bucket else None
-            if _s3_sum and bucket:
-                summary = _load_summary_cache(_s3_sum, bucket, video_id) or ""
-            if not summary:
-                try:
-                    from summary_generator import generate_episode_summary
-                    summary = generate_episode_summary(segments, video_id)
-                    if summary and _s3_sum and bucket:
-                        _save_summary_cache(_s3_sum, bucket, video_id, summary)
-                except Exception as exc:
-                    logger.warning("[AdRemover] Summary generation failed for %s: %s", video_id, exc)
+        summary = _generate_summary(segments, video_id)
         return mp3_path, [], summary
 
     # Fix #5: snap boundaries to silence gaps for cleaner cuts
     if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
-        all_segments = snap_ad_boundaries(all_segments, mp3_path)
+        all_segments = snap_ad_boundaries(all_segments, mp3_path, silences=_silences)
 
     if dry_run:
         total_secs = sum(s["end"] - s["start"] for s in all_segments)
@@ -1751,22 +1798,7 @@ def remove_ads(
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, all_segments, "SPLICE_FAILED"
 
-    # Generate AI summary if enabled
-    summary = ""
-    if os.environ.get("GENERATE_SUMMARIES", "false").lower() in ("true", "1", "yes") and segments:
-        bucket = os.environ.get("S3_BUCKET", "")
-        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-        _s3_sum = boto3.client("s3", region_name=region) if bucket else None
-        if _s3_sum and bucket:
-            summary = _load_summary_cache(_s3_sum, bucket, video_id) or ""
-        if not summary:
-            try:
-                from summary_generator import generate_episode_summary
-                summary = generate_episode_summary(segments, video_id)
-                if summary and _s3_sum and bucket:
-                    _save_summary_cache(_s3_sum, bucket, video_id, summary)
-            except Exception as exc:
-                logger.warning("[AdRemover] Summary generation failed for %s: %s", video_id, exc)
+    summary = _generate_summary(segments, video_id)
 
     logger.info("[AdRemover] Ad removal complete for %s → %s", video_id, cleaned_path)
     return cleaned_path, all_segments, summary
