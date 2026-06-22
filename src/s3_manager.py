@@ -118,10 +118,16 @@ class S3Manager:
                 existing = self.s3_client.get_bucket_lifecycle_configuration(
                     Bucket=self.bucket
                 )
-                rules = [
-                    r for r in existing.get("Rules", [])
-                    if r.get("ID") != rule_id
-                ]
+                all_rules = existing.get("Rules", [])
+                # Check if our rule already exists with the correct expiration
+                for r in all_rules:
+                    if r.get("ID") == rule_id and r.get("Expiration", {}).get("Days") == max_age_days:
+                        logger.debug(
+                            "Lifecycle rule '%s' already set to %d days — skipping PUT",
+                            rule_id, max_age_days,
+                        )
+                        return
+                rules = [r for r in all_rules if r.get("ID") != rule_id]
             except ClientError as exc:
                 if exc.response["Error"]["Code"] == "NoSuchLifecycleConfiguration":
                     rules = []
@@ -389,8 +395,9 @@ class S3Manager:
 
         try:
             import ssl
-            import urllib.request
             import urllib.parse
+            import urllib.request
+
             import certifi
 
             ssl_ctx = ssl.create_default_context(cafile=certifi.where())
