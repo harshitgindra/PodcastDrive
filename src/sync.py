@@ -9,7 +9,7 @@ import os
 import shutil
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ad_remover import remove_ads
 from downloader import download_and_convert
@@ -100,7 +100,7 @@ def process_playlist(
         logger.info("[Step 2] Found %d existing episodes in S3", len(existing_keys))
 
         # --- Step 3: Build download candidates ---
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
         candidates = []
         skipped_existing = 0
         skipped_no_duration = 0
@@ -288,9 +288,10 @@ def _rebuild_feed(
     playlist_id: str,
     playlist_meta: PlaylistMeta,
     manifest: dict | None = None,
+    existing_keys: set | None = None,
 ) -> int:
     """Re-list S3, generate and upload feed.xml using metadata already in memory."""
-    final_keys = s3.list_existing_episodes()
+    final_keys = existing_keys if existing_keys is not None else s3.list_existing_episodes()
     # Build set of video_ids that had ads removed (from manifest)
     ads_removed_ids: set[str] = set()
     if manifest:
@@ -352,5 +353,10 @@ def _reconcile(
     if orphaned_files:
         logger.info("[Reconcile] Deleted %d orphaned files", len(orphaned_files))
 
-    ep_count = _rebuild_feed(s3, video_entries, cloudfront_base, playlist_id, playlist_meta, manifest=manifest)
+    # Pass remaining keys to avoid a redundant S3 list call inside _rebuild_feed
+    remaining_keys = s3_keys - orphaned_files
+    ep_count = _rebuild_feed(
+        s3, video_entries, cloudfront_base, playlist_id, playlist_meta,
+        manifest=manifest, existing_keys=remaining_keys,
+    )
     logger.info("[Reconcile] Done. Feed has %d entries", ep_count)
