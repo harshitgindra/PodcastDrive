@@ -121,7 +121,7 @@ class TestS3ManagerIntegration:
         s3_manager.upload_feed(sample_rss)
         # Verify feed is readable by fetching its size
         size = s3_manager.get_object_size(
-            f"integration-test-playlist/feed.xml"
+            "integration-test-playlist/feed.xml"
         )
         assert size is not None and size > 0
 
@@ -180,7 +180,6 @@ class TestRssGeneratorIntegration:
         import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from extractor import extract_playlist
-        from models import PlaylistMeta
         from rss_generator import build_episode_metadata, generate_rss
 
         playlist_meta, entries = extract_playlist(TEST_PLAYLIST_URL)

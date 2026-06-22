@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import downloader as _dl_module
 from downloader import DownloadError, download_and_convert
 
 # Speed up retry tests: 1 attempt, no sleep
@@ -336,11 +335,10 @@ class TestOsErrorHandling:
             mock_remove.side_effect = OSError("locked")
 
             from downloader import DownloadError
-            with pytest.raises(DownloadError):
-                with patch("downloader.os.path.exists", return_value=True):
-                    download_and_convert(
-                        f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
-                    )
+            with pytest.raises(DownloadError), patch("downloader.os.path.exists", return_value=True):
+                download_and_convert(
+                    f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
+                )
 
     @patch("downloader._MAX_RETRIES", 1)
     @patch("downloader._RETRY_WAIT_MIN", 0)

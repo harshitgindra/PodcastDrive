@@ -7,9 +7,9 @@ in the design document.
 import re
 import string
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from hypothesis import given, settings, assume
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from models import EpisodeMeta, PlaylistMeta, VideoEntry
@@ -40,12 +40,12 @@ valid_upload_date_strategy = st.dates(
 
 # Recent upload dates (within 7 days)
 recent_upload_date_strategy = st.integers(min_value=0, max_value=6).map(
-    lambda days_ago: (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y%m%d")
+    lambda days_ago: (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y%m%d")
 )
 
 # Old upload dates (older than 7 days)
 old_upload_date_strategy = st.integers(min_value=8, max_value=365).map(
-    lambda days_ago: (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y%m%d")
+    lambda days_ago: (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y%m%d")
 )
 
 # Video IDs: alphanumeric + hyphen + underscore, non-empty
@@ -161,11 +161,11 @@ class TestProperty2InvalidDateFallback:
             pass
 
         result = parse_upload_date(date_str)
-        today = datetime.now(timezone.utc).replace(
+        today = datetime.now(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         assert result == today
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +332,7 @@ class TestProperty9RssDateDurationFormatting:
         items = root.findall(".//item")
 
         for i, item in enumerate(items):
-            ep = episodes[i]
+            episodes[i]
 
             # pubDate should be parseable as RFC 2822
             pub_date_text = item.find("pubDate").text

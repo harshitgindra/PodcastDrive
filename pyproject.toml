@@ -1,0 +1,25 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [
+    ".venv",
+    "__pycache__",
+    "build",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
+ignore = ["E501", "E741", "SIM105", "SIM108", "SIM115", "SIM117", "B027", "UP017", "E702", "E402", "C408"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/__pycache__/*"]
+
+[tool.coverage.report]
+fail_under = 95

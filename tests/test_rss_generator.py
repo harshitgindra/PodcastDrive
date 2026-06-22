@@ -1,7 +1,6 @@
 """Unit tests for the RSS generator module."""
 
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from unittest.mock import MagicMock
 
@@ -26,15 +25,15 @@ PLAYLIST_ID = "PLtest123"
 
 
 def _make_playlist_meta(**overrides) -> PlaylistMeta:
-    defaults = dict(
-        title="Test Podcast",
-        description="A test podcast description",
-        uploader="Test Uploader",
-        channel_url="https://youtube.com/c/test",
-        webpage_url="https://youtube.com/playlist?list=PLtest123",
-        playlist_id=PLAYLIST_ID,
-        thumbnail="",
-    )
+    defaults = {
+        "title": "Test Podcast",
+        "description": "A test podcast description",
+        "uploader": "Test Uploader",
+        "channel_url": "https://youtube.com/c/test",
+        "webpage_url": "https://youtube.com/playlist?list=PLtest123",
+        "playlist_id": PLAYLIST_ID,
+        "thumbnail": "",
+    }
     defaults.update(overrides)
     return PlaylistMeta(**defaults)
 
@@ -45,19 +44,19 @@ def _make_episode(
     duration: int = 3661,
     **overrides,
 ) -> EpisodeMeta:
-    defaults = dict(
-        video_id=video_id,
-        title=f"Episode {video_id}",
-        description="First paragraph.\n\nSecond paragraph.",
-        duration=duration,
-        upload_date=upload_date,
-        thumbnail=f"https://img.youtube.com/vi/{video_id}/0.jpg",
-        webpage_url=f"https://youtube.com/watch?v={video_id}",
-        playlist_index=1,
-        s3_key=f"{PLAYLIST_ID}/episodes/{video_id}.mp3",
-        file_size=5_000_000,
-        cloudfront_url=f"{CLOUDFRONT_BASE}/{PLAYLIST_ID}/episodes/{video_id}.mp3",
-    )
+    defaults = {
+        "video_id": video_id,
+        "title": f"Episode {video_id}",
+        "description": "First paragraph.\n\nSecond paragraph.",
+        "duration": duration,
+        "upload_date": upload_date,
+        "thumbnail": f"https://img.youtube.com/vi/{video_id}/0.jpg",
+        "webpage_url": f"https://youtube.com/watch?v={video_id}",
+        "playlist_index": 1,
+        "s3_key": f"{PLAYLIST_ID}/episodes/{video_id}.mp3",
+        "file_size": 5_000_000,
+        "cloudfront_url": f"{CLOUDFRONT_BASE}/{PLAYLIST_ID}/episodes/{video_id}.mp3",
+    }
     defaults.update(overrides)
     return EpisodeMeta(**defaults)
 
@@ -580,7 +579,7 @@ class TestBuildEpisodeMetadata:
 # Property-based tests (hypothesis)
 # ---------------------------------------------------------------------------
 
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 
@@ -639,7 +638,6 @@ class TestGenerateRssProperty:
     )
     @settings(max_examples=30)
     def test_output_is_valid_xml(self, title, n_episodes):
-        from datetime import timedelta
         meta = _make_playlist_meta(title=title)
         episodes = [
             _make_episode(video_id=f"v{i}", upload_date="20250601")

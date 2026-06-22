@@ -8,14 +8,13 @@ import pytest
 import yaml
 
 from config_provider import (
-    PodcastConfig,
-    YamlConfigProvider,
     NotionConfigProvider,
     NotionPodcastConfigProvider,
+    PodcastConfig,
+    YamlConfigProvider,
     get_config_provider,
     get_podcast_config_provider,
 )
-
 
 # ---------------------------------------------------------------------------
 # YamlConfigProvider

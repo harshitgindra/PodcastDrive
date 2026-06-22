@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,7 @@ def evaluate_ad_removal(
     report: dict[str, Any] = {
         "episode_id": episode_id,
         "podcast_slug": slug,
-        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "evaluated_at": datetime.now(UTC).isoformat(),
         "result": result,
         "original_ad_segments": original_ad_segments,
         "residual_ad_segments": residual_segments,

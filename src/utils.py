@@ -3,8 +3,8 @@
 import logging
 import re
 import time
-from datetime import datetime, timezone
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import TypeVar
 from urllib.parse import parse_qs, urlparse
 
@@ -59,6 +59,7 @@ def retry_aws_call(
         The last exception if all attempts are exhausted.
     """
     import random
+
     from botocore.exceptions import ClientError, EndpointResolutionError
 
     last_exc: Exception | None = None
@@ -168,7 +169,7 @@ def parse_upload_date(date_str: str) -> datetime:
     """
     try:
         dt = datetime.strptime(date_str, "%Y%m%d")
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     except (ValueError, TypeError):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return now.replace(hour=0, minute=0, second=0, microsecond=0)

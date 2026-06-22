@@ -1,14 +1,12 @@
 """Unit tests for utility functions."""
 
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
 from utils import extract_playlist_id, parse_upload_date, retry_aws_call
-
 
 # ---------------------------------------------------------------------------
 # retry_aws_call
@@ -54,9 +52,8 @@ class TestRetryAwsCall:
 
     def test_raises_after_exhausting_all_attempts(self):
         fn = MagicMock(side_effect=_make_client_error("Throttling"))
-        with patch("time.sleep"):
-            with pytest.raises(ClientError) as exc_info:
-                retry_aws_call(fn, max_attempts=3, base_delay=0)
+        with patch("time.sleep"), pytest.raises(ClientError) as exc_info:
+            retry_aws_call(fn, max_attempts=3, base_delay=0)
         assert exc_info.value.response["Error"]["Code"] == "Throttling"
         assert fn.call_count == 3
 
@@ -84,9 +81,8 @@ class TestRetryAwsCall:
     def test_label_used_in_log(self, caplog):
         import logging
         fn = MagicMock(side_effect=[_make_client_error("Throttling"), "ok"])
-        with patch("time.sleep"):
-            with caplog.at_level(logging.WARNING, logger="utils"):
-                retry_aws_call(fn, max_attempts=3, base_delay=0, label="my.operation")
+        with patch("time.sleep"), caplog.at_level(logging.WARNING, logger="utils"):
+            retry_aws_call(fn, max_attempts=3, base_delay=0, label="my.operation")
         assert any("my.operation" in r.message for r in caplog.records)
 
 
@@ -148,47 +144,47 @@ class TestExtractPlaylistId:
 class TestParseUploadDate:
     def test_valid_date(self):
         result = parse_upload_date("20250115")
-        assert result == datetime(2025, 1, 15, tzinfo=timezone.utc)
+        assert result == datetime(2025, 1, 15, tzinfo=UTC)
 
     def test_result_has_utc_timezone(self):
         result = parse_upload_date("20240601")
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
     def test_invalid_string_falls_back_to_today(self):
         result = parse_upload_date("not-a-date")
-        today = datetime.now(timezone.utc).replace(
+        today = datetime.now(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         assert result == today
 
     def test_empty_string_falls_back_to_today(self):
         result = parse_upload_date("")
-        today = datetime.now(timezone.utc).replace(
+        today = datetime.now(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         assert result == today
 
     def test_partial_date_falls_back_to_today(self):
         result = parse_upload_date("202501")
-        today = datetime.now(timezone.utc).replace(
+        today = datetime.now(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         assert result == today
 
     def test_wrong_format_falls_back_to_today(self):
         result = parse_upload_date("2025-01-15")
-        today = datetime.now(timezone.utc).replace(
+        today = datetime.now(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         assert result == today
 
     def test_leap_year_date(self):
         result = parse_upload_date("20240229")
-        assert result == datetime(2024, 2, 29, tzinfo=timezone.utc)
+        assert result == datetime(2024, 2, 29, tzinfo=UTC)
 
     def test_invalid_day_falls_back_to_today(self):
         result = parse_upload_date("20250230")  # Feb 30 doesn't exist
-        today = datetime.now(timezone.utc).replace(
+        today = datetime.now(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         assert result == today

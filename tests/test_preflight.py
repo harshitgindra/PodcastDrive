@@ -18,11 +18,10 @@ from preflight import (
     _check_yt_dlp,
     _fail,
     _ok,
-    _warn,
     _section,
+    _warn,
     run_preflight,
 )
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -77,21 +76,18 @@ class TestCheckEnvVars:
 
     def test_fails_when_s3_bucket_missing(self):
         env = {**self._FULL_ENV, "S3_BUCKET": ""}
-        with patch.dict("os.environ", env, clear=True):
-            with pytest.raises(SystemExit):
-                _check_env_vars()
+        with patch.dict("os.environ", env, clear=True), pytest.raises(SystemExit):
+            _check_env_vars()
 
     def test_fails_when_cloudfront_base_missing(self):
         env = {**self._FULL_ENV, "CLOUDFRONT_BASE": ""}
-        with patch.dict("os.environ", env, clear=True):
-            with pytest.raises(SystemExit):
-                _check_env_vars()
+        with patch.dict("os.environ", env, clear=True), pytest.raises(SystemExit):
+            _check_env_vars()
 
     def test_fails_when_distribution_id_missing(self):
         env = {**self._FULL_ENV, "CLOUDFRONT_DISTRIBUTION_ID": ""}
-        with patch.dict("os.environ", env, clear=True):
-            with pytest.raises(SystemExit):
-                _check_env_vars()
+        with patch.dict("os.environ", env, clear=True), pytest.raises(SystemExit):
+            _check_env_vars()
 
     def test_warns_when_region_missing(self, capsys):
         env = {k: v for k, v in self._FULL_ENV.items() if k != "AWS_DEFAULT_REGION"}
@@ -148,18 +144,16 @@ class TestCheckAwsCredentials:
         mock_sts = MagicMock()
         mock_sts.get_caller_identity.side_effect = botocore.exceptions.NoCredentialsError()
         mock_session.client.return_value = mock_sts
-        with patch("boto3.session.Session", return_value=mock_session):
-            with pytest.raises(SystemExit):
-                _check_aws_credentials()
+        with patch("boto3.session.Session", return_value=mock_session), pytest.raises(SystemExit):
+            _check_aws_credentials()
 
     def test_fails_on_client_error(self):
         mock_session = MagicMock()
         mock_sts = MagicMock()
         mock_sts.get_caller_identity.side_effect = _client_error("AccessDenied")
         mock_session.client.return_value = mock_sts
-        with patch("boto3.session.Session", return_value=mock_session):
-            with pytest.raises(SystemExit):
-                _check_aws_credentials()
+        with patch("boto3.session.Session", return_value=mock_session), pytest.raises(SystemExit):
+            _check_aws_credentials()
 
 
 # ── _check_s3_bucket ──────────────────────────────────────────────────────────
@@ -188,42 +182,37 @@ class TestCheckS3Bucket:
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("404")
         with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}):
-            with pytest.raises(SystemExit):
-                _check_s3_bucket("us-west-2", dry_run=False)
+             patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}), pytest.raises(SystemExit):
+            _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_no_such_bucket(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("NoSuchBucket")
         with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}):
-            with pytest.raises(SystemExit):
-                _check_s3_bucket("us-west-2", dry_run=False)
+             patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}), pytest.raises(SystemExit):
+            _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_403(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("403")
         with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "forbidden-bucket"}):
-            with pytest.raises(SystemExit):
-                _check_s3_bucket("us-west-2", dry_run=False)
+             patch.dict("os.environ", {"S3_BUCKET": "forbidden-bucket"}), pytest.raises(SystemExit):
+            _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_other_client_error(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("InternalError")
         with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}):
-            with pytest.raises(SystemExit):
-                _check_s3_bucket("us-west-2", dry_run=False)
+             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}), pytest.raises(SystemExit):
+            _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_list_access_denied(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.return_value = {}
         mock_s3.list_objects_v2.side_effect = _client_error("AccessDenied")
         with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}):
-            with pytest.raises(SystemExit):
-                _check_s3_bucket("us-west-2", dry_run=False)
+             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}), pytest.raises(SystemExit):
+            _check_s3_bucket("us-west-2", dry_run=False)
 
 
 # ── _check_cloudfront ─────────────────────────────────────────────────────────
@@ -250,33 +239,29 @@ class TestCheckCloudfront:
 
     def test_fails_when_no_dist_id(self):
         with patch("boto3.client", return_value=self._mock_cf()), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": ""}):
-            with pytest.raises(SystemExit):
-                _check_cloudfront("us-west-2")
+             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": ""}), pytest.raises(SystemExit):
+            _check_cloudfront("us-west-2")
 
     def test_fails_on_no_such_distribution(self):
         mock_cf = MagicMock()
         mock_cf.get_distribution.side_effect = _client_error("NoSuchDistribution")
         with patch("boto3.client", return_value=mock_cf), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "EBAD"}):
-            with pytest.raises(SystemExit):
-                _check_cloudfront("us-west-2")
+             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "EBAD"}), pytest.raises(SystemExit):
+            _check_cloudfront("us-west-2")
 
     def test_fails_on_access_denied(self):
         mock_cf = MagicMock()
         mock_cf.get_distribution.side_effect = _client_error("AccessDenied")
         with patch("boto3.client", return_value=mock_cf), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}):
-            with pytest.raises(SystemExit):
-                _check_cloudfront("us-west-2")
+             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}), pytest.raises(SystemExit):
+            _check_cloudfront("us-west-2")
 
     def test_fails_on_other_client_error(self):
         mock_cf = MagicMock()
         mock_cf.get_distribution.side_effect = _client_error("InternalError")
         with patch("boto3.client", return_value=mock_cf), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}):
-            with pytest.raises(SystemExit):
-                _check_cloudfront("us-west-2")
+             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}), pytest.raises(SystemExit):
+            _check_cloudfront("us-west-2")
 
 
 # ── _check_yt_dlp ─────────────────────────────────────────────────────────────
@@ -305,9 +290,8 @@ class TestCheckYtDlp:
         mock_result.returncode = 1
         mock_result.stdout = ""
         with patch("subprocess.run", return_value=mock_result), \
-             patch.dict(sys.modules, {"yt_dlp": MagicMock()}):
-            with pytest.raises(SystemExit):
-                _check_yt_dlp()
+             patch.dict(sys.modules, {"yt_dlp": MagicMock()}), pytest.raises(SystemExit):
+            _check_yt_dlp()
 
 
 # ── _check_ffmpeg ─────────────────────────────────────────────────────────────
@@ -323,18 +307,16 @@ class TestCheckFfmpeg:
         assert "ffmpeg version 6.0" in capsys.readouterr().out
 
     def test_fails_when_ffmpeg_not_on_path(self):
-        with patch("shutil.which", return_value=None):
-            with pytest.raises(SystemExit):
-                _check_ffmpeg()
+        with patch("shutil.which", return_value=None), pytest.raises(SystemExit):
+            _check_ffmpeg()
 
     def test_fails_when_ffmpeg_returns_nonzero(self):
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stdout = ""
         with patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
-             patch("subprocess.run", return_value=mock_result):
-            with pytest.raises(SystemExit):
-                _check_ffmpeg()
+             patch("subprocess.run", return_value=mock_result), pytest.raises(SystemExit):
+            _check_ffmpeg()
 
     def test_handles_empty_stdout(self, capsys):
         mock_result = MagicMock()
@@ -364,9 +346,8 @@ class TestCheckNotion:
         assert "valid" in capsys.readouterr().out
 
     def test_fails_when_api_key_missing(self):
-        with patch.dict("os.environ", {**self._ENV, "NOTION_API_KEY": ""}):
-            with pytest.raises(SystemExit):
-                _check_notion()
+        with patch.dict("os.environ", {**self._ENV, "NOTION_API_KEY": ""}), pytest.raises(SystemExit):
+            _check_notion()
 
     def test_fails_when_api_key_is_placeholder(self):
         with patch.dict("os.environ", {**self._ENV, "NOTION_API_KEY": "secret_xxx123"}):
@@ -374,9 +355,8 @@ class TestCheckNotion:
                 _check_notion()
 
     def test_fails_when_db_id_missing(self):
-        with patch.dict("os.environ", {**self._ENV, "NOTION_DATABASE_ID": ""}):
-            with pytest.raises(SystemExit):
-                _check_notion()
+        with patch.dict("os.environ", {**self._ENV, "NOTION_DATABASE_ID": ""}), pytest.raises(SystemExit):
+            _check_notion()
 
     def test_fails_when_db_id_is_placeholder(self):
         with patch.dict("os.environ", {**self._ENV, "NOTION_DATABASE_ID": "xxx-fake"}):
@@ -387,31 +367,27 @@ class TestCheckNotion:
         import urllib.error
         err = urllib.error.HTTPError(url="", code=401, msg="Unauthorized", hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err), \
-             patch.dict("os.environ", self._ENV):
-            with pytest.raises(SystemExit):
-                _check_notion()
+             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+            _check_notion()
 
     def test_fails_on_404(self):
         import urllib.error
         err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err), \
-             patch.dict("os.environ", self._ENV):
-            with pytest.raises(SystemExit):
-                _check_notion()
+             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+            _check_notion()
 
     def test_fails_on_other_http_error(self):
         import urllib.error
         err = urllib.error.HTTPError(url="", code=500, msg="Server Error", hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err), \
-             patch.dict("os.environ", self._ENV):
-            with pytest.raises(SystemExit):
-                _check_notion()
+             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+            _check_notion()
 
     def test_fails_on_connection_error(self):
         with patch("urllib.request.urlopen", side_effect=Exception("Connection refused")), \
-             patch.dict("os.environ", self._ENV):
-            with pytest.raises(SystemExit):
-                _check_notion()
+             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+            _check_notion()
 
 
 # ── _check_transcribe ─────────────────────────────────────────────────────────
@@ -427,30 +403,26 @@ class TestCheckTranscribe:
     def test_fails_on_access_denied(self):
         mock_tc = MagicMock()
         mock_tc.list_transcription_jobs.side_effect = _client_error("AccessDeniedException")
-        with patch("boto3.client", return_value=mock_tc):
-            with pytest.raises(SystemExit):
-                _check_transcribe("us-west-2")
+        with patch("boto3.client", return_value=mock_tc), pytest.raises(SystemExit):
+            _check_transcribe("us-west-2")
 
     def test_fails_on_access_denied_variant(self):
         mock_tc = MagicMock()
         mock_tc.list_transcription_jobs.side_effect = _client_error("AccessDenied")
-        with patch("boto3.client", return_value=mock_tc):
-            with pytest.raises(SystemExit):
-                _check_transcribe("us-west-2")
+        with patch("boto3.client", return_value=mock_tc), pytest.raises(SystemExit):
+            _check_transcribe("us-west-2")
 
     def test_fails_on_other_client_error(self):
         mock_tc = MagicMock()
         mock_tc.list_transcription_jobs.side_effect = _client_error("InternalFailure")
-        with patch("boto3.client", return_value=mock_tc):
-            with pytest.raises(SystemExit):
-                _check_transcribe("us-west-2")
+        with patch("boto3.client", return_value=mock_tc), pytest.raises(SystemExit):
+            _check_transcribe("us-west-2")
 
     def test_fail_message_lists_required_permissions(self, capsys):
         mock_tc = MagicMock()
         mock_tc.list_transcription_jobs.side_effect = _client_error("AccessDeniedException")
-        with patch("boto3.client", return_value=mock_tc):
-            with pytest.raises(SystemExit):
-                _check_transcribe("us-west-2")
+        with patch("boto3.client", return_value=mock_tc), pytest.raises(SystemExit):
+            _check_transcribe("us-west-2")
         out = capsys.readouterr().out
         assert "transcribe:StartTranscriptionJob" in out
 
@@ -468,30 +440,26 @@ class TestCheckBedrock:
     def test_fails_on_access_denied(self):
         mock_br = MagicMock()
         mock_br.list_foundation_models.side_effect = _client_error("AccessDeniedException")
-        with patch("boto3.client", return_value=mock_br):
-            with pytest.raises(SystemExit):
-                _check_bedrock("us-east-1")
+        with patch("boto3.client", return_value=mock_br), pytest.raises(SystemExit):
+            _check_bedrock("us-east-1")
 
     def test_fails_on_access_denied_variant(self):
         mock_br = MagicMock()
         mock_br.list_foundation_models.side_effect = _client_error("AccessDenied")
-        with patch("boto3.client", return_value=mock_br):
-            with pytest.raises(SystemExit):
-                _check_bedrock("us-east-1")
+        with patch("boto3.client", return_value=mock_br), pytest.raises(SystemExit):
+            _check_bedrock("us-east-1")
 
     def test_fails_on_other_client_error(self):
         mock_br = MagicMock()
         mock_br.list_foundation_models.side_effect = _client_error("ServiceUnavailableException")
-        with patch("boto3.client", return_value=mock_br):
-            with pytest.raises(SystemExit):
-                _check_bedrock("us-east-1")
+        with patch("boto3.client", return_value=mock_br), pytest.raises(SystemExit):
+            _check_bedrock("us-east-1")
 
     def test_fail_message_lists_required_permissions(self, capsys):
         mock_br = MagicMock()
         mock_br.list_foundation_models.side_effect = _client_error("AccessDeniedException")
-        with patch("boto3.client", return_value=mock_br):
-            with pytest.raises(SystemExit):
-                _check_bedrock("us-east-1")
+        with patch("boto3.client", return_value=mock_br), pytest.raises(SystemExit):
+            _check_bedrock("us-east-1")
         out = capsys.readouterr().out
         assert "bedrock:InvokeModel" in out
 

@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
 import certifi
@@ -289,7 +289,7 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
     cutoff: datetime | None = None
     if max_age_days is not None:
         from datetime import timedelta
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
 
     # Channel-level thumbnail used as fallback for episodes without their own art
     channel_thumbnail = parse_channel_thumbnail(feed_xml)
@@ -319,9 +319,9 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
         try:
             pub_date = parsedate_to_datetime(pub_date_el.text or "")
             if pub_date.tzinfo is None:
-                pub_date = pub_date.replace(tzinfo=timezone.utc)
+                pub_date = pub_date.replace(tzinfo=UTC)
         except Exception:
-            pub_date = datetime.now(timezone.utc)
+            pub_date = datetime.now(UTC)
 
         # Age filter
         if cutoff and pub_date < cutoff:

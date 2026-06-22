@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
@@ -68,7 +68,7 @@ def upload_run_log(
         return None
 
     runner = os.environ.get("RUNNER", "unknown")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     date_prefix = now.strftime("%Y-%m-%d")
     timestamp = now.strftime("%H%M%S")
 

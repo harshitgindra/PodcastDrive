@@ -10,15 +10,11 @@ Covers:
   Fix 8 — Chapter markers in episode description
 """
 
-import json
 import os
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 

@@ -38,3 +38,15 @@ e2e-test-full:
 ## e2e-update-gt: Re-run detection and update ground_truth.json baseline
 e2e-update-gt:
 	./eval/run_e2e_tests.sh --update-gt
+
+## lint: Run ruff linter
+lint:
+	python3 -m ruff check src/ tests/
+
+## format: Auto-format code with ruff
+format:
+	python3 -m ruff format src/ tests/
+
+## fix: Auto-fix linting issues
+fix:
+	python3 -m ruff check --fix src/ tests/

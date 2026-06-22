@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
-from io import BytesIO
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,7 +13,6 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from podcast_downloader import (
-    EpisodeMeta,
     _parse_duration,
     download_episode,
     episode_id_from_guid,
@@ -25,7 +23,6 @@ from podcast_downloader import (
     resolve_feed_url,
     search_feed_url_by_name,
 )
-
 
 # ---------------------------------------------------------------------------
 # is_apple_podcasts_url
@@ -160,18 +157,16 @@ class TestFetchFeedXml:
         with patch(
             "podcast_downloader.urllib.request.urlopen",
             side_effect=OSError("connection refused"),
-        ):
-            with pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
-                fetch_feed_xml("https://feeds.example.com/rss")
+        ), pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
+            fetch_feed_xml("https://feeds.example.com/rss")
 
     def test_non_network_exception_raises_runtime_error(self):
         """Covers the generic `except Exception` branch (line 227-228)."""
         with patch(
             "podcast_downloader.urllib.request.urlopen",
             side_effect=ValueError("unexpected error"),
-        ):
-            with pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
-                fetch_feed_xml("https://feeds.example.com/rss")
+        ), pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
+            fetch_feed_xml("https://feeds.example.com/rss")
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +284,9 @@ class TestParseEpisodes:
 
     def test_bad_pubdate_falls_back_to_now(self):
         """Covers lines 322-324: unparseable pubDate → fallback to datetime.now."""
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         episodes = parse_episodes(_FEED_BAD_PUBDATE)
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
         assert len(episodes) == 1
         assert before <= episodes[0].pub_date <= after
 
@@ -372,11 +367,10 @@ class TestDownloadEpisode:
         with patch(
             "podcast_downloader.urllib.request.urlopen",
             side_effect=OSError("timeout"),
-        ):
-            with pytest.raises(RuntimeError, match="Failed to download episode"):
-                download_episode(
-                    "https://example.com/ep.mp3", "ep001", str(tmp_path)
-                )
+        ), pytest.raises(RuntimeError, match="Failed to download episode"):
+            download_episode(
+                "https://example.com/ep.mp3", "ep001", str(tmp_path)
+            )
 
     def test_partial_file_removed_on_download_failure(self, tmp_path):
         """Covers line 432: partial file is deleted when download raises."""

@@ -14,9 +14,8 @@ import argparse
 import json
 import logging
 import os
-import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import boto3
 
@@ -119,7 +118,7 @@ def _parse_log_file(s3, bucket: str, key: str) -> dict:
 def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
     """Analyze runs and logs to produce health metrics."""
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "period_days": 0,
         "summary": {},
         "runs": {},
@@ -195,7 +194,7 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
 
     # Find stale "running" entries (possible orphaned locks)
     stale_running = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for r in runs:
         if r.get("status") == "running" and r.get("started_at"):
             try:
@@ -325,7 +324,7 @@ def generate_health_report(days: int = 7, output_format: str = "md") -> str:
         return "ERROR: S3_BUCKET not set"
 
     s3 = boto3.client("s3")
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
 
     # Fetch data
     runs = _fetch_runs(s3, bucket, since)
@@ -342,7 +341,7 @@ def generate_health_report(days: int = 7, output_format: str = "md") -> str:
     report["period_days"] = days
 
     # Upload report to S3
-    report_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    report_date = datetime.now(UTC).strftime("%Y-%m-%d")
     report_key = f"_meta/reports/{report_date}.json"
     try:
         s3.put_object(

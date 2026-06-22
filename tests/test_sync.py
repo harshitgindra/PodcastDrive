@@ -1,7 +1,7 @@
 """Unit tests for the sync orchestration module."""
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,7 +10,7 @@ from models import PlaylistMeta, VideoEntry
 from sync import _rebuild_feed, _reconcile, process_playlist
 
 # A date that is always recent (2 days ago) for tests that expect downloads
-_RECENT_DATE = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y%m%d")
+_RECENT_DATE = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y%m%d")
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +121,7 @@ class TestProcessPlaylistHappyPath:
             "title": "Video Title",
         }
 
-        with patch.dict(os.environ, env, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
+        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
                  patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)), \
                  patch("sync.extract_video_metadata", return_value=meta), \
                  patch("sync.download_and_convert") as mock_dl, \
@@ -132,15 +131,15 @@ class TestProcessPlaylistHappyPath:
                  patch("os.makedirs"), \
                  patch("os.remove"):
 
-                s3 = _make_s3_manager(existing=existing)
-                mock_s3_cls.return_value = s3
+            s3 = _make_s3_manager(existing=existing)
+            mock_s3_cls.return_value = s3
 
-                def fake_dl(url, vid, tmp):
-                    return f"/tmp/PLtest/{vid}.mp3"
+            def fake_dl(url, vid, tmp):
+                return f"/tmp/PLtest/{vid}.mp3"
 
-                mock_dl.side_effect = fake_dl
-                result = process_playlist("https://youtube.com/playlist?list=PLtest")
-                return result, mock_dl, s3
+            mock_dl.side_effect = fake_dl
+            result = process_playlist("https://youtube.com/playlist?list=PLtest")
+            return result, mock_dl, s3
 
     def test_returns_correct_keys(self):
         videos = [_make_video("vid001")]
@@ -216,99 +215,96 @@ class TestProcessPlaylistHappyPath:
 class TestProcessPlaylistAgeFiltering:
     def test_skips_old_episode(self):
         """Episodes older than max_age_days should be skipped."""
-        old_date = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y%m%d")
+        old_date = (datetime.now(UTC) - timedelta(days=60)).strftime("%Y%m%d")
         videos = [_make_video("vid001", upload_date=old_date)]
         playlist_meta = _make_playlist_meta()
         env = {**BASE_ENV, "MAX_AGE_DAYS": "30"}
 
-        with patch.dict(os.environ, env, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
+        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
                  patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
                  patch("sync.extract_video_metadata", return_value={
-                     "upload_date": old_date,
-                     "description": "",
-                     "thumbnail": "",
-                     "duration": 300,
-                     "title": "Old Video",
-                 }), \
+                 "upload_date": old_date,
+                 "description": "",
+                 "thumbnail": "",
+                 "duration": 300,
+                 "title": "Old Video",
+             }), \
                  patch("sync.download_and_convert") as mock_dl, \
                  patch("sync.build_episode_metadata", return_value=[]), \
                  patch("sync.generate_rss", return_value="<rss/>"), \
                  patch("sync.shutil.rmtree"), \
                  patch("os.makedirs"), \
                  patch("os.remove"):
-                s3 = _make_s3_manager()
-                mock_s3_cls.return_value = s3
-                result = process_playlist("https://youtube.com/playlist?list=PLtest")
-                assert mock_dl.call_count == 0
-                assert result["skipped_old"] == 1
+            s3 = _make_s3_manager()
+            mock_s3_cls.return_value = s3
+            result = process_playlist("https://youtube.com/playlist?list=PLtest")
+            assert mock_dl.call_count == 0
+            assert result["skipped_old"] == 1
 
     def test_downloads_recent_episode(self):
         """Episodes within max_age_days should be downloaded."""
-        recent_date = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y%m%d")
+        recent_date = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y%m%d")
         videos = [_make_video("vid001", upload_date=recent_date)]
         playlist_meta = _make_playlist_meta()
         env = {**BASE_ENV, "MAX_AGE_DAYS": "30"}
 
-        with patch.dict(os.environ, env, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
+        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
                  patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
                  patch("sync.extract_video_metadata", return_value={
-                     "upload_date": recent_date,
-                     "description": "",
-                     "thumbnail": "",
-                     "duration": 300,
-                     "title": "Recent Video",
-                 }), \
+                 "upload_date": recent_date,
+                 "description": "",
+                 "thumbnail": "",
+                 "duration": 300,
+                 "title": "Recent Video",
+             }), \
                  patch("sync.download_and_convert") as mock_dl, \
                  patch("sync.build_episode_metadata", return_value=[]), \
                  patch("sync.generate_rss", return_value="<rss/>"), \
                  patch("sync.shutil.rmtree"), \
                  patch("os.makedirs"), \
                  patch("os.remove"):
-                s3 = _make_s3_manager()
-                mock_s3_cls.return_value = s3
+            s3 = _make_s3_manager()
+            mock_s3_cls.return_value = s3
 
-                def fake_dl(url, vid, tmp):
-                    return f"/tmp/PLtest/{vid}.mp3"
+            def fake_dl(url, vid, tmp):
+                return f"/tmp/PLtest/{vid}.mp3"
 
-                mock_dl.side_effect = fake_dl
-                result = process_playlist("https://youtube.com/playlist?list=PLtest")
-                assert mock_dl.call_count == 1
-                assert result["new_episodes"] == 1
+            mock_dl.side_effect = fake_dl
+            result = process_playlist("https://youtube.com/playlist?list=PLtest")
+            assert mock_dl.call_count == 1
+            assert result["new_episodes"] == 1
 
     def test_per_podcast_max_age_override(self):
         """max_age_days kwarg overrides the env var."""
         # Video is 15 days old — within env MAX_AGE_DAYS=30 but outside override=10
-        old_date = (datetime.now(timezone.utc) - timedelta(days=15)).strftime("%Y%m%d")
+        old_date = (datetime.now(UTC) - timedelta(days=15)).strftime("%Y%m%d")
         videos = [_make_video("vid001", upload_date=old_date)]
         playlist_meta = _make_playlist_meta()
         env = {**BASE_ENV, "MAX_AGE_DAYS": "30"}
 
-        with patch.dict(os.environ, env, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
+        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
                  patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
                  patch("sync.extract_video_metadata", return_value={
-                     "upload_date": old_date,
-                     "description": "",
-                     "thumbnail": "",
-                     "duration": 300,
-                     "title": "Mid-age video",
-                 }), \
+                 "upload_date": old_date,
+                 "description": "",
+                 "thumbnail": "",
+                 "duration": 300,
+                 "title": "Mid-age video",
+             }), \
                  patch("sync.download_and_convert") as mock_dl, \
                  patch("sync.build_episode_metadata", return_value=[]), \
                  patch("sync.generate_rss", return_value="<rss/>"), \
                  patch("sync.shutil.rmtree"), \
                  patch("os.makedirs"), \
                  patch("os.remove"):
-                s3 = _make_s3_manager()
-                mock_s3_cls.return_value = s3
-                result = process_playlist(
-                    "https://youtube.com/playlist?list=PLtest",
-                    max_age_days=10,
-                )
-                assert mock_dl.call_count == 0
-                assert result["skipped_old"] == 1
+            s3 = _make_s3_manager()
+            mock_s3_cls.return_value = s3
+            result = process_playlist(
+                "https://youtube.com/playlist?list=PLtest",
+                max_age_days=10,
+            )
+            assert mock_dl.call_count == 0
+            assert result["skipped_old"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +391,7 @@ class TestProcessPlaylistDryRun:
             "title": "Video Title",
         }
 
-        with patch.dict(os.environ, BASE_ENV, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
+        with patch.dict(os.environ, BASE_ENV, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
                  patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)), \
                  patch("sync.extract_video_metadata", return_value=meta), \
                  patch("sync.download_and_convert") as mock_dl, \
@@ -406,13 +401,13 @@ class TestProcessPlaylistDryRun:
                  patch("os.makedirs"), \
                  patch("os.remove"):
 
-                s3 = _make_s3_manager(existing=existing)
-                mock_s3_cls.return_value = s3
-                result = process_playlist(
-                    "https://youtube.com/playlist?list=PLtest",
-                    dry_run=True,
-                )
-                return result, mock_dl, s3
+            s3 = _make_s3_manager(existing=existing)
+            mock_s3_cls.return_value = s3
+            result = process_playlist(
+                "https://youtube.com/playlist?list=PLtest",
+                dry_run=True,
+            )
+            return result, mock_dl, s3
 
     def test_dry_run_does_not_call_download(self):
         videos = [_make_video("vid001")]
@@ -479,7 +474,7 @@ class TestRebuildFeed:
 class TestReconcile:
     def test_does_not_delete_old_episodes_by_age(self):
         """Age-based deletion is now handled by S3 lifecycle — reconcile must not delete by age."""
-        old_date = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y%m%d")
+        old_date = (datetime.now(UTC) - timedelta(days=60)).strftime("%Y%m%d")
         video = _make_video("vid001", upload_date=old_date)
         s3 = _make_s3_manager(existing=["vid001"])
         s3.list_existing_episodes.return_value = {"vid001"}
@@ -539,7 +534,7 @@ class TestReconcile:
 
     def test_no_deletions_when_no_orphans(self):
         """No deletions should happen when all S3 files are still in the playlist."""
-        recent_date = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y%m%d")
+        recent_date = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y%m%d")
         video = _make_video("vid001", upload_date=recent_date)
         s3 = _make_s3_manager(existing=["vid001"])
         s3.list_existing_episodes.return_value = {"vid001"}

@@ -5,8 +5,6 @@ import os
 import tempfile
 from unittest.mock import patch
 
-import pytest
-
 from logger_config import setup_logging
 
 
@@ -47,41 +45,39 @@ class TestSetupLogging:
 
     def test_adds_file_handler_locally(self):
         """Verify setup_logging creates a TimedRotatingFileHandler when not Lambda."""
-        with tempfile.TemporaryDirectory() as log_dir:
-            with patch("logger_config._IS_LAMBDA", False):
-                _remove_non_pytest_handlers()
-                # Temporarily replace root logger handlers list
-                root = logging.getLogger()
-                original_handlers = root.handlers[:]
-                root.handlers = []
-                try:
-                    setup_logging(log_dir=log_dir)
-                    handler_types = [type(h).__name__ for h in root.handlers]
-                    assert "TimedRotatingFileHandler" in handler_types
-                finally:
-                    for h in root.handlers[:]:
-                        if type(h).__name__ not in ("LogCaptureHandler",):
-                            h.close()
-                            root.removeHandler(h)
-                    root.handlers.extend(original_handlers)
+        with tempfile.TemporaryDirectory() as log_dir, patch("logger_config._IS_LAMBDA", False):
+            _remove_non_pytest_handlers()
+            # Temporarily replace root logger handlers list
+            root = logging.getLogger()
+            original_handlers = root.handlers[:]
+            root.handlers = []
+            try:
+                setup_logging(log_dir=log_dir)
+                handler_types = [type(h).__name__ for h in root.handlers]
+                assert "TimedRotatingFileHandler" in handler_types
+            finally:
+                for h in root.handlers[:]:
+                    if type(h).__name__ not in ("LogCaptureHandler",):
+                        h.close()
+                        root.removeHandler(h)
+                root.handlers.extend(original_handlers)
 
     def test_no_file_handler_on_lambda(self):
         """Verify no file handler is added when running on Lambda."""
-        with tempfile.TemporaryDirectory() as log_dir:
-            with patch("logger_config._IS_LAMBDA", True):
-                root = logging.getLogger()
-                original_handlers = root.handlers[:]
-                root.handlers = []
-                try:
-                    setup_logging(log_dir=log_dir)
-                    handler_types = [type(h).__name__ for h in root.handlers]
-                    assert "TimedRotatingFileHandler" not in handler_types
-                finally:
-                    for h in root.handlers[:]:
-                        if type(h).__name__ not in ("LogCaptureHandler",):
-                            h.close()
-                            root.removeHandler(h)
-                    root.handlers.extend(original_handlers)
+        with tempfile.TemporaryDirectory() as log_dir, patch("logger_config._IS_LAMBDA", True):
+            root = logging.getLogger()
+            original_handlers = root.handlers[:]
+            root.handlers = []
+            try:
+                setup_logging(log_dir=log_dir)
+                handler_types = [type(h).__name__ for h in root.handlers]
+                assert "TimedRotatingFileHandler" not in handler_types
+            finally:
+                for h in root.handlers[:]:
+                    if type(h).__name__ not in ("LogCaptureHandler",):
+                        h.close()
+                        root.removeHandler(h)
+                root.handlers.extend(original_handlers)
 
     def test_log_level_applied(self):
         root = logging.getLogger()
@@ -106,10 +102,9 @@ class TestSetupLogging:
         original_level = root.level
         root.handlers = []
         try:
-            with tempfile.TemporaryDirectory() as log_dir:
-                with patch.dict(os.environ, {"LOG_LEVEL": "WARNING"}):
-                    setup_logging(log_dir=log_dir)
-                    assert root.level == logging.WARNING
+            with tempfile.TemporaryDirectory() as log_dir, patch.dict(os.environ, {"LOG_LEVEL": "WARNING"}):
+                setup_logging(log_dir=log_dir)
+                assert root.level == logging.WARNING
         finally:
             for h in root.handlers[:]:
                 if type(h).__name__ not in ("LogCaptureHandler",):
@@ -136,21 +131,20 @@ class TestSetupLogging:
                     root.handlers.extend(original_handlers)
 
     def test_log_file_created(self):
-        with tempfile.TemporaryDirectory() as log_dir:
-            with patch("logger_config._IS_LAMBDA", False):
-                root = logging.getLogger()
-                original_handlers = root.handlers[:]
-                root.handlers = []
-                try:
-                    setup_logging(log_dir=log_dir)
-                    log_file = os.path.join(log_dir, "playlist_downloader.log")
-                    assert os.path.exists(log_file)
-                finally:
-                    for h in root.handlers[:]:
-                        if type(h).__name__ not in ("LogCaptureHandler",):
-                            h.close()
-                            root.removeHandler(h)
-                    root.handlers.extend(original_handlers)
+        with tempfile.TemporaryDirectory() as log_dir, patch("logger_config._IS_LAMBDA", False):
+            root = logging.getLogger()
+            original_handlers = root.handlers[:]
+            root.handlers = []
+            try:
+                setup_logging(log_dir=log_dir)
+                log_file = os.path.join(log_dir, "playlist_downloader.log")
+                assert os.path.exists(log_file)
+            finally:
+                for h in root.handlers[:]:
+                    if type(h).__name__ not in ("LogCaptureHandler",):
+                        h.close()
+                        root.removeHandler(h)
+                root.handlers.extend(original_handlers)
 
     def test_idempotent_second_call_does_not_add_duplicate_handlers(self):
         root = logging.getLogger()
@@ -171,26 +165,25 @@ class TestSetupLogging:
             root.handlers.extend(original_handlers)
 
     def test_retention_days_from_env_var(self):
-        with tempfile.TemporaryDirectory() as log_dir:
-            with patch("logger_config._IS_LAMBDA", False):
-                root = logging.getLogger()
-                original_handlers = root.handlers[:]
-                root.handlers = []
-                try:
-                    with patch.dict(os.environ, {"LOG_RETENTION_DAYS": "5"}):
-                        setup_logging(log_dir=log_dir)
-                        file_handlers = [
-                            h for h in root.handlers
-                            if type(h).__name__ == "TimedRotatingFileHandler"
-                        ]
-                        assert len(file_handlers) == 1
-                        assert file_handlers[0].backupCount == 5
-                finally:
-                    for h in root.handlers[:]:
-                        if type(h).__name__ not in ("LogCaptureHandler",):
-                            h.close()
-                            root.removeHandler(h)
-                    root.handlers.extend(original_handlers)
+        with tempfile.TemporaryDirectory() as log_dir, patch("logger_config._IS_LAMBDA", False):
+            root = logging.getLogger()
+            original_handlers = root.handlers[:]
+            root.handlers = []
+            try:
+                with patch.dict(os.environ, {"LOG_RETENTION_DAYS": "5"}):
+                    setup_logging(log_dir=log_dir)
+                    file_handlers = [
+                        h for h in root.handlers
+                        if type(h).__name__ == "TimedRotatingFileHandler"
+                    ]
+                    assert len(file_handlers) == 1
+                    assert file_handlers[0].backupCount == 5
+            finally:
+                for h in root.handlers[:]:
+                    if type(h).__name__ not in ("LogCaptureHandler",):
+                        h.close()
+                        root.removeHandler(h)
+                root.handlers.extend(original_handlers)
 
     def test_log_dir_from_env_var(self):
         with tempfile.TemporaryDirectory() as base:

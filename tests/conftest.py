@@ -1,6 +1,6 @@
 """Configure pytest to find src/ modules."""
-import sys
 import os
+import sys
 from unittest.mock import patch
 
 import pytest

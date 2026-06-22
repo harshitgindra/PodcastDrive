@@ -13,7 +13,7 @@ the default human-readable text format.  JSON lines include ``timestamp``,
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from logging.handlers import TimedRotatingFileHandler
 
 # Detect Lambda environment — file logging is skipped there.
@@ -56,7 +56,7 @@ class _JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         record.message = record.getMessage()
         doc: dict = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.message,

@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import boto3
 
@@ -55,7 +55,7 @@ def _scan_logs_for_failures(s3, bucket: str, days: int = 3) -> dict:
     from datetime import timedelta
 
     failures = defaultdict(list)  # video_id → [{"error": ..., "date": ..., "type": ...}]
-    since_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    since_date = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
 
     try:
         paginator = s3.get_paginator("list_objects_v2")
@@ -125,7 +125,7 @@ def heal_retry_queue(s3, bucket: str, dry_run: bool = False) -> dict:
                 "first_failure": failure_list[0]["date"],
                 "last_failure": failure_list[-1]["date"],
                 "failure_count": len(failure_list),
-                "error_types": list(set(f["type"] for f in failure_list)),
+                "error_types": list({f["type"] for f in failure_list}),
                 "last_error": failure_list[-1]["error"],
             }
             added += 1
@@ -143,7 +143,7 @@ def heal_retry_queue(s3, bucket: str, dry_run: bool = False) -> dict:
         try:
             resp = s3.list_objects_v2(
                 Bucket=bucket,
-                Prefix=f"",
+                Prefix="",
                 MaxKeys=1000,
             )
             # Search for the episode file
@@ -162,7 +162,7 @@ def heal_retry_queue(s3, bucket: str, dry_run: bool = False) -> dict:
         removed += 1
 
     queue["episodes"] = episodes
-    queue["updated_at"] = datetime.now(timezone.utc).isoformat()
+    queue["updated_at"] = datetime.now(UTC).isoformat()
 
     if not dry_run:
         _save_retry_queue(s3, bucket, queue)

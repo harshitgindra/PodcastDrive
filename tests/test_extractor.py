@@ -1,9 +1,6 @@
 """Unit tests for the playlist extractor module."""
 
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from extractor import extract_playlist, extract_video_metadata
 from models import PlaylistMeta, VideoEntry
