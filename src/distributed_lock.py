@@ -1,7 +1,8 @@
 """Distributed lock using S3 for cross-machine coordination.
 
-Uses a lock object in S3 with a TTL (max age). If the lock is held by
-another runner and hasn't expired, the current run is skipped.
+Uses S3 conditional writes (If-None-Match) for atomic lock acquisition.
+If the lock object already exists, the PUT fails with 412 Precondition Failed,
+guaranteeing only one runner can acquire the lock at a time.
 
 Lock is always released on completion (success or failure) via context manager.
 """
@@ -9,7 +10,6 @@ Lock is always released on completion (success or failure) via context manager.
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 
 import boto3
@@ -23,11 +23,10 @@ DEFAULT_TTL_SECONDS = 3600  # 1 hour — max expected run duration
 
 class LockAcquireError(Exception):
     """Raised when the lock cannot be acquired."""
-    pass
 
 
 class S3Lock:
-    """Distributed lock backed by an S3 object.
+    """Distributed lock backed by an S3 object with conditional writes.
 
     Usage::
 
@@ -65,18 +64,42 @@ class S3Lock:
         except (json.JSONDecodeError, KeyError):
             return None
 
-    def _write_lock(self) -> None:
-        """Write a lock object to S3."""
+    def _build_lock_body(self) -> bytes:
+        """Build the lock object payload."""
         lock_data = {
             "runner": self.runner,
             "pid": os.getpid(),
             "acquired_at": datetime.now(timezone.utc).isoformat(),
             "ttl_seconds": self.ttl_seconds,
         }
+        return json.dumps(lock_data, indent=2).encode("utf-8")
+
+    def _write_lock_conditional(self) -> bool:
+        """Attempt to write the lock using S3 conditional write (If-None-Match).
+
+        Returns True if the lock was successfully acquired, False if another
+        writer already holds it (412 response).
+        """
+        try:
+            self._s3.put_object(
+                Bucket=self.bucket,
+                Key=self.lock_key,
+                Body=self._build_lock_body(),
+                ContentType="application/json",
+                IfNoneMatch="*",
+            )
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("PreconditionFailed", "412"):
+                return False
+            raise
+
+    def _write_lock(self) -> None:
+        """Write a lock object to S3 unconditionally (used for expired lock override)."""
         self._s3.put_object(
             Bucket=self.bucket,
             Key=self.lock_key,
-            Body=json.dumps(lock_data, indent=2).encode("utf-8"),
+            Body=self._build_lock_body(),
             ContentType="application/json",
         )
 
@@ -98,33 +121,58 @@ class S3Lock:
             return True  # Malformed lock — treat as expired
 
     def acquire(self) -> None:
-        """Attempt to acquire the lock. Raises LockAcquireError if held."""
+        """Attempt to acquire the lock. Raises LockAcquireError if held.
+
+        Uses S3 conditional writes (If-None-Match: *) for atomic acquisition.
+        If the lock exists but is expired, deletes it and retries.
+        """
         if not self.bucket:
             logger.debug("S3_BUCKET not set, skipping distributed lock")
             self._acquired = True
             return
 
+        # Try atomic conditional write first
+        if self._write_lock_conditional():
+            self._acquired = True
+            logger.info("Distributed lock acquired by %s", self.runner)
+            return
+
+        # Lock exists — check if it's expired or malformed
         existing = self._read_lock()
+        if existing is None:
+            # Key exists but is malformed JSON, or was deleted — delete and retry
+            self._delete_lock()
+            if self._write_lock_conditional():
+                self._acquired = True
+                logger.info("Distributed lock acquired by %s (after clearing malformed/deleted lock)", self.runner)
+                return
 
-        if existing is not None:
-            if self._is_expired(existing):
-                logger.warning(
-                    "Stale lock found (held by %s since %s, TTL %ds expired) — overriding",
-                    existing.get("runner", "?"),
-                    existing.get("acquired_at", "?"),
-                    existing.get("ttl_seconds", 0),
-                )
-            else:
-                raise LockAcquireError(
-                    f"Lock held by '{existing.get('runner', '?')}' "
-                    f"since {existing.get('acquired_at', '?')} "
-                    f"(TTL {existing.get('ttl_seconds', 0)}s). "
-                    f"Skipping this run."
-                )
+        if existing is not None and self._is_expired(existing):
+            logger.warning(
+                "Stale lock found (held by %s since %s, TTL %ds expired) — overriding",
+                existing.get("runner", "?"),
+                existing.get("acquired_at", "?"),
+                existing.get("ttl_seconds", 0),
+            )
+            self._delete_lock()
+            # After deleting expired lock, try conditional write again
+            if self._write_lock_conditional():
+                self._acquired = True
+                logger.info("Distributed lock acquired by %s (after expiry override)", self.runner)
+                return
+            # Another runner beat us to it after we deleted — that's fine
+            existing = self._read_lock()
 
-        self._write_lock()
-        self._acquired = True
-        logger.info("Distributed lock acquired by %s", self.runner)
+        # Lock is held and not expired
+        if existing:
+            raise LockAcquireError(
+                f"Lock held by '{existing.get('runner', '?')}' "
+                f"since {existing.get('acquired_at', '?')} "
+                f"(TTL {existing.get('ttl_seconds', 0)}s). "
+                f"Skipping this run."
+            )
+
+        raise LockAcquireError("Could not acquire lock after multiple attempts")
 
     def release(self) -> None:
         """Release the lock if held by this runner. Always safe to call."""
