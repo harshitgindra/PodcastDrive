@@ -202,22 +202,28 @@ export RUNNER="${RUNNER:-${_HOSTNAME}/${TRIGGER:-manual}}"
 
 # --- Distributed lock (prevents concurrent runs across machines) ---
 if [ "$DRY_RUN" = false ]; then
-  if ! "${VENV_PYTHON}" -c "
+  LOCK_OUTPUT=$("${VENV_PYTHON}" -c "
 from distributed_lock import S3Lock, LockAcquireError
 import sys
 try:
     lock = S3Lock()
     lock.acquire()
+    print(\"acquired\")
 except LockAcquireError as e:
-    print(f\"⚠️  {e}\", file=sys.stderr)
+    print(f\"LOCKED:{e}\")
     sys.exit(99)
-"; then
-    EXIT_CODE=$?
-    if [ "$EXIT_CODE" -eq 99 ]; then
-      warn "Another machine is running PodcastDrive. Skipping this run."
-      exit 0
-    fi
-    warn "Distributed lock check failed (S3 unreachable?) — proceeding anyway."
+except Exception as e:
+    print(f\"ERROR:{type(e).__name__}: {e}\")
+    sys.exit(1)
+" 2>&1) || true
+  LOCK_EXIT=$?
+  if [ "$LOCK_EXIT" -eq 99 ]; then
+    warn "Another machine is running PodcastDrive: ${LOCK_OUTPUT#LOCKED:}"
+    warn "Skipping this run."
+    exit 0
+  elif [ "$LOCK_EXIT" -ne 0 ]; then
+    warn "Distributed lock failed: ${LOCK_OUTPUT#ERROR:}"
+    warn "Proceeding without distributed lock."
   fi
 fi
 
