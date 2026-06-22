@@ -234,10 +234,10 @@ class S3Manager:
             if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
                 logger.debug("[S3Manager] No manifest found — starting fresh")
                 return {}
-            logger.warning("[S3Manager] Could not load manifest: %s", exc)
+            logger.warning("[S3Manager] Could not load manifest: %s", exc, exc_info=True)
             return {}
         except Exception as exc:
-            logger.warning("[S3Manager] Could not load manifest: %s", exc)
+            logger.warning("[S3Manager] Could not load manifest: %s", exc, exc_info=True)
             return {}
 
     def save_manifest(self, manifest: dict) -> None:
@@ -263,7 +263,7 @@ class S3Manager:
             )
             logger.debug("[S3Manager] Manifest saved (%d entries)", len(manifest))
         except Exception as exc:
-            logger.warning("[S3Manager] Could not save manifest: %s", exc)
+            logger.warning("[S3Manager] Could not save manifest: %s", exc, exc_info=True)
 
     def _invalidate_cloudfront(self, path: str) -> None:
         """Create a CloudFront invalidation for the given path.

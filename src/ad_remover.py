@@ -1680,14 +1680,14 @@ def remove_ads(
     try:
         segments = transcribe_audio(mp3_path, video_id)
     except Exception as exc:
-        logger.error("[AdRemover] Transcription failed for %s: %s — using original file", video_id, exc)
-        return mp3_path, [], ""
+        logger.error("[AdRemover] Transcription failed for %s: %s — using original file", video_id, exc, exc_info=True)
+        return mp3_path, [], "TRANSCRIBE_FAILED"
 
     try:
         ad_segments = detect_ads(segments, ad_hints=ad_hints)
     except Exception as exc:
-        logger.error("[AdRemover] Ad detection failed for %s: %s — using original file", video_id, exc)
-        return mp3_path, [], ""
+        logger.error("[AdRemover] Ad detection failed for %s: %s — using original file", video_id, exc, exc_info=True)
+        return mp3_path, [], "DETECT_FAILED"
 
     # Save detection result to cache so retries (after splice failure) skip Bedrock
     if use_cache:
@@ -1748,8 +1748,8 @@ def remove_ads(
     try:
         splice_audio(mp3_path, all_segments, cleaned_path)
     except Exception as exc:
-        logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
-        return mp3_path, all_segments, ""
+        logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc, exc_info=True)
+        return mp3_path, all_segments, "SPLICE_FAILED"
 
     # Generate AI summary if enabled
     summary = ""

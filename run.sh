@@ -599,11 +599,12 @@ echo "  Runner: ${RUNNER}"
 echo "  Log dir: ${LOG_DIR}"
 echo "  Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-# --- Record run end (S3 history) ---
+# --- Record run end + upload logs to S3 ---
 if [ "$DRY_RUN" = false ]; then
   "${VENV_PYTHON}" -c "
 import json, os
 from run_history import record_run_end, save_run_history
+from log_uploader import upload_run_log
 record_file = os.path.join(os.environ.get(\"LOG_DIR\", \"logs\"), \".run_record.json\")
 if os.path.exists(record_file):
     with open(record_file) as f:
@@ -611,6 +612,7 @@ if os.path.exists(record_file):
     record = record_run_end(record, status=\"success\")
     save_run_history(record)
     os.remove(record_file)
+upload_run_log()
 " 2>/dev/null || true
 fi
 

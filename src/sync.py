@@ -238,7 +238,7 @@ def process_playlist(
 
             except Exception as exc:
                 failed_count += 1
-                logger.error("[Step 4] FAILED %s: %s", video.video_id, exc)
+                logger.error("[Step 4] FAILED %s: %s", video.video_id, exc, exc_info=True)
 
         logger.info(
             "[Step 4] Download phase complete: %d new, %d skipped (old), %d unavailable, %d failed",
@@ -303,9 +303,15 @@ def _rebuild_feed(
     xml = generate_rss(playlist_meta, episodes, cloudfront_base, playlist_id)
     s3.upload_feed(xml)
 
-    if len(episodes) != len(final_keys):
+    if len(episodes) == 0 and len(final_keys) > 0:
+        logger.error(
+            "[Feed] EMPTY FEED generated but %d episodes exist in S3 — possible data loss. "
+            "Check video_entries extraction and build_episode_metadata.",
+            len(final_keys),
+        )
+    elif len(episodes) != len(final_keys):
         logger.warning(
-            "[Feed] MISMATCH: feed=%d, S3=%d",
+            "[Feed] MISMATCH: feed=%d, S3=%d (some episodes may be missing from playlist extraction)",
             len(episodes), len(final_keys),
         )
 

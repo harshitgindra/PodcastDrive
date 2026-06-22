@@ -19,8 +19,16 @@ from logging.handlers import TimedRotatingFileHandler
 # Detect Lambda environment — file logging is skipped there.
 _IS_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 
-LOG_FORMAT = "[%(asctime)s] [%(levelname)-5s] [%(name)s] %(message)s"
+LOG_FORMAT = "[%(asctime)s] [%(levelname)-5s] [%(name)s] [%(runner)s] %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+class _RunnerFilter(logging.Filter):
+    """Inject RUNNER env var into every log record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.runner = os.environ.get("RUNNER", "-")
+        return True
 
 
 class _JsonFormatter(logging.Formatter):
@@ -99,6 +107,8 @@ def setup_logging(
     # Avoid adding duplicate handlers if setup_logging() is called more than once.
     if root_logger.handlers:
         return
+
+    root_logger.addFilter(_RunnerFilter())
 
     formatter: logging.Formatter
     if use_json:
