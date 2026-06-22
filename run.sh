@@ -33,6 +33,13 @@ LOCK_FILE="${SCRIPT_DIR}/.podcastdrive.lock"
 
 cleanup() {
     rm -f "$LOCK_FILE"
+    # Release distributed lock (S3) — safe even if not acquired
+    if [ -n "${VENV_PYTHON:-}" ] && [ -x "${VENV_PYTHON:-}" ]; then
+      PYTHONPATH="${SCRIPT_DIR}/src" "${VENV_PYTHON}" -c "
+from distributed_lock import S3Lock
+S3Lock().release()
+" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -192,6 +199,27 @@ export PYTHONPATH="${SCRIPT_DIR}/src"
 # TRIGGER can be set by cron wrapper or webhook; defaults to "manual"
 _HOSTNAME=$(hostname -s 2>/dev/null || echo "unknown")
 export RUNNER="${RUNNER:-${_HOSTNAME}/${TRIGGER:-manual}}"
+
+# --- Distributed lock (prevents concurrent runs across machines) ---
+if [ "$DRY_RUN" = false ]; then
+  if ! "${VENV_PYTHON}" -c "
+from distributed_lock import S3Lock, LockAcquireError
+import sys
+try:
+    lock = S3Lock()
+    lock.acquire()
+except LockAcquireError as e:
+    print(f\"⚠️  {e}\", file=sys.stderr)
+    sys.exit(99)
+"; then
+    EXIT_CODE=$?
+    if [ "$EXIT_CODE" -eq 99 ]; then
+      warn "Another machine is running PodcastDrive. Skipping this run."
+      exit 0
+    fi
+    warn "Distributed lock check failed (S3 unreachable?) — proceeding anyway."
+  fi
+fi
 
 # --- Record run start (S3 history) ---
 if [ "$DRY_RUN" = false ]; then
