@@ -8,6 +8,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class NotionConfigProvider(ConfigProvider):
         """
         self.api_key = os.environ.get("NOTION_API_KEY", "")
         self.database_id = os.environ.get("NOTION_DATABASE_ID", "")
+        self._cache: list[PodcastConfig] | None = None
 
         if not self.api_key or not self.database_id:
             raise ValueError(
@@ -156,15 +158,20 @@ class NotionConfigProvider(ConfigProvider):
     def get_podcasts(self) -> list[PodcastConfig]:
         """Query the Notion database and return enabled podcast configs.
 
-        Handles Notion pagination automatically.
+        Handles Notion pagination automatically. Results are cached for the
+        lifetime of this provider instance to avoid redundant API calls.
 
         Returns:
             List of :class:`PodcastConfig` objects parsed from Notion pages.
             Returns whatever was collected so far if the API call fails mid-way.
         """
+        if self._cache is not None:
+            return self._cache
+
+        import json
         import ssl
         import urllib.request
-        import json
+
         import certifi
 
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -210,6 +217,7 @@ class NotionConfigProvider(ConfigProvider):
             start_cursor = data.get("next_cursor")
 
         logger.info("Loaded %d podcasts from Notion", len(podcasts))
+        self._cache = podcasts
         return podcasts
 
     def _parse_page(self, props: dict) -> PodcastConfig | None:
@@ -306,9 +314,10 @@ class NotionConfigProvider(ConfigProvider):
             logger.warning("No page_id for %s, skipping status update", podcast.name)
             return
 
+        import json
         import ssl
         import urllib.request
-        import json
+
         import certifi
 
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -377,11 +386,12 @@ class NotionConfigProvider(ConfigProvider):
             logger.warning("No page_id for %s, skipping Notion update", podcast.name)
             return
 
+        import json
         import ssl
         import urllib.request
-        import json
+        from datetime import datetime
+
         import certifi
-        from datetime import datetime, timezone
 
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
@@ -392,7 +402,7 @@ class NotionConfigProvider(ConfigProvider):
             "Content-Type": "application/json",
         }
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         runner = os.environ.get("RUNNER", "")
 
         properties = {
@@ -557,9 +567,10 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
             logger.warning("No page_id for %s, skipping URL update", podcast.name)
             return
 
+        import json
         import ssl
         import urllib.request
-        import json
+
         import certifi
 
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
