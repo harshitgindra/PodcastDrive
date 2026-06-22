@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
+from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,7 +19,6 @@ from podcast_sync import (
     _podcast_slug,
     process_podcast_feed,
 )
-
 
 # ---------------------------------------------------------------------------
 # _podcast_slug
@@ -73,7 +72,7 @@ class TestBuildPodcastFeedXml:
         return EpisodeMeta(
             title=title,
             url="https://example.com/ep.mp3",
-            pub_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            pub_date=datetime(2024, 1, 1, tzinfo=UTC),
             guid=guid,
             duration=duration,
             thumbnail=thumbnail,
@@ -186,7 +185,7 @@ def _make_episode_meta(guid="guid-1", title="Episode 1"):
     return EpisodeMeta(
         title=title,
         url="https://example.com/ep.mp3",
-        pub_date=datetime.now(timezone.utc),
+        pub_date=datetime.now(UTC),
         guid=guid,
         duration=300,
     )
@@ -351,7 +350,7 @@ class TestProcessPodcastFeedAppleUrl:
             patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
             patch("podcast_sync.parse_episodes", return_value=[]),
         ):
-            result = process_podcast_feed(podcast, provider=mock_provider, dry_run=False)
+            process_podcast_feed(podcast, provider=mock_provider, dry_run=False)
 
         mock_provider.update_url.assert_called_once_with(podcast, rss_url)
 
@@ -372,7 +371,7 @@ class TestProcessPodcastFeedAppleUrl:
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
-            result = process_podcast_feed(podcast, provider=mock_provider, dry_run=True)
+            process_podcast_feed(podcast, provider=mock_provider, dry_run=True)
 
         mock_provider.update_url.assert_not_called()
 

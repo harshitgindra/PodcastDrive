@@ -27,9 +27,11 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.dom.minidom import parseString
+
+import boto3
 
 from ad_remover import remove_ads
 from config_provider import PodcastConfig
@@ -140,7 +142,7 @@ def _build_podcast_feed_xml(
     ET.SubElement(channel, "language").text = language
     ET.SubElement(channel, "generator").text = "PodcastDrive"
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(
-        datetime.now(timezone.utc)
+        datetime.now(UTC)
     )
 
     # Standard RSS 2.0 <image> block (required by many non-iTunes podcast apps)
@@ -311,7 +313,7 @@ def process_podcast_feed(
         all_feed_episodes = parse_episodes(feed_xml, max_age_days=None)
         if max_age_days is not None:
             from datetime import timedelta
-            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+            cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
             episodes = [ep for ep in all_feed_episodes if ep.pub_date >= cutoff]
         else:
             episodes = all_feed_episodes
@@ -414,6 +416,14 @@ def process_podcast_feed(
                         "(%d ads detected but original file returned) — retrying",
                         ep_id, len(ad_segments),
                     )
+                    # Delete ad-segment cache so retry re-executes splice_audio
+                    # rather than returning the same cached (failed) result
+                    try:
+                        _retry_s3 = boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+                        cache_key = f"{os.environ.get('TRANSCRIBE_CACHE_PREFIX', 'transcribe-cache')}/{ep_id}_ads.json"
+                        _retry_s3.delete_object(Bucket=bucket, Key=cache_key)
+                    except Exception:
+                        pass
                     cleaned_path, ad_segments, summary = remove_ads(
                         original_path, ep_id, tmp_dir,
                         ad_hints=podcast.ad_hints,
