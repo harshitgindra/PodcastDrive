@@ -88,6 +88,10 @@ $SSH "crontab /home/ec2-user/PodcastDrive/deploy/crontab.txt"
 echo "  Cron installed. Verify with: ssh ec2-user@$HOST 'crontab -l'"
 
 # --- Step 5: Create logs dir ---
+
+# --- Step 6: Install webhook server ---
+echo "→ Installing webhook server..."
+$SSH "chmod +x /home/ec2-user/PodcastDrive/deploy/install-webhook.sh && /home/ec2-user/PodcastDrive/deploy/install-webhook.sh"
 $SSH "mkdir -p /home/ec2-user/PodcastDrive/logs"
 
 echo ""

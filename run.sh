@@ -187,6 +187,25 @@ export CONFIG_PROVIDER="${CONFIG_PROVIDER:-yaml}"
 export PODCASTS_YAML="${PODCASTS_YAML:-${SCRIPT_DIR}/podcasts.yaml}"
 export PYTHONPATH="${SCRIPT_DIR}/src"
 
+# --- Runner identification ---
+# Auto-detect: hostname + trigger source (cron/webhook/manual)
+# TRIGGER can be set by cron wrapper or webhook; defaults to "manual"
+_HOSTNAME=$(hostname -s 2>/dev/null || echo "unknown")
+export RUNNER="${RUNNER:-${_HOSTNAME}/${TRIGGER:-manual}}"
+
+# --- Record run start (S3 history) ---
+if [ "$DRY_RUN" = false ]; then
+  "${VENV_PYTHON}" -c "
+from run_history import record_run_start, save_run_history
+import json, os
+record = record_run_start()
+save_run_history(record)
+# Save record to temp file for end-of-run update
+with open(os.path.join(os.environ.get(\"LOG_DIR\", \"logs\"), \".run_record.json\"), \"w\") as f:
+    json.dump(record, f)
+" 2>/dev/null || true
+fi
+
 # --- Reset mode: wipe all S3 data for enabled podcasts then exit ---
 if [ "$DO_RESET" = true ]; then
     FORCE_FLAG=""
@@ -548,7 +567,23 @@ ELAPSED_SEC=$(( ELAPSED % 60 ))
 echo ""
 section "Run Complete"
 ok "Finished in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
+echo "  Runner: ${RUNNER}"
 echo "  Log dir: ${LOG_DIR}"
 echo "  Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+# --- Record run end (S3 history) ---
+if [ "$DRY_RUN" = false ]; then
+  "${VENV_PYTHON}" -c "
+import json, os
+from run_history import record_run_end, save_run_history
+record_file = os.path.join(os.environ.get(\"LOG_DIR\", \"logs\"), \".run_record.json\")
+if os.path.exists(record_file):
+    with open(record_file) as f:
+        record = json.load(f)
+    record = record_run_end(record, status=\"success\")
+    save_run_history(record)
+    os.remove(record_file)
+" 2>/dev/null || true
+fi
 
 exit 0

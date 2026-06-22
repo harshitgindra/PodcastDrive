@@ -393,6 +393,8 @@ class NotionConfigProvider(ConfigProvider):
         }
 
         now = datetime.now(timezone.utc).isoformat()
+        runner = os.environ.get("RUNNER", "")
+
         properties = {
             "LastUpdated": {
                 "date": {
@@ -400,6 +402,11 @@ class NotionConfigProvider(ConfigProvider):
                 }
             }
         }
+
+        if runner:
+            properties["Runner"] = {
+                "rich_text": [{"text": {"content": runner}}]
+            }
 
         if feed_url:
             properties["Podcast URL"] = {

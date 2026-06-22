@@ -3,7 +3,7 @@
 SHELL=/bin/bash
 PATH=/home/ec2-user/PodcastDrive/.venv/bin:/usr/local/bin:/usr/bin:/bin
 
-30 6  * * * cd /home/ec2-user/PodcastDrive && ./run.sh >> logs/cron.log 2>&1
-30 8  * * * cd /home/ec2-user/PodcastDrive && ./run.sh >> logs/cron.log 2>&1
-30 12 * * * cd /home/ec2-user/PodcastDrive && ./run.sh >> logs/cron.log 2>&1
-30 15 * * * cd /home/ec2-user/PodcastDrive && ./run.sh >> logs/cron.log 2>&1
+30 6  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
+30 8  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
+30 12 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
+30 15 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1

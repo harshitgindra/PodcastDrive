@@ -1,0 +1,15 @@
+[Unit]
+Description=PodcastDrive Webhook Server
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/PodcastDrive
+EnvironmentFile=/home/ec2-user/PodcastDrive/deploy/.webhook-env
+ExecStart=/home/ec2-user/PodcastDrive/.venv/bin/python3 /home/ec2-user/PodcastDrive/deploy/webhook.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
