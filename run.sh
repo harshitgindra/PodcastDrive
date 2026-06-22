@@ -406,6 +406,9 @@ print(extract_playlist_id('$INPUT'))
     fi
 fi
 
+# --- Track overall run status ---
+RUN_STATUS="success"
+
 # --- Preflight checks ---
 PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
 import sys, os
@@ -480,7 +483,7 @@ except Exception as e:
         except Exception:
             pass
     print(f'ERROR: {e}', file=sys.stderr)
-" || echo "ERROR: Failed processing $URL"
+" || { echo "ERROR: Failed processing $URL"; RUN_STATUS="partial_failure"; }
     done
 else
     # --- Config mode: process all enabled podcasts from config provider ---
@@ -545,7 +548,7 @@ for i, podcast in enumerate(enabled):
             provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
     print()
-" || echo "ERROR: Failed processing YouTube podcasts"
+" || { echo "ERROR: Failed processing YouTube podcasts"; RUN_STATUS="partial_failure"; }
 
     # --- RSS Podcast feeds (Source=Podcast) ---
     PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
@@ -591,7 +594,7 @@ for i, podcast in enumerate(enabled):
             provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
     print()
-" || echo "ERROR: Failed processing RSS podcast feeds"
+" || { echo "ERROR: Failed processing RSS podcast feeds"; RUN_STATUS="partial_failure"; }
 fi
 
 # --- Run complete summary ---
@@ -607,7 +610,7 @@ echo "  Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 # --- Record run end + upload logs to S3 ---
 if [ "$DRY_RUN" = false ]; then
-  "${VENV_PYTHON}" -c "
+  PODCAST_RUN_STATUS="$RUN_STATUS" "${VENV_PYTHON}" -c "
 import json, os
 from run_history import record_run_end, save_run_history
 from log_uploader import upload_run_log
@@ -615,7 +618,8 @@ record_file = os.path.join(os.environ.get(\"LOG_DIR\", \"logs\"), \".run_record.
 if os.path.exists(record_file):
     with open(record_file) as f:
         record = json.load(f)
-    record = record_run_end(record, status=\"success\")
+    status = os.environ.get(\"PODCAST_RUN_STATUS\", \"success\")
+    record = record_run_end(record, status=status)
     save_run_history(record)
     os.remove(record_file)
 upload_run_log()
