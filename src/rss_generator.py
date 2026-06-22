@@ -7,7 +7,7 @@ information, using CloudFront URLs for audio enclosures.
 import logging
 import os
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.dom.minidom import parseString
 
@@ -160,7 +160,7 @@ def _add_channel_metadata(
     ET.SubElement(channel, "language").text = language
     ET.SubElement(channel, "generator").text = "yt-podcast-lambda"
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(now)
 
     # Determine best artwork URL: prefer playlist-level thumbnail, fall back
@@ -332,7 +332,11 @@ def build_episode_metadata(
             entry.upload_date = upload_date
 
         s3_key = f"{playlist_id}/episodes/{video_id}.mp3"
-        file_size = s3.get_object_size(s3_key)
+        try:
+            file_size = s3.get_object_size(s3_key)
+        except Exception:
+            file_size = 0
+            logger.warning("Could not get size for %s — using 0", s3_key)
         cloudfront_url = f"{cloudfront_base}/{playlist_id}/episodes/{video_id}.mp3"
 
         episodes.append(
