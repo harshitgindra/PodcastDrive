@@ -6,6 +6,7 @@ import yt_dlp
 
 from models import PlaylistMeta, VideoEntry
 from utils import extract_playlist_id
+from ytdlp_cookies import inject_cookies
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
         "extract_flat": "in_playlist",
         "ignoreerrors": True,
     }
+    inject_cookies(ydl_opts)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         result = ydl.extract_info(playlist_url, download=False)
@@ -114,6 +116,7 @@ def extract_video_metadata(video_url: str) -> dict | None:
         "skip_download": True,
         "ignoreerrors": True,
     }
+    inject_cookies(ydl_opts)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

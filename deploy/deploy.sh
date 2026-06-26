@@ -70,12 +70,17 @@ rsync -az --progress \
   --exclude 'deploy/.instance-info' \
   "$PROJECT_DIR/" "ec2-user@${HOST}:/home/ec2-user/PodcastDrive/"
 
-# --- Step 2: Copy config.env ---
+# --- Step 2: Copy config.env and cookies ---
 if [[ -f "${PROJECT_DIR}/config.env" ]]; then
   echo "→ Copying config.env..."
   $SCP "${PROJECT_DIR}/config.env" "ec2-user@${HOST}:/home/ec2-user/PodcastDrive/config.env"
 else
   echo "  ⚠️  No config.env found locally. You'll need to create it on the instance."
+fi
+
+if [[ -f "${PROJECT_DIR}/cookies.txt" ]]; then
+  echo "→ Copying cookies.txt..."
+  $SCP "${PROJECT_DIR}/cookies.txt" "ec2-user@${HOST}:/home/ec2-user/PodcastDrive/cookies.txt"
 fi
 
 # --- Step 3: Run setup ---

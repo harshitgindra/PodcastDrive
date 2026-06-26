@@ -13,6 +13,8 @@ import logging
 import os
 
 import yt_dlp
+
+from ytdlp_cookies import inject_cookies
 from tenacity import (
     RetryError,
     retry,
@@ -135,6 +137,7 @@ def download_and_convert(
             }
         ],
     }
+    inject_cookies(ydl_opts)
 
     try:
         _ydl_download(ydl_opts, video_url, tmp_dir, video_id)

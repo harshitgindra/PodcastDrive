@@ -233,3 +233,4 @@ reports/
 .syncstuffs.bundle
 deploy/.instance-info
 deploy/.webhook-env
+cookies.txt

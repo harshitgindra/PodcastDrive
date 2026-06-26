@@ -1,7 +1,7 @@
 # PodcastDrive — runs 4x daily (times in local timezone: America/Los_Angeles)
 # Logs rotated by the application itself (LOG_RETENTION_DAYS in config.env)
 SHELL=/bin/bash
-PATH=/home/ec2-user/PodcastDrive/.venv/bin:/usr/local/bin:/usr/bin:/bin
+PATH=/home/ec2-user/.deno/bin:/home/ec2-user/PodcastDrive/.venv/bin:/usr/local/bin:/usr/bin:/bin
 
 30 6  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
 30 8  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
