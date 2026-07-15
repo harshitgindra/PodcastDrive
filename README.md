@@ -91,6 +91,9 @@ A JSON report with improvement proposals is written to `reports/{slug}/{episode_
 │   ├── episodes/               # Downloaded source MP3s for repeated testing
 │   └── run_eval.py             # Batch evaluation runner
 ├── reports/                    # Ad-removal evaluation JSON reports (EVALUATE_AD_REMOVAL=true)
+├── split_audiobook.sh          # One-command audiobook splitter (transcribe → detect chapters → split)
+├── find_chapter_timestamps.py  # Transcribe an audiobook and detect chapter timestamps (CSV output)
+├── split_audiobook.py          # Split an MP3 into chapters given a chapters.csv or embedded markers
 ├── test_ad_cleaner.py          # Manual end-to-end test harness (download → clean → listen)
 ├── test_ad.sh                  # One-command wrapper for test_ad_cleaner.py
 ├── requirements.txt            # Python dependencies
@@ -345,6 +348,77 @@ https://your-cloudfront-domain/{playlist_id}/feed.xml
 ### Transcript caching
 
 The first run for any episode submits a Transcribe job (typically 2–5 minutes, billed per second). The result is saved to `eval/transcripts/<episode_id>.json`. Pass `--skip-transcribe` on subsequent runs to skip the job and reuse the cached transcript — iteration on prompts or snap parameters becomes effectively free.
+
+---
+
+## Splitting an audiobook
+
+`split_audiobook.sh` is a one-command utility that transcribes an audiobook MP3, detects its chapter boundaries, and splits it into one file per chapter. It reuses the same AWS Transcribe + Bedrock infrastructure as the ad-removal pipeline.
+
+### Usage
+
+```bash
+# Most common case — transcribe, detect chapters, split
+./split_audiobook.sh audiobook.mp3
+
+# Write chapter files to a specific directory
+./split_audiobook.sh audiobook.mp3 --output-dir ~/Desktop/chapters
+
+# Already have a chapters.csv? Skip transcription entirely
+./split_audiobook.sh audiobook.mp3 --chapters chapters.csv
+
+# Keyword detection missed chapters (e.g. untitled chapters) — go straight to Claude
+./split_audiobook.sh audiobook.mp3 --bedrock-only
+
+# Keep the raw timestamped transcript for reference or manual editing
+./split_audiobook.sh audiobook.mp3 --save-transcript
+```
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--output-dir DIR` | Directory for split chapter files (default: `<name>_chapters/`) |
+| `--chapters FILE` | Skip transcription and use an existing `chapters.csv` instead |
+| `--bedrock-only` | Skip keyword detection; send the full transcript straight to Bedrock |
+| `--save-transcript` | Save the raw timestamped transcript to `<name>_transcript.txt` |
+
+### How it works
+
+```
+audiobook.mp3
+  │
+  ├─► AWS Transcribe ──► word-level timestamped transcript (cached in S3)
+  │                                   │
+  │                      Keyword pass — scan for "Chapter N / Part N /
+  │                      Prologue / Epilogue" patterns (free, instant)
+  │                                   │
+  │                      < 2 chapters found?
+  │                      └─► Bedrock (Claude) — semantic chapter detection
+  │                          (auto-chunks transcripts longer than ~80 k chars)
+  │                                   │
+  │                      chapters.csv (title, start_time)
+  │                                   │
+  └─► FFmpeg -c copy ──► 01 - Chapter One.mp3
+                         02 - Chapter Two.mp3
+                         ...
+```
+
+The split uses `ffmpeg -c copy` (stream copy, no re-encode), so even a 20-hour audiobook splits in under a minute. AWS Transcribe results are cached in S3 — re-runs after the first transcription are instant and free.
+
+### Manual chapters
+
+If auto-detection does not produce the right boundaries, run with `--save-transcript` to get a timestamped `.txt` file, then create a `chapters.csv` by hand:
+
+```csv
+title,start_time
+Introduction,00:00:00
+Chapter 1 - The Beginning,00:05:30
+Chapter 2 - Rising Action,00:52:11
+Epilogue,08:14:00
+```
+
+Feed it back in with `--chapters chapters.csv` to skip transcription entirely.
 
 ---
 
