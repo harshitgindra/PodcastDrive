@@ -27,12 +27,18 @@ import csv
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # ── Import from src/ ──────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from ad_remover import transcribe_audio  # noqa: E402  (local import after path fix)
+
+# AWS Transcribe hard limit is 8 hours; we stay safely under it
+_TRANSCRIBE_MAX_HOURS = 7.5
+_TRANSCRIBE_MAX_SECS = _TRANSCRIBE_MAX_HOURS * 3600  # 27 000 s
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -43,6 +49,112 @@ def _fmt_time(seconds: float) -> str:
     m = int((seconds % 3600) // 60)
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
+def _get_audio_duration(path: str) -> float:
+    """Return the total duration of *path* in seconds using ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed for {path}: {result.stderr}")
+    data = json.loads(result.stdout)
+    return float(data["format"]["duration"])
+
+
+def _transcribe_chunked(mp3_path: str, book_id: str) -> list[dict]:
+    """Transcribe *mp3_path*, automatically chunking files that exceed the
+    AWS Transcribe 8-hour limit.
+
+    For files ≤ 7.5 hours the file is submitted as a single job (original
+    behaviour).  For longer files the audio is split into ≤ 7.5-hour chunks
+    with ``ffmpeg -c copy`` (fast stream copy, no re-encode), each chunk is
+    transcribed individually, segment timestamps are offset by the chunk's
+    start time, and all segments are merged and returned sorted by time.
+
+    Temporary chunk files are deleted whether the transcription succeeds or
+    fails.
+    """
+    duration = _get_audio_duration(mp3_path)
+
+    # Fast path — file is within the Transcribe limit
+    if duration <= _TRANSCRIBE_MAX_SECS:
+        return transcribe_audio(mp3_path, book_id)
+
+    # ── Long file: split into chunks ─────────────────────────────────────────
+    n_chunks = int(duration / _TRANSCRIBE_MAX_SECS) + 1
+    print(
+        f"      File is {duration / 3600:.1f} h — exceeds the AWS Transcribe "
+        f"8-hour limit.\n"
+        f"      Splitting into {n_chunks} chunks of ≤ {_TRANSCRIBE_MAX_HOURS} h each..."
+    )
+
+    all_segments: list[dict] = []
+    chunk_start = 0.0
+
+    for chunk_idx in range(n_chunks):
+        chunk_end = min(chunk_start + _TRANSCRIBE_MAX_SECS, duration)
+        chunk_id = f"{book_id}-chunk{chunk_idx + 1}of{n_chunks}"
+
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3", prefix=f"audiobook_chunk{chunk_idx}_")
+        os.close(tmp_fd)
+
+        try:
+            print(
+                f"\n      Chunk {chunk_idx + 1}/{n_chunks}: "
+                f"{_fmt_time(chunk_start)} → {_fmt_time(chunk_end)} "
+                f"({(chunk_end - chunk_start) / 3600:.1f} h)"
+            )
+
+            # Extract the chunk with ffmpeg (stream copy — very fast)
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", mp3_path,
+                "-ss", str(chunk_start),
+                "-to", str(chunk_end),
+                "-c", "copy",
+                tmp_path,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg chunk extraction failed (rc={proc.returncode}): "
+                    f"{proc.stderr[-500:]}"
+                )
+
+            print(f"      Transcribing chunk {chunk_idx + 1} (job id: {chunk_id})...")
+            chunk_segments = transcribe_audio(tmp_path, chunk_id)
+
+            # Offset every segment's timestamps by this chunk's start position
+            for seg in chunk_segments:
+                seg["start"] += chunk_start
+                seg["end"] += chunk_start
+            all_segments.extend(chunk_segments)
+            print(
+                f"      Chunk {chunk_idx + 1} done — "
+                f"{len(chunk_segments)} segments"
+            )
+
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+        chunk_start = chunk_end
+        if chunk_start >= duration:
+            break
+
+    all_segments.sort(key=lambda s: s["start"])
+    print(f"\n      All chunks transcribed — {len(all_segments)} total segments.")
+    return all_segments
 
 
 def _segments_to_text(segments: list[dict], include_timestamps: bool = True) -> str:
@@ -274,7 +386,7 @@ def main() -> None:
     print(f"      Book ID: {book_id}  |  Region: {region}")
 
     try:
-        segments = transcribe_audio(mp3_path, book_id)
+        segments = _transcribe_chunked(mp3_path, book_id)
     except RuntimeError as exc:
         print(f"\nTranscription failed: {exc}", file=sys.stderr)
         print("\nMake sure S3_BUCKET is set in config.env and AWS credentials are active.", file=sys.stderr)
