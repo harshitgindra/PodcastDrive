@@ -430,6 +430,42 @@ class TestGenerateRssItems:
         ns = {"itunes": ITUNES_NS}
         assert root.find(".//item/itunes:episode", ns).text == "5"
 
+    def test_ads_removed_appends_default_suffix(self):
+        """When ads_removed=True the default ✂️ suffix is appended to the title."""
+        meta = _make_playlist_meta()
+        ep = _make_episode(title="Great Show", ads_removed=True)
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        assert root.find(".//item/title").text == "Great Show ✂️"
+
+    def test_ads_removed_custom_suffix(self, monkeypatch):
+        """EPISODE_AD_REMOVED_SUFFIX env var customises the suffix."""
+        monkeypatch.setenv("EPISODE_AD_REMOVED_SUFFIX", " [clean]")
+        meta = _make_playlist_meta()
+        ep = _make_episode(title="Great Show", ads_removed=True)
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        assert root.find(".//item/title").text == "Great Show [clean]"
+
+    def test_ads_removed_empty_suffix_no_change(self, monkeypatch):
+        """When EPISODE_AD_REMOVED_SUFFIX is empty the title is unchanged."""
+        monkeypatch.setenv("EPISODE_AD_REMOVED_SUFFIX", "")
+        meta = _make_playlist_meta()
+        ep = _make_episode(title="Great Show", ads_removed=True)
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        assert root.find(".//item/title").text == "Great Show"
+
+    def test_summary_prepended_to_description(self):
+        """When episode.summary is set it should be prepended to the description."""
+        meta = _make_playlist_meta()
+        ep = _make_episode(description="Original desc.", summary="AI summary here.")
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        desc = root.find(".//item/description").text
+        assert desc.startswith("AI summary here.")
+        assert "Original desc." in desc
+
 
 # ---------------------------------------------------------------------------
 # build_episode_metadata
@@ -573,6 +609,60 @@ class TestBuildEpisodeMetadata:
         )
 
         assert len(result) == 3
+
+    def test_manifest_upload_date_used_when_entry_date_empty(self):
+        """When an entry has an empty upload_date, the manifest date is used."""
+        entries = [
+            VideoEntry(
+                video_id="v1", title="No Date Episode", description="", duration=100,
+                upload_date="",  # empty — flat extraction
+                thumbnail="", webpage_url="", playlist_index=1,
+            )
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 500
+        manifest = {"v1": {"upload_date": "20240315"}}
+
+        result = build_episode_metadata(
+            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            manifest=manifest,
+        )
+
+        assert len(result) == 1
+        assert result[0].upload_date == "20240315"
+
+    def test_manifest_upload_date_not_applied_when_entry_date_already_set(self):
+        """When the entry already has a date, the manifest date is ignored."""
+        entries = [
+            VideoEntry(
+                video_id="v1", title="Has Date Episode", description="", duration=100,
+                upload_date="20230101",
+                thumbnail="", webpage_url="", playlist_index=1,
+            )
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 500
+        manifest = {"v1": {"upload_date": "20240315"}}
+
+        result = build_episode_metadata(
+            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            manifest=manifest,
+        )
+
+        assert result[0].upload_date == "20230101"
+
+    def test_file_size_zero_on_s3_exception(self):
+        """When get_object_size raises, file_size falls back to 0."""
+        entries = [self._make_video_entry("v1")]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.side_effect = Exception("S3 error")
+
+        result = build_episode_metadata(
+            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert len(result) == 1
+        assert result[0].file_size == 0
 
 
 # ---------------------------------------------------------------------------
