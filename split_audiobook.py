@@ -130,7 +130,7 @@ def main():
         print(f"File not found: {input_file}", file=sys.stderr)
         sys.exit(1)
 
-    output_dir = Path(args.output_dir) if args.output_dir else Path(input_file).stem + "_chapters"
+    output_dir = Path(args.output_dir) if args.output_dir else Path(Path(input_file).stem + "_chapters")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load chapters
