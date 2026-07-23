@@ -1640,7 +1640,16 @@ def _generate_summary(
 
     # Duration guard — skip episodes longer than the configured threshold.
     # SUMMARY_MAX_DURATION_SECS=0 disables the guard (summarise any length).
-    max_secs = float(os.environ.get("SUMMARY_MAX_DURATION_SECS", "1800"))
+    _raw_max = os.environ.get("SUMMARY_MAX_DURATION_SECS", "1800")
+    try:
+        max_secs = float(_raw_max)
+    except ValueError:
+        logger.warning(
+            "[AdRemover] SUMMARY_MAX_DURATION_SECS=%r is not a valid number — "
+            "using default 1800 s",
+            _raw_max,
+        )
+        max_secs = 1800.0
     if max_secs > 0 and duration_secs is not None and duration_secs > max_secs:
         logger.info(
             "[AdRemover] Skipping summary for %s — duration %.0fs exceeds "

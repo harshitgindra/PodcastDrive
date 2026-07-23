@@ -2675,14 +2675,11 @@ class TestRemoveAdsGenerateSummaryPaths:
         import sys
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.return_value = "Great episode!"
-        sys.modules["summary_generator"] = fake_summary_mod
+        monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
 
-        try:
-            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_no_ads", str(tmp_path))
-            assert summary == "Great episode!"
-            assert path == str(src)
-        finally:
-            sys.modules.pop("summary_generator", None)
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_no_ads", str(tmp_path))
+        assert summary == "Great episode!"
+        assert path == str(src)
 
     def test_summary_generation_exception_is_swallowed_no_ads(self, monkeypatch, tmp_path):
         """Summary generation exception when no ads is swallowed (line 1689)."""
@@ -2702,13 +2699,10 @@ class TestRemoveAdsGenerateSummaryPaths:
         import sys
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.side_effect = RuntimeError("summary failed")
-        sys.modules["summary_generator"] = fake_summary_mod
+        monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
 
-        try:
-            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_exc_no_ads", str(tmp_path))
-            assert summary == ""
-        finally:
-            sys.modules.pop("summary_generator", None)
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_exc_no_ads", str(tmp_path))
+        assert summary == ""
 
     def test_summary_generated_after_splice(self, monkeypatch, tmp_path):
         """After successful splice with GENERATE_SUMMARIES=true, summary is returned (lines 1713–1726)."""
@@ -2736,13 +2730,10 @@ class TestRemoveAdsGenerateSummaryPaths:
         import sys
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.return_value = "Spliced episode summary!"
-        sys.modules["summary_generator"] = fake_summary_mod
+        monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
 
-        try:
-            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_after_splice", str(tmp_path))
-            assert summary == "Spliced episode summary!"
-        finally:
-            sys.modules.pop("summary_generator", None)
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_after_splice", str(tmp_path))
+        assert summary == "Spliced episode summary!"
 
     def test_summary_generation_exception_is_swallowed_after_splice(self, monkeypatch, tmp_path):
         """Summary generation exception after splice is swallowed (line 1726)."""
@@ -2769,13 +2760,10 @@ class TestRemoveAdsGenerateSummaryPaths:
         import sys
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.side_effect = RuntimeError("summariser crashed")
-        sys.modules["summary_generator"] = fake_summary_mod
+        monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
 
-        try:
-            path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_exc_splice", str(tmp_path))
-            assert summary == ""
-        finally:
-            sys.modules.pop("summary_generator", None)
+        path, segs, summary = ad_remover.remove_ads(str(src), "ep_sum_exc_splice", str(tmp_path))
+        assert summary == ""
 
 
 class TestPromptImprovements:
@@ -3041,3 +3029,369 @@ class TestAdSegmentsCacheSave:
         call_kwargs = mock_s3.put_object.call_args[1]
         assert call_kwargs["Bucket"] == "my-bucket"
         assert b'"start"' in call_kwargs["Body"]
+
+
+# ---------------------------------------------------------------------------
+# _generate_summary — duration guard (SUMMARY_MAX_DURATION_SECS)
+# ---------------------------------------------------------------------------
+
+class TestGenerateSummaryDurationGuard:
+    """Tests for the SUMMARY_MAX_DURATION_SECS duration guard in _generate_summary."""
+
+    def _make_s3_cache_miss(self):
+        from botocore.exceptions import ClientError
+        s3 = MagicMock()
+        s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        return s3
+
+    def _inject_summary_module(self, monkeypatch, return_value: str = "a summary"):
+        mod = MagicMock()
+        mod.generate_episode_summary.return_value = return_value
+        monkeypatch.setitem(sys.modules, "summary_generator", mod)
+        return mod
+
+    def test_skips_when_duration_exceeds_max(self, monkeypatch):
+        """Summary is skipped when duration_secs > SUMMARY_MAX_DURATION_SECS."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch)
+        result = ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "ep-long",
+            episode_title="Long Episode",
+            duration_secs=1801.0,
+        )
+        assert result == ""
+        mod.generate_episode_summary.assert_not_called()
+
+    def test_runs_when_duration_at_max(self, monkeypatch):
+        """Summary is generated when duration_secs == SUMMARY_MAX_DURATION_SECS."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch, "short summary")
+        result = ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "ep-at-limit",
+            duration_secs=1800.0,
+        )
+        assert result == "short summary"
+
+    def test_runs_when_duration_is_none(self, monkeypatch):
+        """Guard is bypassed when duration_secs is None."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch, "no duration guard")
+        result = ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "ep-no-dur",
+            duration_secs=None,
+        )
+        assert result == "no duration guard"
+
+    def test_guard_disabled_when_max_is_zero(self, monkeypatch):
+        """SUMMARY_MAX_DURATION_SECS=0 disables the guard for any episode length."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "0")
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch, "very long episode summary")
+        result = ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "ep-huge",
+            duration_secs=18_000.0,  # 5 hours
+        )
+        assert result == "very long episode summary"
+
+    def test_invalid_max_duration_uses_default_1800(self, monkeypatch):
+        """Non-numeric SUMMARY_MAX_DURATION_SECS falls back to 1800s instead of crashing."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "30min")  # invalid — not a number
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch, "summary text")
+
+        # 29-minute episode should be summarised (within default 1800 s)
+        result = ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "ep-id",
+            duration_secs=1740.0,
+        )
+        assert result == "summary text"
+
+    def test_invalid_max_duration_skips_long_episodes(self, monkeypatch):
+        """With invalid SUMMARY_MAX_DURATION_SECS, the 1800 s default is enforced."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "none")  # invalid
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch, "summary text")
+
+        # 31-minute episode should be skipped (exceeds default 1800 s)
+        result = ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "ep-id",
+            duration_secs=1860.0,
+        )
+        assert result == ""
+        mod.generate_episode_summary.assert_not_called()
+
+    def test_episode_title_forwarded_to_generator(self, monkeypatch):
+        """Human-readable title (not video_id) is passed to generate_episode_summary."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch, "summary")
+        ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "abc123xyz",
+            episode_title="My Great Episode Title",
+        )
+        _, call_kwargs = mod.generate_episode_summary.call_args
+        positional = mod.generate_episode_summary.call_args[0]
+        assert positional[1] == "My Great Episode Title"
+        assert "abc123xyz" not in positional[1]
+
+    def test_falls_back_to_video_id_when_title_empty(self, monkeypatch):
+        """video_id is used as title fallback when episode_title is empty."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
+        mod = self._inject_summary_module(monkeypatch, "summary")
+        ad_remover._generate_summary(
+            [{"start": 0.0, "end": 5.0, "text": "hi"}],
+            "the-real-video-id",
+            episode_title="",
+        )
+        positional = mod.generate_episode_summary.call_args[0]
+        assert positional[1] == "the-real-video-id"
+
+
+# ---------------------------------------------------------------------------
+# remove_ads — episode_title and duration_secs forwarded to _generate_summary
+# ---------------------------------------------------------------------------
+
+class TestRemoveAdsSummaryParams:
+    """Verify remove_ads passes episode_title and duration_secs to _generate_summary."""
+
+    def test_params_forwarded_no_ads(self, monkeypatch, tmp_path):
+        """episode_title and duration_secs reach _generate_summary (no-ads path)."""
+        import ad_remover
+        monkeypatch.delenv("TRANSCRIBE_CACHE_ENABLED", raising=False)
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        captured: dict = {}
+
+        def fake_generate(segs, vid, episode_title="", duration_secs=None):
+            captured["episode_title"] = episode_title
+            captured["duration_secs"] = duration_secs
+            return ""
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=MagicMock())))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
+        monkeypatch.setattr(ad_remover, "_generate_summary", fake_generate)
+
+        ad_remover.remove_ads(
+            str(src), "ep-fwd", str(tmp_path),
+            episode_title="Forwarded Title",
+            duration_secs=900.0,
+        )
+        assert captured["episode_title"] == "Forwarded Title"
+        assert captured["duration_secs"] == 900.0
+
+    def test_params_forwarded_after_splice(self, monkeypatch, tmp_path):
+        """episode_title and duration_secs reach _generate_summary (post-splice path)."""
+        import ad_remover
+        monkeypatch.delenv("TRANSCRIBE_CACHE_ENABLED", raising=False)
+        monkeypatch.setenv("AD_SNAP_TO_SILENCE", "false")
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        captured: dict = {}
+
+        def fake_generate(segs, vid, episode_title="", duration_secs=None):
+            captured["episode_title"] = episode_title
+            captured["duration_secs"] = duration_secs
+            return ""
+
+        def fake_splice(mp3, segs, out):
+            import pathlib
+            pathlib.Path(out).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=MagicMock())))
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 40.0}]))
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+        monkeypatch.setattr(ad_remover, "_generate_summary", fake_generate)
+
+        ad_remover.remove_ads(
+            str(src), "ep-fwd-splice", str(tmp_path),
+            episode_title="Spliced Episode",
+            duration_secs=1500.0,
+        )
+        assert captured["episode_title"] == "Spliced Episode"
+        assert captured["duration_secs"] == 1500.0
+
+
+# ---------------------------------------------------------------------------
+# Cached path — summary generation
+# ---------------------------------------------------------------------------
+
+class TestCachedPathSummaryGeneration:
+    """Tests that the cached ad-segment path generates summaries correctly."""
+
+    def _s3_with_cached_data(self, ads: list, transcript: list | None = None):
+        """S3 mock routing get_object by key suffix."""
+        from botocore.exceptions import ClientError
+        s3 = MagicMock()
+        _transcript = transcript or []
+
+        def fake_get(Bucket, Key):
+            if "_ads.json" in Key:
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(ads).encode()))}
+            if "_summary.txt" in Key:
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+            if Key.endswith(".json"):  # transcript cache
+                return {"Body": MagicMock(read=MagicMock(return_value=json.dumps(_transcript).encode()))}
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        s3.get_object.side_effect = fake_get
+        return s3
+
+    def test_cached_splice_success_generates_summary(self, monkeypatch, tmp_path):
+        """After a successful cached-path splice, summary is generated from transcript."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("AD_SNAP_TO_SILENCE", "false")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._s3_with_cached_data(
+            ads=[{"start": 10.0, "end": 40.0}],
+            transcript=[{"start": 0.0, "end": 5.0, "text": "great episode"}],
+        )
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+
+        def fake_splice(mp3, segs, out):
+            import pathlib
+            pathlib.Path(out).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        mod = MagicMock()
+        mod.generate_episode_summary.return_value = "Cached splice summary"
+        monkeypatch.setitem(sys.modules, "summary_generator", mod)
+        _, _, summary = ad_remover.remove_ads(
+            str(src), "ep-cached-splice-sum", str(tmp_path),
+            episode_title="Cached Episode",
+            duration_secs=900.0,
+        )
+        assert summary == "Cached splice summary"
+
+    def test_cached_splice_failure_generates_summary(self, monkeypatch, tmp_path):
+        """After a cached-path splice failure, summary is still generated."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("AD_SNAP_TO_SILENCE", "false")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._s3_with_cached_data(
+            ads=[{"start": 10.0, "end": 40.0}],
+            transcript=[{"start": 0.0, "end": 5.0, "text": "failed splice but summary ok"}],
+        )
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+        monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(side_effect=RuntimeError("splice failed")))
+        monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path, **kw: segs)
+
+        mod = MagicMock()
+        mod.generate_episode_summary.return_value = "Summary despite failure"
+        monkeypatch.setitem(sys.modules, "summary_generator", mod)
+        path, _, summary = ad_remover.remove_ads(
+            str(src), "ep-cached-fail-sum", str(tmp_path),
+            episode_title="Failing Episode",
+            duration_secs=900.0,
+        )
+        assert path == str(src)
+        assert summary == "Summary despite failure"
+
+    def test_cached_path_duration_guard_skips_summary(self, monkeypatch, tmp_path):
+        """Duration guard prevents summary on cached path when episode is too long."""
+        import ad_remover
+        monkeypatch.setenv("GENERATE_SUMMARIES", "true")
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("AD_SNAP_TO_SILENCE", "false")
+        monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._s3_with_cached_data(
+            ads=[{"start": 10.0, "end": 40.0}],
+            transcript=[{"start": 0.0, "end": 5.0, "text": "long episode content"}],
+        )
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+
+        def fake_splice(mp3, segs, out):
+            import pathlib
+            pathlib.Path(out).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        mod = MagicMock()
+        mod.generate_episode_summary.return_value = "Should not appear"
+        monkeypatch.setitem(sys.modules, "summary_generator", mod)
+        _, _, summary = ad_remover.remove_ads(
+            str(src), "ep-cached-long", str(tmp_path),
+            episode_title="Long Episode",
+            duration_secs=7200.0,  # 2 hours > 1800s guard
+        )
+        assert summary == ""
+        mod.generate_episode_summary.assert_not_called()
+
+    def test_cached_path_no_summary_when_disabled(self, monkeypatch, tmp_path):
+        """When GENERATE_SUMMARIES=false (default), cached path returns '' for summary."""
+        import ad_remover
+        monkeypatch.delenv("GENERATE_SUMMARIES", raising=False)
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("AD_SNAP_TO_SILENCE", "false")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 100)
+
+        s3 = self._s3_with_cached_data(ads=[{"start": 10.0, "end": 40.0}])
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
+
+        def fake_splice(mp3, segs, out):
+            import pathlib
+            pathlib.Path(out).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
+
+        _, _, summary = ad_remover.remove_ads(
+            str(src), "ep-cached-no-gen", str(tmp_path)
+        )
+        assert summary == ""
