@@ -778,6 +778,126 @@ class TestProcessPodcastFeedManifest:
 
 
 # ---------------------------------------------------------------------------
+# process_podcast_feed — splice retry cap
+# ---------------------------------------------------------------------------
+
+class TestSpliceRetryCount:
+    """Verify the MAX_SPLICE_RETRIES cap prevents infinite reprocessing."""
+
+    def _make_manifest_with_splice_failure(self, ep_id: str, count: int) -> dict:
+        return {ep_id: {"splice_failed": True, "splice_failed_count": count, "size": 1000}}
+
+    def test_episode_retried_when_below_cap(self, tmp_path, monkeypatch):
+        """Episode with splice_failed_count < MAX_SPLICE_RETRIES is re-queued."""
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        podcast = _make_podcast(max_downloads=5)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = self._make_manifest_with_splice_failure("guid-1", count=2)
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        # Episode was re-queued (not skipped) — one new episode processed
+        assert result["new_episodes"] == 1
+
+    def test_episode_not_retried_when_at_cap(self, monkeypatch):
+        """Episode with splice_failed_count >= MAX_SPLICE_RETRIES is skipped."""
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        podcast = _make_podcast(max_downloads=5)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode") as mock_dl,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = self._make_manifest_with_splice_failure("guid-1", count=3)
+            result = process_podcast_feed(podcast, dry_run=True)
+
+        # Episode was NOT re-queued — download never called
+        mock_dl.assert_not_called()
+        assert result["new_episodes"] == 0
+
+    def test_splice_failed_count_incremented_in_manifest(self, tmp_path, monkeypatch):
+        """Each splice failure increments splice_failed_count in the manifest."""
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+        original = tmp_path / "guid-1.mp3"
+        original.write_bytes(b"ID3")
+
+        # Simulate a splice failure: remove_ads returns the original file despite finding ads
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(original)),
+            # Both attempts return ads found but original path (splice failed)
+            patch("podcast_sync.remove_ads", return_value=(str(original), [{"start": 0, "end": 5}], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {"guid-1": {"splice_failed_count": 1}}
+
+            process_podcast_feed(podcast, dry_run=False)
+
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert saved["guid-1"]["splice_failed"] is True
+        assert saved["guid-1"]["splice_failed_count"] == 2  # 1 previous + 1 this run
+
+    def test_splice_failed_count_not_incremented_on_success(self, tmp_path, monkeypatch):
+        """A successful episode resets splice_failed to False and does not increment count."""
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            # Successful ad removal — no ads found, original returned
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {"guid-1": {"splice_failed_count": 2}}
+
+            process_podcast_feed(podcast, dry_run=False)
+
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert saved["guid-1"]["splice_failed"] is False
+        assert saved["guid-1"]["splice_failed_count"] == 2  # unchanged — no new failure
+
+
+# ---------------------------------------------------------------------------
 # process_podcast_feed — episode_title/duration_secs forwarded to remove_ads
 # ---------------------------------------------------------------------------
 

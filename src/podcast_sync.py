@@ -330,16 +330,33 @@ def process_podcast_feed(
         existing_ids = s3.list_existing_episodes()
         logger.info("[PodcastSync] S3 has %d existing episodes", len(existing_ids))
 
-        # Load manifest to check for splice failures that need reprocessing
+        # Load manifest to check for splice failures that need reprocessing.
+        # Retries are capped at MAX_SPLICE_RETRIES (default 3) to avoid downloading
+        # and transcribing a persistently-broken episode on every run indefinitely.
         manifest = s3.load_manifest()
+        _max_splice_retries = int(os.environ.get("MAX_SPLICE_RETRIES", "3"))
         splice_retry_ids = {
             k for k, v in manifest.items()
-            if isinstance(v, dict) and v.get("splice_failed")
+            if isinstance(v, dict)
+            and v.get("splice_failed")
+            and v.get("splice_failed_count", 0) < _max_splice_retries
+        }
+        _splice_exhausted = {
+            k for k, v in manifest.items()
+            if isinstance(v, dict)
+            and v.get("splice_failed")
+            and v.get("splice_failed_count", 0) >= _max_splice_retries
         }
         if splice_retry_ids:
             logger.info(
                 "[PodcastSync] %d episode(s) marked for splice retry: %s",
                 len(splice_retry_ids), splice_retry_ids,
+            )
+        if _splice_exhausted:
+            logger.warning(
+                "[PodcastSync] %d episode(s) have exhausted splice retries "
+                "(MAX_SPLICE_RETRIES=%d) and will not be retried: %s",
+                len(_splice_exhausted), _max_splice_retries, _splice_exhausted,
             )
 
         # Build (episode, episode_id) pairs for candidates
@@ -493,6 +510,8 @@ def process_podcast_feed(
                 if result["ok"]:
                     with manifest_lock:
                         ep, ep_id = result["ep"], result["ep_id"]
+                        _splice_failed = result.get("splice_failed", False)
+                        _prev_fail_count = manifest.get(ep_id, {}).get("splice_failed_count", 0)
                         manifest[ep_id] = {
                             "size": result["file_size"],
                             "title": ep.title,
@@ -500,7 +519,9 @@ def process_podcast_feed(
                             "pub_date": ep.pub_date.isoformat(),
                             "duration": ep.duration,
                             "ads_removed": result.get("ads_removed", False),
-                            "splice_failed": result.get("splice_failed", False),
+                            "splice_failed": _splice_failed,
+                            # Cumulative count — used by the retry cap on subsequent runs.
+                            "splice_failed_count": _prev_fail_count + int(_splice_failed),
                         }
                         if result.get("summary") and result["summary"] not in REMOVE_ADS_ERROR_CODES:
                             manifest[ep_id]["summary"] = result["summary"]
