@@ -346,7 +346,7 @@ def process_podcast_feed(
         candidates: list[tuple[EpisodeMeta, str]] = []
         skipped = 0
         for ep in episodes:
-            ep_id = episode_id_from_guid(ep.guid, slug)
+            ep_id = episode_id_from_guid(ep.guid)
             if ep_id in existing_ids and ep_id not in splice_retry_ids:
                 skipped += 1
                 logger.debug("[PodcastSync] Already in S3, skipping: %s", ep_id)
@@ -524,7 +524,7 @@ def process_podcast_feed(
             # Build id→EpisodeMeta from the FULL (unfiltered) feed (already parsed above)
             id_to_ep: dict[str, EpisodeMeta] = {}
             for ep in all_feed_episodes:
-                eid = episode_id_from_guid(ep.guid, slug)
+                eid = episode_id_from_guid(ep.guid)
                 id_to_ep[eid] = ep
 
             feed_episodes: list[EpisodeMeta] = []

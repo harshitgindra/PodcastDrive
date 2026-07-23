@@ -358,18 +358,23 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
 # Episode ID (stable key for S3 / de-duplication)
 # ---------------------------------------------------------------------------
 
-def episode_id_from_guid(guid: str, podcast_slug: str) -> str:
+def episode_id_from_guid(guid: str) -> str:
     """Derive a filesystem/S3-safe episode ID from a feed GUID.
 
     Takes the last path-segment of the GUID URL (or the whole string if it is
-    not a URL), strips query strings, and limits to 80 characters.
+    not a URL), strips query strings and fragments, replaces unsafe characters
+    with underscores, and limits to 80 characters.
+
+    The episode ID is intentionally **not** prefixed with the podcast slug:
+    each podcast is already isolated in its own S3 prefix
+    (``{slug}/episodes/{ep_id}.mp3``), so the slug in the key path provides
+    the necessary namespace separation.
 
     Args:
-        guid:         The ``<guid>`` value from the RSS item.
-        podcast_slug: Short identifier for the podcast (used as prefix).
+        guid: The ``<guid>`` value from the RSS item.
 
     Returns:
-        A slug like ``"my-podcast--abc123def456"``.
+        An S3/filesystem-safe string derived from the GUID, e.g. ``"abc123def456"``.
     """
     # Strip query string / fragment
     clean = guid.split("?")[0].split("#")[0]

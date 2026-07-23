@@ -316,28 +316,26 @@ class TestParseEpisodes:
 
 class TestEpisodeIdFromGuid:
     def test_url_guid_uses_last_segment(self):
-        eid = episode_id_from_guid("https://example.com/episodes/abc123", "my-pod")
+        eid = episode_id_from_guid("https://example.com/episodes/abc123")
         assert eid == "abc123"
 
     def test_plain_guid(self):
-        eid = episode_id_from_guid("plain-guid-value", "my-pod")
+        eid = episode_id_from_guid("plain-guid-value")
         assert eid == "plain-guid-value"
 
     def test_guid_with_query_string_stripped(self):
-        eid = episode_id_from_guid(
-            "https://example.com/episodes/ep99?source=rss", "my-pod"
-        )
+        eid = episode_id_from_guid("https://example.com/episodes/ep99?source=rss")
         assert eid == "ep99"
 
     def test_guid_special_chars_replaced(self):
-        eid = episode_id_from_guid("https://example.com/ep/hello world!", "my-pod")
+        eid = episode_id_from_guid("https://example.com/ep/hello world!")
         # space and ! should be replaced with underscores
         assert " " not in eid
         assert "!" not in eid
 
     def test_max_length_80(self):
         long_guid = "a" * 200
-        eid = episode_id_from_guid(long_guid, "my-pod")
+        eid = episode_id_from_guid(long_guid)
         assert len(eid) <= 80
 
 

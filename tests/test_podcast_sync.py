@@ -253,7 +253,7 @@ class TestProcessPodcastFeedDryRun:
             patch("podcast_sync.is_apple_podcasts_url", return_value=False),
             patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
             patch("podcast_sync.parse_episodes", return_value=episodes),
-            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g: g),
             patch("podcast_sync.S3Manager") as MockS3,
         ):
             mock_s3 = MockS3.return_value
@@ -344,7 +344,7 @@ class TestProcessPodcastFeedLive:
             patch("podcast_sync.is_apple_podcasts_url", return_value=False),
             patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
             patch("podcast_sync.parse_episodes", return_value=episodes),
-            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g: g),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", side_effect=fake_download),
             patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [], "")),
@@ -520,7 +520,7 @@ class TestProcessPodcastFeedEnvDefaults:
             patch("podcast_sync.is_apple_podcasts_url", return_value=False),
             patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
             patch("podcast_sync.parse_episodes", return_value=episodes),
-            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g, s: g),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g: g),
             patch("podcast_sync.S3Manager") as MockS3,
             patch("podcast_sync.download_episode", side_effect=fake_download),
             patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [], "")),
