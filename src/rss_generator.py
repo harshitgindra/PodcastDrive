@@ -339,6 +339,7 @@ def build_episode_metadata(
             logger.warning("Could not get size for %s — using 0", s3_key)
         cloudfront_url = f"{cloudfront_base}/{playlist_id}/episodes/{video_id}.mp3"
 
+        summary = manifest.get(video_id, {}).get("summary", "") if manifest else ""
         episodes.append(
             EpisodeMeta(
                 video_id=entry.video_id,
@@ -353,6 +354,7 @@ def build_episode_metadata(
                 file_size=file_size,
                 cloudfront_url=cloudfront_url,
                 chapters=entry.chapters if hasattr(entry, "chapters") else [],
+                summary=summary,
                 ads_removed=video_id in (ads_removed_ids or set()),
             )
         )

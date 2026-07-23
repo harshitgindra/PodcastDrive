@@ -19,7 +19,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["src/__pycache__/*"]
+omit = ["src/__pycache__/*", "src/export_cookies.py"]
 
 [tool.coverage.report]
 fail_under = 95

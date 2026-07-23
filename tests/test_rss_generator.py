@@ -664,6 +664,46 @@ class TestBuildEpisodeMetadata:
         assert len(result) == 1
         assert result[0].file_size == 0
 
+    def test_summary_read_from_manifest(self):
+        """When the manifest has a 'summary' key for a video_id it is set on EpisodeMeta."""
+        entries = [self._make_video_entry("v1")]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+        manifest = {"v1": {"summary": "A great AI-generated summary."}}
+
+        result = build_episode_metadata(
+            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            manifest=manifest,
+        )
+
+        assert result[0].summary == "A great AI-generated summary."
+
+    def test_summary_empty_when_manifest_has_no_summary(self):
+        """When the manifest exists but has no 'summary' key, EpisodeMeta.summary is ''."""
+        entries = [self._make_video_entry("v1")]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+        manifest = {"v1": {"upload_date": "20240101"}}  # no summary key
+
+        result = build_episode_metadata(
+            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            manifest=manifest,
+        )
+
+        assert result[0].summary == ""
+
+    def test_summary_empty_when_no_manifest(self):
+        """When manifest is None, EpisodeMeta.summary is ''."""
+        entries = [self._make_video_entry("v1")]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        result = build_episode_metadata(
+            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+        )
+
+        assert result[0].summary == ""
+
 
 # ---------------------------------------------------------------------------
 # Property-based tests (hypothesis)
