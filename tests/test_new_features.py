@@ -512,19 +512,19 @@ class TestAdRemovalParity:
 
         # URL-style GUID
         guid1 = "https://rss.art19.com/episodes/abc123-def456"
-        id1 = episode_id_from_guid(guid1, "")
+        id1 = episode_id_from_guid(guid1)
         assert id1 == "abc123-def456"  # last path segment
 
         # Plain UUID GUID
         guid2 = "abc123-def456-789"
-        id2 = episode_id_from_guid(guid2, "")
+        id2 = episode_id_from_guid(guid2)
         # Should be consistent (no full-URL encoding like the old code)
         assert "/" not in id2
         assert len(id2) <= 64
 
         # Short string
         guid3 = "episode-42"
-        id3 = episode_id_from_guid(guid3, "")
+        id3 = episode_id_from_guid(guid3)
         assert id3  # non-empty
         assert "/" not in id3
 
