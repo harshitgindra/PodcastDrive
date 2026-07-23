@@ -160,6 +160,30 @@ class TestBuildPodcastFeedXml:
         )
         assert "https://example.com/ep-specific.jpg" in xml
 
+    def test_ads_removed_suffix_appended_to_title(self, monkeypatch):
+        """Episode title gets ad-removed suffix when manifest marks ads_removed=True."""
+        monkeypatch.setenv("EPISODE_AD_REMOVED_SUFFIX", " [Ad-Free]")
+        podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+        eps = [self._make_episode(title="My Episode", guid="guid-1")]
+        ids = ["ep-001"]
+        xml = _build_podcast_feed_xml(
+            podcast, eps, ids, "https://cdn.example.com", "test-pod",
+            manifest={"ep-001": {"ads_removed": True}},
+        )
+        assert "My Episode [Ad-Free]" in xml
+
+    def test_no_suffix_when_ads_not_removed(self):
+        """Episode title is unchanged when manifest does not mark ads_removed."""
+        podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+        eps = [self._make_episode(title="My Episode", guid="guid-1")]
+        ids = ["ep-001"]
+        xml = _build_podcast_feed_xml(
+            podcast, eps, ids, "https://cdn.example.com", "test-pod",
+            manifest={"ep-001": {"ads_removed": False}},
+        )
+        assert "My Episode ✂️" not in xml
+        assert "My Episode" in xml
+
 
 # ---------------------------------------------------------------------------
 # process_podcast_feed
@@ -751,3 +775,131 @@ class TestProcessPodcastFeedManifest:
         assert saved["guid-1"]["guid"] == "guid-1"
         assert "pub_date" in saved["guid-1"]
         assert saved["guid-1"]["duration"] == 300
+
+
+# ---------------------------------------------------------------------------
+# process_podcast_feed — episode_title/duration_secs forwarded to remove_ads
+# ---------------------------------------------------------------------------
+
+class TestProcessPodcastFeedSummaryIntegration:
+    """Verify remove_ads is called with episode metadata and summary is persisted."""
+
+    def test_remove_ads_called_with_episode_title_and_duration(self, tmp_path):
+        """remove_ads receives episode_title and duration_secs from EpisodeMeta."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "My Test Episode")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        captured_kwargs: dict = {}
+
+        def fake_remove_ads(path, ep_id, tmp, **kwargs):
+            captured_kwargs.update(kwargs)
+            return (path, [], "")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", side_effect=fake_remove_ads),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        assert captured_kwargs.get("episode_title") == "My Test Episode"
+        assert captured_kwargs.get("duration_secs") == 300  # from _make_episode_meta
+
+    def test_summary_saved_to_manifest_when_returned(self, tmp_path):
+        """When remove_ads returns a non-empty summary it is stored in the manifest."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-2", "Summarised Episode")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-2.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-2"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "AI-generated summary")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        # save_manifest called and manifest contains summary
+        mock_s3.save_manifest.assert_called()
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert saved["guid-2"]["summary"] == "AI-generated summary"
+
+    def test_empty_summary_not_saved_to_manifest(self, tmp_path):
+        """When remove_ads returns empty summary, no 'summary' key is added to manifest."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-3", "Unsummarised Episode")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-3.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-3"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        mock_s3.save_manifest.assert_called()
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert "summary" not in saved.get("guid-3", {})
+
+    @pytest.mark.parametrize("error_code", ["TRANSCRIBE_FAILED", "DETECT_FAILED", "SPLICE_FAILED"])
+    def test_error_code_not_saved_as_summary(self, error_code, tmp_path):
+        """remove_ads error codes must never be stored as episode summaries in the manifest."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-err", "Failed Episode")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-err.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-err"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], error_code)),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert "summary" not in saved.get("guid-err", {}), (
+            f"Error code {error_code!r} should not be stored as a summary"
+        )

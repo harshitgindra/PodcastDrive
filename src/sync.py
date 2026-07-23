@@ -11,7 +11,7 @@ import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 
-from ad_remover import remove_ads
+from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads
 from downloader import download_and_convert
 from extractor import extract_playlist, extract_video_metadata
 from models import PlaylistMeta
@@ -205,12 +205,18 @@ def process_playlist(
                 # Remove ads (falls back to original file on failure)
                 logger.info("[Step 4] Running ad removal for %s", video.video_id)
                 original_mp3 = mp3_path
-                mp3_path, ad_segments, _summary = remove_ads(mp3_path, video.video_id, tmp_dir)
+                mp3_path, ad_segments, episode_summary = remove_ads(
+                    mp3_path, video.video_id, tmp_dir,
+                    episode_title=video.title,
+                    duration_secs=video.duration,
+                )
 
-                # Track ad removal status and upload_date in manifest
+                # Track ad removal status, upload_date, and optional AI summary in manifest
                 ads_were_removed = bool(ad_segments) and mp3_path != original_mp3
                 manifest.setdefault(video.video_id, {})["ads_removed"] = ads_were_removed
                 manifest[video.video_id]["upload_date"] = video.upload_date
+                if episode_summary and episode_summary not in REMOVE_ADS_ERROR_CODES:
+                    manifest[video.video_id]["summary"] = episode_summary
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if mp3_path != original_mp3:

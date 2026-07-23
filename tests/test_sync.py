@@ -647,3 +647,150 @@ class TestLiveStatusFiltering:
             process_playlist("https://youtube.com/playlist?list=PLtest")
             # No download attempted for unavailable video
             mock_dl.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# process_playlist — episode_title/duration_secs forwarded to remove_ads
+# ---------------------------------------------------------------------------
+
+class TestProcessPlaylistSummaryIntegration:
+    """Verify remove_ads is called with episode metadata and summary is persisted."""
+
+    def _base_env(self):
+        return dict(BASE_ENV)
+
+    def test_remove_ads_called_with_episode_title_and_duration(self):
+        """remove_ads receives episode_title and duration_secs from the video entry."""
+        video = _make_video("vid001", duration=900)
+        playlist_meta = _make_playlist_meta()
+        meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 900,
+            "title": "My Episode Title",
+        }
+
+        captured_kwargs: dict = {}
+
+        def fake_remove_ads(mp3, vid, tmp, **kwargs):
+            captured_kwargs.update(kwargs)
+            return (mp3, [], "")
+
+        with patch.dict(os.environ, self._base_env(), clear=True), \
+             patch("sync.S3Manager") as mock_s3_cls, \
+             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
+             patch("sync.extract_video_metadata", return_value=meta), \
+             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
+             patch("sync.remove_ads", side_effect=fake_remove_ads), \
+             patch("sync.build_episode_metadata", return_value=[]), \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.shutil.rmtree"), \
+             patch("os.makedirs"), \
+             patch("os.remove"):
+            s3 = _make_s3_manager()
+            mock_s3_cls.return_value = s3
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+
+        assert captured_kwargs.get("episode_title") == "My Episode Title"
+        assert captured_kwargs.get("duration_secs") == 900
+
+    def test_summary_saved_to_manifest_when_returned(self):
+        """When remove_ads returns a non-empty summary, it is stored in the manifest."""
+        video = _make_video("vid001", duration=600)
+        playlist_meta = _make_playlist_meta()
+        meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 600,
+            "title": "Summarised Episode",
+        }
+
+        with patch.dict(os.environ, self._base_env(), clear=True), \
+             patch("sync.S3Manager") as mock_s3_cls, \
+             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
+             patch("sync.extract_video_metadata", return_value=meta), \
+             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
+             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "Great episode summary")), \
+             patch("sync.build_episode_metadata", return_value=[]), \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.shutil.rmtree"), \
+             patch("os.makedirs"), \
+             patch("os.remove"):
+            s3 = _make_s3_manager()
+            s3.load_manifest.return_value = {}  # real dict so setdefault() works
+            mock_s3_cls.return_value = s3
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+
+        # Manifest saved with summary
+        s3.save_manifest.assert_called()
+        saved_manifest = s3.save_manifest.call_args[0][0]
+        assert saved_manifest["vid001"]["summary"] == "Great episode summary"
+
+    def test_empty_summary_not_saved_to_manifest(self):
+        """When remove_ads returns empty summary, no 'summary' key is added to manifest."""
+        video = _make_video("vid001", duration=600)
+        playlist_meta = _make_playlist_meta()
+        meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 600,
+            "title": "Unsummarised Episode",
+        }
+
+        with patch.dict(os.environ, self._base_env(), clear=True), \
+             patch("sync.S3Manager") as mock_s3_cls, \
+             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
+             patch("sync.extract_video_metadata", return_value=meta), \
+             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
+             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")), \
+             patch("sync.build_episode_metadata", return_value=[]), \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.shutil.rmtree"), \
+             patch("os.makedirs"), \
+             patch("os.remove"):
+            s3 = _make_s3_manager()
+            s3.load_manifest.return_value = {}  # real dict so setdefault() works
+            mock_s3_cls.return_value = s3
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+
+        # Manifest saved but no summary key added
+        s3.save_manifest.assert_called()
+        saved_manifest = s3.save_manifest.call_args[0][0]
+        assert "summary" not in saved_manifest.get("vid001", {})
+
+    @pytest.mark.parametrize("error_code", ["TRANSCRIBE_FAILED", "DETECT_FAILED", "SPLICE_FAILED"])
+    def test_error_code_not_saved_as_summary(self, error_code):
+        """remove_ads error codes must never be stored as episode summaries in the manifest."""
+        video = _make_video("vid001", duration=600)
+        playlist_meta = _make_playlist_meta()
+        meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 600,
+            "title": "Failed Episode",
+        }
+
+        with patch.dict(os.environ, self._base_env(), clear=True), \
+             patch("sync.S3Manager") as mock_s3_cls, \
+             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
+             patch("sync.extract_video_metadata", return_value=meta), \
+             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
+             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], error_code)), \
+             patch("sync.build_episode_metadata", return_value=[]), \
+             patch("sync.generate_rss", return_value="<rss/>"), \
+             patch("sync.shutil.rmtree"), \
+             patch("os.makedirs"), \
+             patch("os.remove"):
+            s3 = _make_s3_manager()
+            s3.load_manifest.return_value = {}
+            mock_s3_cls.return_value = s3
+            process_playlist("https://youtube.com/playlist?list=PLtest")
+
+        saved_manifest = s3.save_manifest.call_args[0][0]
+        assert "summary" not in saved_manifest.get("vid001", {}), (
+            f"Error code {error_code!r} should not be stored as a summary"
+        )

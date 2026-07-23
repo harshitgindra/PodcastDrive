@@ -33,7 +33,7 @@ from xml.dom.minidom import parseString
 
 import boto3
 
-from ad_remover import remove_ads
+from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads
 from config_provider import PodcastConfig
 from podcast_downloader import (
     EpisodeMeta,
@@ -405,6 +405,8 @@ def process_podcast_feed(
                     trim_music_outro=podcast.trim_music_outro,
                     min_music_intro_secs=podcast.min_music_intro_secs,
                     min_music_outro_secs=podcast.min_music_outro_secs,
+                    episode_title=ep.title,
+                    duration_secs=ep.duration,
                 )
 
                 # Detect splice failure: ads were found but the file wasn't changed.
@@ -431,6 +433,8 @@ def process_podcast_feed(
                         trim_music_outro=podcast.trim_music_outro,
                         min_music_intro_secs=podcast.min_music_intro_secs,
                         min_music_outro_secs=podcast.min_music_outro_secs,
+                        episode_title=ep.title,
+                        duration_secs=ep.duration,
                     )
                     splice_failed = bool(ad_segments) and cleaned_path == original_path
                     if splice_failed:
@@ -498,7 +502,7 @@ def process_podcast_feed(
                             "ads_removed": result.get("ads_removed", False),
                             "splice_failed": result.get("splice_failed", False),
                         }
-                        if result.get("summary"):
+                        if result.get("summary") and result["summary"] not in REMOVE_ADS_ERROR_CODES:
                             manifest[ep_id]["summary"] = result["summary"]
                         new_count += 1
                         uploaded_pairs.append((ep, ep_id))

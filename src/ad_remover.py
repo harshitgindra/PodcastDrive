@@ -93,6 +93,16 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 AdSegment = dict  # {"start": float, "end": float}
 
+#: Sentinel strings returned by :func:`remove_ads` in the summary position when
+#: a pipeline stage fails.  Callers **must** exclude these before writing the
+#: value to the episode manifest or an RSS feed — they are error signals, not
+#: human-readable content.
+REMOVE_ADS_ERROR_CODES: frozenset[str] = frozenset({
+    "TRANSCRIBE_FAILED",
+    "DETECT_FAILED",
+    "SPLICE_FAILED",
+})
+
 
 # ---------------------------------------------------------------------------
 # Fix #5 – Silence detection + boundary snapping
@@ -1595,11 +1605,48 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
 # ---------------------------------------------------------------------------
 
 
-def _generate_summary(segments: list[dict], video_id: str) -> str:
-    """Generate an AI episode summary if enabled, with S3 caching."""
+def _generate_summary(
+    segments: list[dict],
+    video_id: str,
+    episode_title: str = "",
+    duration_secs: float | None = None,
+) -> str:
+    """Generate an AI episode summary if enabled, with S3 caching.
+
+    Skipped when:
+    - ``GENERATE_SUMMARIES`` is not ``"true"`` (default).
+    - No transcript segments are provided.
+    - The episode exceeds ``SUMMARY_MAX_DURATION_SECS`` (default: 1800 s = 30 min).
+      Raise the limit via the env var; set to ``"0"`` to disable the guard entirely.
+
+    Args:
+        segments:      Transcript segment list (each has ``"start"``, ``"end"``,
+                       ``"text"``).
+        video_id:      Episode identifier — used as the S3 cache key and as a
+                       fallback title when *episode_title* is empty.
+        episode_title: Human-readable episode title forwarded to the Bedrock
+                       prompt.  Falls back to *video_id* when empty.
+        duration_secs: Total episode duration in seconds.  When provided and
+                       above ``SUMMARY_MAX_DURATION_SECS``, the summary is
+                       skipped.  Pass ``None`` to bypass the guard.
+
+    Returns:
+        AI-generated summary string, or ``""`` when skipped or on any failure.
+    """
     if os.environ.get("GENERATE_SUMMARIES", "false").lower() not in ("true", "1", "yes"):
         return ""
     if not segments:
+        return ""
+
+    # Duration guard — skip episodes longer than the configured threshold.
+    # SUMMARY_MAX_DURATION_SECS=0 disables the guard (summarise any length).
+    max_secs = float(os.environ.get("SUMMARY_MAX_DURATION_SECS", "1800"))
+    if max_secs > 0 and duration_secs is not None and duration_secs > max_secs:
+        logger.info(
+            "[AdRemover] Skipping summary for %s — duration %.0fs exceeds "
+            "SUMMARY_MAX_DURATION_SECS=%.0fs",
+            video_id, duration_secs, max_secs,
+        )
         return ""
 
     bucket = os.environ.get("S3_BUCKET", "")
@@ -1614,7 +1661,8 @@ def _generate_summary(segments: list[dict], video_id: str) -> str:
 
     try:
         from summary_generator import generate_episode_summary
-        summary = generate_episode_summary(segments, video_id)
+        title = episode_title or video_id  # use human-readable title in the Bedrock prompt
+        summary = generate_episode_summary(segments, title)
         if summary:
             _save_summary_cache(s3_client, bucket, video_id, summary)
     except Exception as exc:
@@ -1632,6 +1680,8 @@ def remove_ads(
     trim_music_outro: bool = False,
     min_music_intro_secs: float = 8.0,
     min_music_outro_secs: float = 5.0,
+    episode_title: str = "",
+    duration_secs: float | None = None,
 ) -> tuple[str, list[AdSegment], str]:
     """Run the full ad-removal pipeline on *mp3_path*.
 
@@ -1645,18 +1695,25 @@ def remove_ads(
     *mp3_path* unchanged so the caller can still upload the unmodified file.
 
     Args:
-        mp3_path:  Path to the downloaded audio file.
-        video_id:  Episode identifier (used to name the Transcribe job and output file).
-        tmp_dir:   Temporary directory to write the cleaned file into.
-        ad_hints:  Optional free-text hints about known ad patterns for this podcast,
-                   forwarded to :func:`detect_ads`.
+        mp3_path:      Path to the downloaded audio file.
+        video_id:      Episode identifier (used to name the Transcribe job and
+                       output file).
+        tmp_dir:       Temporary directory to write the cleaned file into.
+        ad_hints:      Optional free-text hints about known ad patterns for this
+                       podcast, forwarded to :func:`detect_ads`.
+        episode_title: Human-readable episode title forwarded to the summary
+                       Bedrock prompt.  Falls back to *video_id* when empty.
+        duration_secs: Total episode duration in seconds.  Passed to the summary
+                       guard — episodes longer than ``SUMMARY_MAX_DURATION_SECS``
+                       are not summarised.  ``None`` bypasses the guard.
 
     Returns:
-        A tuple of ``(cleaned_path, ad_segments, summary)`` where *cleaned_path* is the
-        path to the cleaned audio file (or the original *mp3_path* if ad removal
-        was skipped or failed), *ad_segments* is the list of detected ad
+        A tuple of ``(cleaned_path, ad_segments, summary)`` where *cleaned_path*
+        is the path to the cleaned audio file (or the original *mp3_path* if ad
+        removal was skipped or failed), *ad_segments* is the list of detected ad
         intervals (empty list when none were found or removal was skipped), and
-        *summary* is an AI-generated episode summary (empty string if disabled/failed).
+        *summary* is an AI-generated episode summary (empty string if disabled,
+        skipped by the duration guard, or failed).
     """
     if os.environ.get("REMOVE_ADS", "true").lower() in ("false", "0", "no"):
         logger.info("[AdRemover] REMOVE_ADS=false — skipping ad removal for %s", video_id)
@@ -1693,14 +1750,23 @@ def remove_ads(
             # Skip transcription + detection — jump straight to snap + splice
             logger.info("[AdRemover] Using cached ad-segments for %s — skipping Transcribe+Bedrock", video_id)
 
-            # Music bookend detection using cached transcript
+            # Load cached transcript for music-bookend detection and/or summary
+            # generation — a single S3 read serves both consumers.
             music_segments: list[AdSegment] = []
+            _cached_transcript: list[dict] = []
+            _want_cached_transcript = (
+                (_trim_intro or _trim_outro)
+                or os.environ.get("GENERATE_SUMMARIES", "false").lower() in ("true", "1", "yes")
+            )
+            if _want_cached_transcript:
+                _loaded_transcript = _load_transcript_cache(_s3, _bucket, video_id)
+                if _loaded_transcript:
+                    _cached_transcript = _loaded_transcript
             if _trim_intro or _trim_outro:
-                cached_transcript = _load_transcript_cache(_s3, _bucket, video_id)
-                if cached_transcript:
+                if _cached_transcript:
                     try:
                         music_segments = detect_music_bookends(
-                            cached_transcript, mp3_path,
+                            _cached_transcript, mp3_path,
                             min_intro_secs=_min_intro if _trim_intro else 9999.0,
                             min_outro_secs=_min_outro if _trim_outro else 9999.0,
                         )
@@ -1710,7 +1776,7 @@ def remove_ads(
             all_cached = _merge_overlapping_ads(ad_segments + music_segments)
             if not all_cached:
                 logger.info("[AdRemover] Cached ad-segments empty (no ads) for %s — using original file", video_id)
-                return mp3_path, [], ""
+                return mp3_path, [], _generate_summary(_cached_transcript, video_id, episode_title, duration_secs)
             if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
                 all_cached = snap_ad_boundaries(all_cached, mp3_path)
             if dry_run:
@@ -1725,9 +1791,9 @@ def remove_ads(
                 splice_audio(mp3_path, all_cached, cleaned_path)
             except Exception as exc:
                 logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
-                return mp3_path, all_cached, ""
+                return mp3_path, all_cached, _generate_summary(_cached_transcript, video_id, episode_title, duration_secs)
             logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
-            return cleaned_path, all_cached, ""
+            return cleaned_path, all_cached, _generate_summary(_cached_transcript, video_id, episode_title, duration_secs)
 
     try:
         segments = transcribe_audio(mp3_path, video_id)
@@ -1776,7 +1842,7 @@ def remove_ads(
 
     if not all_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
-        summary = _generate_summary(segments, video_id)
+        summary = _generate_summary(segments, video_id, episode_title, duration_secs)
         return mp3_path, [], summary
 
     # Fix #5: snap boundaries to silence gaps for cleaner cuts
@@ -1798,7 +1864,7 @@ def remove_ads(
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, all_segments, "SPLICE_FAILED"
 
-    summary = _generate_summary(segments, video_id)
+    summary = _generate_summary(segments, video_id, episode_title, duration_secs)
 
     logger.info("[AdRemover] Ad removal complete for %s → %s", video_id, cleaned_path)
     return cleaned_path, all_segments, summary
