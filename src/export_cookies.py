@@ -11,7 +11,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 # Firefox profile path (macOS)
 FIREFOX_PROFILES_DIR = Path.home() / "Library/Application Support/Firefox/Profiles"
 COOKIE_DOMAINS = (".youtube.com", ".google.com", ".googlevideo.com")

@@ -3074,7 +3074,7 @@ class TestGenerateSummaryDurationGuard:
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
-        mod = self._inject_summary_module(monkeypatch, "short summary")
+        self._inject_summary_module(monkeypatch, "short summary")
         result = ad_remover._generate_summary(
             [{"start": 0.0, "end": 5.0, "text": "hi"}],
             "ep-at-limit",
@@ -3089,7 +3089,7 @@ class TestGenerateSummaryDurationGuard:
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
-        mod = self._inject_summary_module(monkeypatch, "no duration guard")
+        self._inject_summary_module(monkeypatch, "no duration guard")
         result = ad_remover._generate_summary(
             [{"start": 0.0, "end": 5.0, "text": "hi"}],
             "ep-no-dur",
@@ -3104,7 +3104,7 @@ class TestGenerateSummaryDurationGuard:
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "0")
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
-        mod = self._inject_summary_module(monkeypatch, "very long episode summary")
+        self._inject_summary_module(monkeypatch, "very long episode summary")
         result = ad_remover._generate_summary(
             [{"start": 0.0, "end": 5.0, "text": "hi"}],
             "ep-huge",
@@ -3119,7 +3119,7 @@ class TestGenerateSummaryDurationGuard:
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "30min")  # invalid — not a number
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
-        mod = self._inject_summary_module(monkeypatch, "summary text")
+        self._inject_summary_module(monkeypatch, "summary text")
 
         # 29-minute episode should be summarised (within default 1800 s)
         result = ad_remover._generate_summary(

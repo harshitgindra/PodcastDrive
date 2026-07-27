@@ -13,8 +13,6 @@ import logging
 import os
 
 import yt_dlp
-
-from ytdlp_cookies import inject_cookies
 from tenacity import (
     RetryError,
     retry,
@@ -22,6 +20,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+
+from ytdlp_cookies import inject_cookies
 
 logger = logging.getLogger(__name__)
 

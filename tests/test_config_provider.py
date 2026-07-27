@@ -20,6 +20,7 @@ from config_provider import (
 # YamlConfigProvider
 # ---------------------------------------------------------------------------
 
+
 class TestYamlConfigProviderMissingFile:
     def test_returns_empty_list_when_file_not_found(self):
         provider = YamlConfigProvider(path="/nonexistent/path/podcasts.yaml")
@@ -148,6 +149,7 @@ class TestYamlConfigProviderLoading:
 # NotionConfigProvider — init
 # ---------------------------------------------------------------------------
 
+
 class TestNotionConfigProviderInit:
     def test_raises_if_api_key_missing(self):
         env = {"NOTION_DATABASE_ID": "db-123"}
@@ -164,10 +166,13 @@ class TestNotionConfigProviderInit:
                 NotionConfigProvider()
 
     def test_constructs_with_both_env_vars(self):
-        with patch.dict(os.environ, {
-            "NOTION_API_KEY": "secret_abc",
-            "NOTION_DATABASE_ID": "db-123",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "secret_abc",
+                "NOTION_DATABASE_ID": "db-123",
+            },
+        ):
             provider = NotionConfigProvider()
             assert provider.api_key == "secret_abc"
             assert provider.database_id == "db-123"
@@ -177,12 +182,16 @@ class TestNotionConfigProviderInit:
 # NotionConfigProvider — _parse_page
 # ---------------------------------------------------------------------------
 
+
 class TestNotionParsePage:
     def _make_provider(self):
-        with patch.dict(os.environ, {
-            "NOTION_API_KEY": "key",
-            "NOTION_DATABASE_ID": "db",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "key",
+                "NOTION_DATABASE_ID": "db",
+            },
+        ):
             return NotionConfigProvider()
 
     def _title_prop(self, text):
@@ -335,16 +344,21 @@ class TestNotionParsePage:
 # NotionConfigProvider — get_podcasts (HTTP mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestNotionGetPodcasts:
     def _make_provider(self):
-        with patch.dict(os.environ, {
-            "NOTION_API_KEY": "secret_key",
-            "NOTION_DATABASE_ID": "db-abc",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "secret_key",
+                "NOTION_DATABASE_ID": "db-abc",
+            },
+        ):
             return NotionConfigProvider()
 
     def _notion_response(self, results, has_more=False, next_cursor=None):
         import json
+
         body = {"results": results, "has_more": has_more}
         if next_cursor:
             body["next_cursor"] = next_cursor
@@ -410,12 +424,16 @@ class TestNotionGetPodcasts:
 # NotionConfigProvider — update_last_run
 # ---------------------------------------------------------------------------
 
+
 class TestNotionUpdateLastRun:
     def _make_provider(self):
-        with patch.dict(os.environ, {
-            "NOTION_API_KEY": "key",
-            "NOTION_DATABASE_ID": "db",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "key",
+                "NOTION_DATABASE_ID": "db",
+            },
+        ):
             return NotionConfigProvider()
 
     def test_skips_when_no_page_id(self):
@@ -450,12 +468,16 @@ class TestNotionUpdateLastRun:
 # NotionConfigProvider — update_status
 # ---------------------------------------------------------------------------
 
+
 class TestNotionUpdateStatus:
     def _make_provider(self):
-        with patch.dict(os.environ, {
-            "NOTION_API_KEY": "key",
-            "NOTION_DATABASE_ID": "db",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "key",
+                "NOTION_DATABASE_ID": "db",
+            },
+        ):
             return NotionConfigProvider()
 
     def test_skips_when_no_page_id(self):
@@ -480,6 +502,7 @@ class TestNotionUpdateStatus:
     @patch("urllib.request.urlopen")
     def test_sends_correct_status_value(self, mock_urlopen):
         import json
+
         provider = self._make_provider()
         podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
 
@@ -523,6 +546,7 @@ class TestNotionUpdateStatus:
 # get_config_provider factory
 # ---------------------------------------------------------------------------
 
+
 class TestGetConfigProviderFactory:
     def test_returns_yaml_provider_by_default(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -536,19 +560,25 @@ class TestGetConfigProviderFactory:
             assert isinstance(provider, YamlConfigProvider)
 
     def test_returns_notion_provider_when_set_to_notion(self):
-        with patch.dict(os.environ, {
-            "CONFIG_PROVIDER": "notion",
-            "NOTION_API_KEY": "key",
-            "NOTION_DATABASE_ID": "db",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PROVIDER": "notion",
+                "NOTION_API_KEY": "key",
+                "NOTION_DATABASE_ID": "db",
+            },
+        ):
             provider = get_config_provider()
             assert isinstance(provider, NotionConfigProvider)
 
     def test_yaml_path_from_env_var(self):
-        with patch.dict(os.environ, {
-            "CONFIG_PROVIDER": "yaml",
-            "PODCASTS_YAML": "/custom/path/podcasts.yaml",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PROVIDER": "yaml",
+                "PODCASTS_YAML": "/custom/path/podcasts.yaml",
+            },
+        ):
             provider = get_config_provider()
             assert isinstance(provider, YamlConfigProvider)
             assert provider.path == "/custom/path/podcasts.yaml"
@@ -557,6 +587,7 @@ class TestGetConfigProviderFactory:
 # ---------------------------------------------------------------------------
 # NotionConfigProvider — find_page_by_url
 # ---------------------------------------------------------------------------
+
 
 class TestNotionFindPageByUrl:
     def _make_provider(self):
@@ -596,6 +627,7 @@ class TestNotionFindPageByUrl:
 # ---------------------------------------------------------------------------
 # NotionPodcastConfigProvider — _parse_page
 # ---------------------------------------------------------------------------
+
 
 class TestNotionPodcastConfigProviderParsePage:
     def _make_provider(self):
@@ -697,6 +729,7 @@ class TestNotionPodcastConfigProviderParsePage:
 # NotionPodcastConfigProvider — update_url
 # ---------------------------------------------------------------------------
 
+
 class TestNotionPodcastConfigProviderUpdateUrl:
     def _make_provider(self):
         with patch.dict(os.environ, {"NOTION_API_KEY": "key", "NOTION_DATABASE_ID": "db"}):
@@ -711,9 +744,9 @@ class TestNotionPodcastConfigProviderUpdateUrl:
     @patch("urllib.request.urlopen")
     def test_calls_notion_api_with_new_url(self, mock_urlopen):
         import json
+
         provider = self._make_provider()
-        podcast = PodcastConfig(name="Show", url="https://old.example.com/rss",
-                                page_id="page-abc", source="Podcast")
+        podcast = PodcastConfig(name="Show", url="https://old.example.com/rss", page_id="page-abc", source="Podcast")
 
         mock_resp = MagicMock()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -731,8 +764,7 @@ class TestNotionPodcastConfigProviderUpdateUrl:
     @patch("urllib.request.urlopen")
     def test_handles_error_gracefully(self, mock_urlopen):
         provider = self._make_provider()
-        podcast = PodcastConfig(name="Show", url="https://old.example.com/rss",
-                                page_id="page-abc", source="Podcast")
+        podcast = PodcastConfig(name="Show", url="https://old.example.com/rss", page_id="page-abc", source="Podcast")
         mock_urlopen.side_effect = Exception("Network error")
         # Should not raise
         provider.update_url(podcast, "https://new.example.com/rss")
@@ -741,6 +773,7 @@ class TestNotionPodcastConfigProviderUpdateUrl:
 # ---------------------------------------------------------------------------
 # get_podcast_config_provider factory
 # ---------------------------------------------------------------------------
+
 
 class TestGetPodcastConfigProviderFactory:
     def test_returns_yaml_provider_by_default(self):
@@ -755,19 +788,114 @@ class TestGetPodcastConfigProviderFactory:
             assert isinstance(provider, YamlConfigProvider)
 
     def test_returns_notion_podcast_provider_when_set_to_notion(self):
-        with patch.dict(os.environ, {
-            "CONFIG_PROVIDER": "notion",
-            "NOTION_API_KEY": "key",
-            "NOTION_DATABASE_ID": "db",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PROVIDER": "notion",
+                "NOTION_API_KEY": "key",
+                "NOTION_DATABASE_ID": "db",
+            },
+        ):
             provider = get_podcast_config_provider()
             assert isinstance(provider, NotionPodcastConfigProvider)
 
     def test_yaml_path_from_env_var(self):
-        with patch.dict(os.environ, {
-            "CONFIG_PROVIDER": "yaml",
-            "PODCASTS_YAML": "/custom/podcasts.yaml",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PROVIDER": "yaml",
+                "PODCASTS_YAML": "/custom/podcasts.yaml",
+            },
+        ):
             provider = get_podcast_config_provider()
             assert isinstance(provider, YamlConfigProvider)
             assert provider.path == "/custom/podcasts.yaml"
+
+
+# ---------------------------------------------------------------------------
+# ConfigProvider base class methods (coverage for pass-through stubs)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigProviderBaseMethods:
+    def test_update_last_run_is_noop_on_yaml_provider(self, tmp_path):
+        yaml_file = tmp_path / "podcasts.yaml"
+        yaml_file.write_text(yaml.dump({"podcasts": [{"name": "Test", "url": "http://x", "enabled": True}]}))
+        provider = YamlConfigProvider(path=str(yaml_file))
+        podcasts = provider.get_podcasts()
+        # Should not raise — it's a no-op
+        provider.update_last_run(podcasts[0], feed_url="http://feed")
+
+    def test_update_status_is_noop_on_yaml_provider(self, tmp_path):
+        yaml_file = tmp_path / "podcasts.yaml"
+        yaml_file.write_text(yaml.dump({"podcasts": [{"name": "Test", "url": "http://x", "enabled": True}]}))
+        provider = YamlConfigProvider(path=str(yaml_file))
+        podcasts = provider.get_podcasts()
+        # Should not raise — it's a no-op
+        provider.update_status(podcasts[0], status="Done")
+
+
+# ---------------------------------------------------------------------------
+# NotionPodcastConfigProvider._parse_page
+# ---------------------------------------------------------------------------
+
+
+class TestNotionPodcastParsePageExtended:
+    def _make_provider(self):
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "secret_test",
+                "NOTION_DATABASE_ID": "db-id",
+            },
+        ):
+            return NotionPodcastConfigProvider()
+
+    def test_parses_url_type_url_field(self):
+        provider = self._make_provider()
+        props = {
+            "Name": {"type": "title", "title": [{"plain_text": "My Podcast"}]},
+            "URL": {"type": "url", "url": "https://feed.example.com/rss"},
+            "Enabled": {"type": "checkbox", "checkbox": True},
+            "Source": {"type": "select", "select": {"name": "Podcast"}},
+        }
+        result = provider._parse_page(props)
+        assert result is not None
+        assert result.url == "https://feed.example.com/rss"
+
+    def test_parses_language_field(self):
+        provider = self._make_provider()
+        props = {
+            "Name": {"type": "title", "title": [{"plain_text": "JP Pod"}]},
+            "URL": {"type": "rich_text", "rich_text": [{"plain_text": "https://feed.jp"}]},
+            "Enabled": {"type": "checkbox", "checkbox": True},
+            "Source": {"type": "select", "select": {"name": "Podcast"}},
+            "Language": {"type": "rich_text", "rich_text": [{"plain_text": "ja"}]},
+        }
+        result = provider._parse_page(props)
+        assert result is not None
+        assert result.language == "ja"
+
+    def test_parses_description_field(self):
+        provider = self._make_provider()
+        props = {
+            "Name": {"type": "title", "title": [{"plain_text": "Desc Pod"}]},
+            "URL": {"type": "rich_text", "rich_text": [{"plain_text": "https://x.com"}]},
+            "Enabled": {"type": "checkbox", "checkbox": True},
+            "Source": {"type": "select", "select": {"name": "Podcast"}},
+            "Description": {"type": "rich_text", "rich_text": [{"plain_text": "A cool podcast"}]},
+        }
+        result = provider._parse_page(props)
+        assert result is not None
+        assert result.description == "A cool podcast"
+
+    def test_skips_non_podcast_source(self):
+        provider = self._make_provider()
+        props = {
+            "Name": {"type": "title", "title": [{"plain_text": "YT Channel"}]},
+            "URL": {"type": "rich_text", "rich_text": [{"plain_text": "https://yt.com"}]},
+            "Enabled": {"type": "checkbox", "checkbox": True},
+            "Source": {"type": "select", "select": {"name": "YouTube"}},
+        }
+        result = provider._parse_page(props)
+        assert result is None

@@ -4,7 +4,6 @@ Discovers cookies.txt from project root and provides it to yt-dlp
 for both extraction and download phases. This avoids YouTube bot detection.
 """
 
-import os
 from pathlib import Path
 
 

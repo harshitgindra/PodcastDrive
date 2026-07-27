@@ -12,6 +12,7 @@ from utils import extract_playlist_id, parse_upload_date, retry_aws_call
 # retry_aws_call
 # ---------------------------------------------------------------------------
 
+
 def _make_client_error(code: str) -> ClientError:
     return ClientError({"Error": {"Code": code, "Message": "test"}}, "TestOp")
 
@@ -23,21 +24,25 @@ class TestRetryAwsCall:
         fn.assert_called_once()
 
     def test_retries_on_throttling_and_succeeds(self):
-        fn = MagicMock(side_effect=[
-            _make_client_error("Throttling"),
-            _make_client_error("Throttling"),
-            "ok",
-        ])
+        fn = MagicMock(
+            side_effect=[
+                _make_client_error("Throttling"),
+                _make_client_error("Throttling"),
+                "ok",
+            ]
+        )
         with patch("time.sleep"):
             result = retry_aws_call(fn, max_attempts=5, base_delay=0)
         assert result == "ok"
         assert fn.call_count == 3
 
     def test_retries_on_service_unavailable(self):
-        fn = MagicMock(side_effect=[
-            _make_client_error("ServiceUnavailable"),
-            "done",
-        ])
+        fn = MagicMock(
+            side_effect=[
+                _make_client_error("ServiceUnavailable"),
+                "done",
+            ]
+        )
         with patch("time.sleep"):
             result = retry_aws_call(fn, max_attempts=3, base_delay=0)
         assert result == "done"
@@ -67,12 +72,14 @@ class TestRetryAwsCall:
     def test_max_delay_cap_is_respected(self):
         """Sleep duration must never exceed max_delay."""
         sleep_calls = []
-        fn = MagicMock(side_effect=[
-            _make_client_error("Throttling"),
-            _make_client_error("Throttling"),
-            _make_client_error("Throttling"),
-            "ok",
-        ])
+        fn = MagicMock(
+            side_effect=[
+                _make_client_error("Throttling"),
+                _make_client_error("Throttling"),
+                _make_client_error("Throttling"),
+                "ok",
+            ]
+        )
         with patch("time.sleep", side_effect=lambda t: sleep_calls.append(t)):
             with patch("random.uniform", side_effect=lambda lo, hi: hi):
                 retry_aws_call(fn, max_attempts=5, base_delay=1.0, max_delay=4.0)
@@ -80,6 +87,7 @@ class TestRetryAwsCall:
 
     def test_label_used_in_log(self, caplog):
         import logging
+
         fn = MagicMock(side_effect=[_make_client_error("Throttling"), "ok"])
         with patch("time.sleep"), caplog.at_level(logging.WARNING, logger="utils"):
             retry_aws_call(fn, max_attempts=3, base_delay=0, label="my.operation")
@@ -152,30 +160,22 @@ class TestParseUploadDate:
 
     def test_invalid_string_falls_back_to_today(self):
         result = parse_upload_date("not-a-date")
-        today = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         assert result == today
 
     def test_empty_string_falls_back_to_today(self):
         result = parse_upload_date("")
-        today = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         assert result == today
 
     def test_partial_date_falls_back_to_today(self):
         result = parse_upload_date("202501")
-        today = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         assert result == today
 
     def test_wrong_format_falls_back_to_today(self):
         result = parse_upload_date("2025-01-15")
-        today = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         assert result == today
 
     def test_leap_year_date(self):
@@ -184,7 +184,22 @@ class TestParseUploadDate:
 
     def test_invalid_day_falls_back_to_today(self):
         result = parse_upload_date("20250230")  # Feb 30 doesn't exist
-        today = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         assert result == today
+
+
+# ── _validate_playlist_id edge cases ─────────────────────────────────────────
+
+
+class TestValidatePlaylistId:
+    def test_empty_id_raises(self):
+        with pytest.raises(ValueError, match="empty"):
+            extract_playlist_id("")
+
+    def test_unsafe_characters_raise(self):
+        with pytest.raises(ValueError, match="unsafe characters"):
+            extract_playlist_id("PL../../../etc/passwd")
+
+    def test_path_traversal_raises(self):
+        with pytest.raises(ValueError, match="path traversal"):
+            extract_playlist_id("PL..secret")

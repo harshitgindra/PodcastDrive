@@ -25,13 +25,13 @@ from preflight import (
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _client_error(code: str, message: str = "error") -> botocore.exceptions.ClientError:
-    return botocore.exceptions.ClientError(
-        {"Error": {"Code": code, "Message": message}}, "op"
-    )
+    return botocore.exceptions.ClientError({"Error": {"Code": code, "Message": message}}, "op")
 
 
 # ── colour helpers ────────────────────────────────────────────────────────────
+
 
 class TestHelpers:
     def test_ok_prints(self, capsys):
@@ -58,6 +58,7 @@ class TestHelpers:
 
 
 # ── _check_env_vars ───────────────────────────────────────────────────────────
+
 
 class TestCheckEnvVars:
     _FULL_ENV = {
@@ -101,6 +102,7 @@ class TestCheckEnvVars:
         with patch.dict("os.environ", env, clear=True):
             _check_env_vars()
             import os
+
             assert os.environ.get("AWS_DEFAULT_REGION") == "us-west-2"
 
     def test_ok_when_region_present(self, capsys):
@@ -110,6 +112,7 @@ class TestCheckEnvVars:
 
 
 # ── _check_aws_credentials ────────────────────────────────────────────────────
+
 
 class TestCheckAwsCredentials:
     def _mock_session(self, account="123456789012", region="us-west-2"):
@@ -128,8 +131,10 @@ class TestCheckAwsCredentials:
 
     def test_uses_env_region_when_session_has_none(self):
         session = self._mock_session(region=None)
-        with patch("boto3.session.Session", return_value=session), \
-             patch.dict("os.environ", {"AWS_DEFAULT_REGION": "eu-central-1"}):
+        with (
+            patch("boto3.session.Session", return_value=session),
+            patch.dict("os.environ", {"AWS_DEFAULT_REGION": "eu-central-1"}),
+        ):
             region = _check_aws_credentials()
         assert region == "eu-central-1"
 
@@ -158,13 +163,13 @@ class TestCheckAwsCredentials:
 
 # ── _check_s3_bucket ──────────────────────────────────────────────────────────
 
+
 class TestCheckS3Bucket:
     def test_passes_when_bucket_accessible(self, capsys):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.return_value = {}
         mock_s3.list_objects_v2.return_value = {}
-        with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}):
+        with patch("boto3.client", return_value=mock_s3), patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}):
             _check_s3_bucket("us-west-2", dry_run=False)
         out = capsys.readouterr().out
         assert "accessible" in out
@@ -173,106 +178,139 @@ class TestCheckS3Bucket:
     def test_dry_run_skips_list_check(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.return_value = {}
-        with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}):
+        with patch("boto3.client", return_value=mock_s3), patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}):
             _check_s3_bucket("us-west-2", dry_run=True)
         mock_s3.list_objects_v2.assert_not_called()
 
     def test_fails_on_404(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("404")
-        with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_s3),
+            patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}),
+            pytest.raises(SystemExit),
+        ):
             _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_no_such_bucket(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("NoSuchBucket")
-        with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_s3),
+            patch.dict("os.environ", {"S3_BUCKET": "missing-bucket"}),
+            pytest.raises(SystemExit),
+        ):
             _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_403(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("403")
-        with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "forbidden-bucket"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_s3),
+            patch.dict("os.environ", {"S3_BUCKET": "forbidden-bucket"}),
+            pytest.raises(SystemExit),
+        ):
             _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_other_client_error(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.side_effect = _client_error("InternalError")
-        with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_s3),
+            patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}),
+            pytest.raises(SystemExit),
+        ):
             _check_s3_bucket("us-west-2", dry_run=False)
 
     def test_fails_on_list_access_denied(self):
         mock_s3 = MagicMock()
         mock_s3.head_bucket.return_value = {}
         mock_s3.list_objects_v2.side_effect = _client_error("AccessDenied")
-        with patch("boto3.client", return_value=mock_s3), \
-             patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_s3),
+            patch.dict("os.environ", {"S3_BUCKET": "my-bucket"}),
+            pytest.raises(SystemExit),
+        ):
             _check_s3_bucket("us-west-2", dry_run=False)
 
 
 # ── _check_cloudfront ─────────────────────────────────────────────────────────
 
+
 class TestCheckCloudfront:
     def _mock_cf(self, status="Deployed", domain="d123.cloudfront.net"):
         mock_cf = MagicMock()
-        mock_cf.get_distribution.return_value = {
-            "Distribution": {"Status": status, "DomainName": domain}
-        }
+        mock_cf.get_distribution.return_value = {"Distribution": {"Status": status, "DomainName": domain}}
         return mock_cf
 
     def test_passes_when_deployed(self, capsys):
-        with patch("boto3.client", return_value=self._mock_cf()), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}):
+        with (
+            patch("boto3.client", return_value=self._mock_cf()),
+            patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}),
+        ):
             _check_cloudfront("us-west-2")
         assert "Deployed" in capsys.readouterr().out
 
     def test_warns_when_not_deployed(self, capsys):
-        with patch("boto3.client", return_value=self._mock_cf(status="InProgress")), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}):
+        with (
+            patch("boto3.client", return_value=self._mock_cf(status="InProgress")),
+            patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}),
+        ):
             _check_cloudfront("us-west-2")
         assert "InProgress" in capsys.readouterr().out
 
     def test_fails_when_no_dist_id(self):
-        with patch("boto3.client", return_value=self._mock_cf()), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": ""}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=self._mock_cf()),
+            patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": ""}),
+            pytest.raises(SystemExit),
+        ):
             _check_cloudfront("us-west-2")
 
     def test_fails_on_no_such_distribution(self):
         mock_cf = MagicMock()
         mock_cf.get_distribution.side_effect = _client_error("NoSuchDistribution")
-        with patch("boto3.client", return_value=mock_cf), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "EBAD"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_cf),
+            patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "EBAD"}),
+            pytest.raises(SystemExit),
+        ):
             _check_cloudfront("us-west-2")
 
     def test_fails_on_access_denied(self):
         mock_cf = MagicMock()
         mock_cf.get_distribution.side_effect = _client_error("AccessDenied")
-        with patch("boto3.client", return_value=mock_cf), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_cf),
+            patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}),
+            pytest.raises(SystemExit),
+        ):
             _check_cloudfront("us-west-2")
 
     def test_fails_on_other_client_error(self):
         mock_cf = MagicMock()
         mock_cf.get_distribution.side_effect = _client_error("InternalError")
-        with patch("boto3.client", return_value=mock_cf), \
-             patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}), pytest.raises(SystemExit):
+        with (
+            patch("boto3.client", return_value=mock_cf),
+            patch.dict("os.environ", {"CLOUDFRONT_DISTRIBUTION_ID": "E123"}),
+            pytest.raises(SystemExit),
+        ):
             _check_cloudfront("us-west-2")
 
 
 # ── _check_yt_dlp ─────────────────────────────────────────────────────────────
+
 
 class TestCheckYtDlp:
     def test_passes_when_installed_and_binary_works(self, capsys):
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "2024.01.01\n"
-        with patch("subprocess.run", return_value=mock_result), \
-             patch.dict(sys.modules, {"yt_dlp": MagicMock()}):
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch("preflight.shutil.which", return_value="/usr/local/bin/yt-dlp"),
+            patch.dict(sys.modules, {"yt_dlp": MagicMock()}),
+        ):
             _check_yt_dlp()
         out = capsys.readouterr().out
         assert "importable" in out
@@ -289,20 +327,24 @@ class TestCheckYtDlp:
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stdout = ""
-        with patch("subprocess.run", return_value=mock_result), \
-             patch.dict(sys.modules, {"yt_dlp": MagicMock()}), pytest.raises(SystemExit):
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch("preflight.shutil.which", return_value="/usr/local/bin/yt-dlp"),
+            patch.dict(sys.modules, {"yt_dlp": MagicMock()}),
+            pytest.raises(SystemExit),
+        ):
             _check_yt_dlp()
 
 
 # ── _check_ffmpeg ─────────────────────────────────────────────────────────────
+
 
 class TestCheckFfmpeg:
     def test_passes_when_ffmpeg_available(self, capsys):
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "ffmpeg version 6.0\nmore lines"
-        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
-             patch("subprocess.run", return_value=mock_result):
+        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), patch("subprocess.run", return_value=mock_result):
             _check_ffmpeg()
         assert "ffmpeg version 6.0" in capsys.readouterr().out
 
@@ -314,21 +356,24 @@ class TestCheckFfmpeg:
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stdout = ""
-        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
-             patch("subprocess.run", return_value=mock_result), pytest.raises(SystemExit):
+        with (
+            patch("shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run", return_value=mock_result),
+            pytest.raises(SystemExit),
+        ):
             _check_ffmpeg()
 
     def test_handles_empty_stdout(self, capsys):
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = ""
-        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
-             patch("subprocess.run", return_value=mock_result):
+        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), patch("subprocess.run", return_value=mock_result):
             _check_ffmpeg()
         assert "unknown" in capsys.readouterr().out
 
 
 # ── _check_notion ─────────────────────────────────────────────────────────────
+
 
 class TestCheckNotion:
     _ENV = {
@@ -340,8 +385,7 @@ class TestCheckNotion:
         mock_resp = MagicMock()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch.dict("os.environ", self._ENV):
+        with patch("urllib.request.urlopen", return_value=mock_resp), patch.dict("os.environ", self._ENV):
             _check_notion()
         assert "valid" in capsys.readouterr().out
 
@@ -365,32 +409,48 @@ class TestCheckNotion:
 
     def test_fails_on_401(self):
         import urllib.error
+
         err = urllib.error.HTTPError(url="", code=401, msg="Unauthorized", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err), \
-             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+        with (
+            patch("urllib.request.urlopen", side_effect=err),
+            patch.dict("os.environ", self._ENV),
+            pytest.raises(SystemExit),
+        ):
             _check_notion()
 
     def test_fails_on_404(self):
         import urllib.error
+
         err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err), \
-             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+        with (
+            patch("urllib.request.urlopen", side_effect=err),
+            patch.dict("os.environ", self._ENV),
+            pytest.raises(SystemExit),
+        ):
             _check_notion()
 
     def test_fails_on_other_http_error(self):
         import urllib.error
+
         err = urllib.error.HTTPError(url="", code=500, msg="Server Error", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err), \
-             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+        with (
+            patch("urllib.request.urlopen", side_effect=err),
+            patch.dict("os.environ", self._ENV),
+            pytest.raises(SystemExit),
+        ):
             _check_notion()
 
     def test_fails_on_connection_error(self):
-        with patch("urllib.request.urlopen", side_effect=Exception("Connection refused")), \
-             patch.dict("os.environ", self._ENV), pytest.raises(SystemExit):
+        with (
+            patch("urllib.request.urlopen", side_effect=Exception("Connection refused")),
+            patch.dict("os.environ", self._ENV),
+            pytest.raises(SystemExit),
+        ):
             _check_notion()
 
 
 # ── _check_transcribe ─────────────────────────────────────────────────────────
+
 
 class TestCheckTranscribe:
     def test_passes_when_accessible(self, capsys):
@@ -429,6 +489,7 @@ class TestCheckTranscribe:
 
 # ── _check_bedrock ────────────────────────────────────────────────────────────
 
+
 class TestCheckBedrock:
     def test_passes_when_accessible(self, capsys):
         mock_br = MagicMock()
@@ -465,6 +526,7 @@ class TestCheckBedrock:
 
 
 # ── run_preflight ─────────────────────────────────────────────────────────────
+
 
 class TestRunPreflight:
     """Integration-style tests for the run_preflight() orchestrator."""
@@ -553,6 +615,7 @@ class TestRunPreflight:
         try:
             with patch.dict("os.environ", {"CONFIG_PROVIDER": "yaml"}, clear=False):
                 import os
+
                 os.environ.pop("REMOVE_ADS", None)
                 run_preflight()
             mocks["_check_transcribe"].assert_called_once_with("us-west-2")
@@ -599,3 +662,47 @@ class TestRunPreflight:
         finally:
             for p in patches.values():
                 p.stop()
+
+
+# ── _check_disk_space ─────────────────────────────────────────────────────────
+
+
+class TestCheckDiskSpace:
+    def test_passes_with_plenty_of_space(self, capsys):
+        from preflight import _check_disk_space
+
+        mock_stat = MagicMock()
+        mock_stat.f_bavail = 10 * 1024 * 1024  # blocks
+        mock_stat.f_frsize = 1024  # 1K per block -> 10 GB free
+        with patch("os.statvfs", return_value=mock_stat):
+            _check_disk_space()
+        out = capsys.readouterr().out
+        assert "free" in out
+
+    def test_warns_when_less_than_5gb(self, capsys):
+        from preflight import _check_disk_space
+
+        mock_stat = MagicMock()
+        mock_stat.f_bavail = 3 * 1024 * 1024
+        mock_stat.f_frsize = 1024  # 3 GB
+        with patch("os.statvfs", return_value=mock_stat):
+            _check_disk_space()
+        out = capsys.readouterr().out
+        assert "3.0" in out
+
+    def test_fails_when_less_than_1gb(self):
+        from preflight import _check_disk_space
+
+        mock_stat = MagicMock()
+        mock_stat.f_bavail = 500 * 1024
+        mock_stat.f_frsize = 1024  # 0.5 GB
+        with patch("os.statvfs", return_value=mock_stat), pytest.raises(SystemExit):
+            _check_disk_space()
+
+    def test_warns_on_os_error(self, capsys):
+        from preflight import _check_disk_space
+
+        with patch("os.statvfs", side_effect=OSError("permission denied")):
+            _check_disk_space()
+        out = capsys.readouterr().out
+        assert "Could not check" in out
