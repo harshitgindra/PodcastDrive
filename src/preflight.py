@@ -309,6 +309,35 @@ def _check_notion() -> None:
         _fail(f"Notion API call failed: {exc}")
 
 
+def _check_cookies() -> None:
+    """Warn if cookies.txt is stale (older than 14 days).
+
+    yt-dlp uses cookies.txt to bypass YouTube age/authentication gates.
+    Stale cookies cause silent download failures that are hard to diagnose.
+    This check surfaces the problem early, at startup.
+    """
+    _section("Cookie freshness")
+
+    cookies_path = os.environ.get("COOKIES_FILE", "cookies.txt")
+    if not os.path.isabs(cookies_path):
+        # Resolve relative to the project root (where run.sh lives)
+        cookies_path = os.path.join(os.getcwd(), cookies_path)
+
+    if not os.path.exists(cookies_path):
+        _warn(f"cookies.txt not found at {cookies_path} — YouTube downloads may fail")
+        return
+
+    import time
+    age_days = (time.time() - os.path.getmtime(cookies_path)) / 86400
+    if age_days > 14:
+        _warn(
+            f"cookies.txt is {age_days:.0f} days old (>{14}d threshold) — "
+            "refresh with: ./refresh_cookies.sh"
+        )
+    else:
+        _ok(f"cookies.txt is {age_days:.1f} days old (within 14-day threshold)")
+
+
 def _check_disk_space() -> None:
     """Verify sufficient disk space is available in the temp directory."""
     _section("Disk space")
@@ -353,6 +382,7 @@ def run_preflight(dry_run: bool = False) -> None:
     _check_cloudfront(region)
     _check_yt_dlp()
     _check_ffmpeg()
+    _check_cookies()
 
     _check_disk_space()
 

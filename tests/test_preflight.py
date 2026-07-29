@@ -706,3 +706,52 @@ class TestCheckDiskSpace:
             _check_disk_space()
         out = capsys.readouterr().out
         assert "Could not check" in out
+
+
+# ---------------------------------------------------------------------------
+# Cookie freshness tests
+# ---------------------------------------------------------------------------
+
+
+class TestCheckCookies:
+    """Tests for _check_cookies freshness detection."""
+
+    def test_missing_cookies_file_warns(self, monkeypatch, capsys):
+        """Warns (not errors) when cookies.txt does not exist."""
+        from preflight import _check_cookies
+
+        monkeypatch.setenv("COOKIES_FILE", "/nonexistent/path/cookies.txt")
+        _check_cookies()
+        out = capsys.readouterr().out
+        assert "not found" in out.lower() or "may fail" in out.lower()
+
+    def test_fresh_cookies_ok(self, monkeypatch, tmp_path, capsys):
+        """Prints OK when cookies.txt is within 14 days."""
+        from preflight import _check_cookies
+
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# cookies")
+        monkeypatch.setenv("COOKIES_FILE", str(cookies))
+        # mtime defaults to now — file is 0 days old
+
+        _check_cookies()
+        out = capsys.readouterr().out
+        assert "14-day threshold" in out
+
+    def test_stale_cookies_warns(self, monkeypatch, tmp_path, capsys):
+        """Warns when cookies.txt is older than 14 days."""
+        import os
+        import time
+        from preflight import _check_cookies
+
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# old cookies")
+        # Backdate the mtime by 20 days
+        old_time = time.time() - (20 * 86400)
+        os.utime(str(cookies), (old_time, old_time))
+
+        monkeypatch.setenv("COOKIES_FILE", str(cookies))
+        _check_cookies()
+        out = capsys.readouterr().out
+        assert "20 days old" in out or "days old" in out
+        assert "refresh" in out.lower()
