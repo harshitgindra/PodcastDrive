@@ -48,6 +48,20 @@ else
   echo "  Swap already configured ($(swapon --show --bytes | awk 'NR>1{sum+=$3} END{printf "%.1fGB", sum/1073741824}'))"
 fi
 
+# --- cron.log rotation (prevent disk fill) ---
+echo "→ Configuring logrotate for cron.log..."
+sudo tee /etc/logrotate.d/podcastdrive > /dev/null << 'LOGROTATE'
+/home/ec2-user/PodcastDrive/logs/cron.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+LOGROTATE
+echo "  cron.log will rotate weekly, keeping 4 compressed weeks"
+
 # --- Set timezone to America/Los_Angeles (PDT/PST) ---
 echo "→ Setting timezone to America/Los_Angeles..."
 sudo timedatectl set-timezone America/Los_Angeles
