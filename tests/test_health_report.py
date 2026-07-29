@@ -754,3 +754,124 @@ class TestSuccessRateExcludesRunningRuns:
         runs = [_make_run(status="running")]
         report = _analyze(runs, [])
         assert report["summary"]["success_rate"] == "N/A"
+
+
+# ---------------------------------------------------------------------------
+# Health alert tests
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeSendAlert:
+    """Tests for the _maybe_send_alert webhook function."""
+
+    def test_no_op_when_url_not_set(self, monkeypatch):
+        """No HTTP request when HEALTH_ALERT_URL is unset."""
+        import health_report
+        monkeypatch.delenv("HEALTH_ALERT_URL", raising=False)
+
+        requests_made = []
+        monkeypatch.setattr(
+            health_report.urllib.request, "urlopen",
+            lambda req, timeout=None: requests_made.append(req),
+        )
+
+        report = {"recommendations": [{"priority": "HIGH", "issue": "x", "action": "y"}]}
+        health_report._maybe_send_alert(report)
+        assert requests_made == []
+
+    def test_no_op_when_no_high_issues(self, monkeypatch):
+        """No HTTP request when there are no HIGH-priority recommendations."""
+        import health_report
+        monkeypatch.setenv("HEALTH_ALERT_URL", "http://example.com/webhook")
+
+        requests_made = []
+        monkeypatch.setattr(
+            health_report.urllib.request, "urlopen",
+            lambda req, timeout=None: requests_made.append(req),
+        )
+
+        report = {"recommendations": [{"priority": "LOW", "issue": "x", "action": "y"}]}
+        health_report._maybe_send_alert(report)
+        assert requests_made == []
+
+    def test_posts_on_high_priority_issue(self, monkeypatch):
+        """HTTP POST is made when there is at least one HIGH recommendation."""
+        import json
+        import health_report
+        monkeypatch.setenv("HEALTH_ALERT_URL", "http://example.com/webhook")
+
+        posted = []
+
+        class FakeResponse:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        def fake_urlopen(req, timeout=None):
+            posted.append(req)
+            return FakeResponse()
+
+        monkeypatch.setattr(health_report.urllib.request, "urlopen", fake_urlopen)
+
+        report = {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "recommendations": [
+                {"priority": "HIGH", "issue": "No runs recorded", "action": "Check cron"},
+            ],
+        }
+        health_report._maybe_send_alert(report)
+
+        assert len(posted) == 1
+        req = posted[0]
+        assert req.full_url == "http://example.com/webhook"
+        body = json.loads(req.data)
+        assert body["priority"] == "HIGH"
+        assert len(body["issues"]) == 1
+        assert body["issues"][0]["issue"] == "No runs recorded"
+
+    def test_warning_logged_on_network_error(self, monkeypatch, caplog):
+        """Network errors are caught and logged as warnings (not raised)."""
+        import urllib.error
+        import health_report
+        monkeypatch.setenv("HEALTH_ALERT_URL", "http://example.com/webhook")
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(health_report.urllib.request, "urlopen", fake_urlopen)
+
+        report = {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "recommendations": [
+                {"priority": "HIGH", "issue": "splice failures", "action": "check ffmpeg"},
+            ],
+        }
+        import logging
+        with caplog.at_level(logging.WARNING, logger="health_report"):
+            health_report._maybe_send_alert(report)  # must not raise
+
+        assert any("Failed to send health alert" in r.message for r in caplog.records)
+
+
+class TestNoRunsIn8hDetection:
+    """Tests for the no-runs-in-8h recommendation."""
+
+    def test_no_alert_when_run_within_8h(self):
+        """No recommendation when a run happened within the last 8 hours."""
+        from health_report import _analyze
+
+        # days_ago=3/24 means the run started 3 hours ago (well within 8h threshold)
+        runs = [_make_run(status="success", days_ago=3/24)]
+        report = _analyze(runs, [])
+        assert not any(
+            "No runs in the last" in r["issue"] for r in report["recommendations"]
+        )
+
+    def test_alert_when_no_run_in_8h(self):
+        """HIGH recommendation when latest run is older than 8 hours."""
+        from health_report import _analyze
+
+        # days_ago=10/24 means the run started 10 hours ago (exceeds 8h threshold)
+        runs = [_make_run(status="success", days_ago=10/24)]
+        report = _analyze(runs, [])
+        high_recs = [r for r in report["recommendations"] if r["priority"] == "HIGH"]
+        assert any("No runs in the last" in r["issue"] for r in high_recs)

@@ -14,6 +14,8 @@ import argparse
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 
@@ -267,6 +269,25 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
             "action": "Check cron/scheduler is active. Verify EC2 instance is running.",
         })
 
+    # Detect long silence: no run started in the last 8 hours
+    if runs:
+        latest_start = max(
+            (
+                datetime.fromisoformat(r["started_at"])
+                for r in runs
+                if r.get("started_at")
+            ),
+            default=None,
+        )
+        if latest_start is not None:
+            hours_since = (now - latest_start).total_seconds() / 3600
+            if hours_since > 8:
+                recommendations.append({
+                    "priority": "HIGH",
+                    "issue": f"No runs in the last {hours_since:.1f} hours (last run: {latest_start.isoformat()})",
+                    "action": "Check cron schedule, EC2 uptime, and run.lock for stale entries.",
+                })
+
     report["recommendations"] = recommendations
     return report
 
@@ -334,6 +355,51 @@ def _format_markdown(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _maybe_send_alert(report: dict) -> None:
+    """POST a summary to HEALTH_ALERT_URL if HIGH-priority issues exist.
+
+    The URL is typically a webhook (Slack, PagerDuty, ntfy.sh, etc.).
+    The payload is a JSON object with ``title``, ``priority``, and
+    ``issues`` fields.  If ``HEALTH_ALERT_URL`` is not set the function
+    is a no-op.
+
+    Args:
+        report: The structured report dict produced by ``_analyze``.
+    """
+    alert_url = os.environ.get("HEALTH_ALERT_URL", "").strip()
+    if not alert_url:
+        return
+
+    high_issues = [
+        r for r in report.get("recommendations", [])
+        if r.get("priority") == "HIGH"
+    ]
+    if not high_issues:
+        return
+
+    payload = {
+        "title": "PodcastDrive health alert",
+        "priority": "HIGH",
+        "generated_at": report.get("generated_at", ""),
+        "issues": [
+            {"issue": r["issue"], "action": r["action"]}
+            for r in high_issues
+        ],
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        alert_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            logger.info("Health alert sent to %s (%d HIGH issue(s))", alert_url, len(high_issues))
+    except (urllib.error.URLError, OSError) as exc:
+        logger.warning("Failed to send health alert to %s: %s", alert_url, exc)
+
+
 def generate_health_report(days: int = 7, output_format: str = "md") -> str:
     """Generate a health report for the last N days.
 
@@ -364,6 +430,9 @@ def generate_health_report(days: int = 7, output_format: str = "md") -> str:
     # Analyze
     report = _analyze(runs, log_summaries)
     report["period_days"] = days
+
+    # Alert on HIGH-priority issues if a webhook is configured
+    _maybe_send_alert(report)
 
     # Upload report to S3
     report_date = datetime.now(UTC).strftime("%Y-%m-%d")
