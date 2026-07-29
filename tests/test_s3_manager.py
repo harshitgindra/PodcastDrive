@@ -663,3 +663,105 @@ class TestResetPodcastExceptionPaths:
         result = manager.reset_podcast()
         assert result["feed_deleted"] is True
         assert result["manifest_deleted"] is False
+
+
+# ---------------------------------------------------------------------------
+# _ping_overcast — 429 retry with backoff
+# ---------------------------------------------------------------------------
+
+class TestPingOvercastRetry:
+    """Tests for the 429 retry logic in _ping_overcast."""
+
+    def _make_manager(self, cloudfront_base="https://cdn.example.com"):
+        import os
+        os.environ["CLOUDFRONT_BASE"] = cloudfront_base
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        return manager
+
+    def test_succeeds_on_first_attempt(self, monkeypatch):
+        """Normal case: first ping succeeds, no retry needed."""
+        import urllib.error
+
+        call_count = [0]
+
+        class FakeResponse:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        def fake_urlopen(req, timeout, context):
+            call_count[0] += 1
+            return FakeResponse()
+
+        monkeypatch.setenv("CLOUDFRONT_BASE", "https://cdn.example.com")
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager._ping_overcast()
+
+        assert call_count[0] == 1
+
+    def test_retries_once_on_429(self, monkeypatch):
+        """On HTTP 429, waits and retries exactly once."""
+        import urllib.error
+
+        call_count = [0]
+        sleep_calls = []
+
+        class FakeResponse:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        def fake_urlopen(req, timeout, context):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise urllib.error.HTTPError(None, 429, "Too Many Requests", {}, None)
+            return FakeResponse()
+
+        monkeypatch.setenv("CLOUDFRONT_BASE", "https://cdn.example.com")
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("s3_manager.time.sleep", lambda s: sleep_calls.append(s))
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager._ping_overcast()
+
+        assert call_count[0] == 2
+        assert sleep_calls == [5]
+
+    def test_does_not_retry_on_other_http_errors(self, monkeypatch):
+        """Non-429 HTTP errors are not retried — they fall through to the warning."""
+        import urllib.error
+
+        call_count = [0]
+
+        def fake_urlopen(req, timeout, context):
+            call_count[0] += 1
+            raise urllib.error.HTTPError(None, 404, "Not Found", {}, None)
+
+        monkeypatch.setenv("CLOUDFRONT_BASE", "https://cdn.example.com")
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager._ping_overcast()  # should not raise
+
+        assert call_count[0] == 1  # tried once, no retry
+
+    def test_no_retry_if_second_attempt_also_429(self, monkeypatch):
+        """If both attempts return 429, give up after the retry (no infinite loop)."""
+        import urllib.error
+
+        call_count = [0]
+
+        def fake_urlopen(req, timeout, context):
+            call_count[0] += 1
+            raise urllib.error.HTTPError(None, 429, "Too Many Requests", {}, None)
+
+        monkeypatch.setenv("CLOUDFRONT_BASE", "https://cdn.example.com")
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("s3_manager.time.sleep", lambda s: None)
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager._ping_overcast()  # should not raise
+
+        assert call_count[0] == 2  # tried twice, then gave up

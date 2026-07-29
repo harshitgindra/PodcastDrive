@@ -65,10 +65,17 @@ class S3Lock:
             return None
 
     def _build_lock_body(self) -> bytes:
-        """Build the lock object payload."""
+        """Build the lock object payload.
+
+        Stores the parent process PID (os.getppid) rather than the current
+        PID so that release() — which runs in a separate subprocess — can
+        match the stored PID.  Both the acquire subprocess and the cleanup
+        subprocess share the same parent (the bash run.sh process), so
+        os.getppid() is consistent across them.
+        """
         lock_data = {
             "runner": self.runner,
-            "pid": os.getpid(),
+            "pid": os.getppid(),
             "acquired_at": datetime.now(timezone.utc).isoformat(),
             "ttl_seconds": self.ttl_seconds,
         }
@@ -180,7 +187,7 @@ class S3Lock:
             return
         # Verify we own the lock before deleting (prevents releasing another runner's lock)
         existing = self._read_lock()
-        if existing and existing.get("runner") == self.runner and existing.get("pid") == os.getpid():
+        if existing and existing.get("runner") == self.runner and existing.get("pid") == os.getppid():
             self._delete_lock()
             self._acquired = False
             logger.info("Distributed lock released by %s", self.runner)

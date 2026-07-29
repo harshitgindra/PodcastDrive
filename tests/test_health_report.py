@@ -641,3 +641,116 @@ class TestFormatMarkdownRunsSections:
         report["period_days"] = 7
         md = _format_markdown(report)
         assert "Top Errors" in md
+
+
+# ---------------------------------------------------------------------------
+# _fetch_runs — deduplication by run_id (fix for double-entry bug)
+# ---------------------------------------------------------------------------
+
+class TestFetchRunsDeduplication:
+    def test_dedup_keeps_last_entry_per_run_id(self, s3):
+        """When a run writes both a start ('running') and end ('success') record,
+        only the final record should be returned."""
+        run_id = "1700000000_99999"
+        start_record = {
+            "run_id": run_id,
+            "runner": "machine-A",
+            "trigger": "cron",
+            "started_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+            "finished_at": None,
+            "duration_secs": None,
+            "status": "running",
+        }
+        end_record = {
+            "run_id": run_id,
+            "runner": "machine-A",
+            "trigger": "cron",
+            "started_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
+            "duration_secs": 180,
+            "status": "success",
+        }
+        content = json.dumps(start_record) + "\n" + json.dumps(end_record) + "\n"
+        s3.put_object(Bucket=BUCKET, Key=RUNS_KEY, Body=content.encode("utf-8"))
+
+        since = datetime.now(UTC) - timedelta(days=7)
+        result = _fetch_runs(s3, BUCKET, since)
+
+        # One unique run, not two
+        assert len(result) == 1
+        assert result[0]["status"] == "success"
+        assert result[0]["duration_secs"] == 180
+
+    def test_dedup_reduces_false_stuck_count(self, s3):
+        """Completed runs that have both start and end records in JSONL
+        should not appear as 'stuck in running' after dedup."""
+        run_id = "1700000001_11111"
+        start_record = {
+            "run_id": run_id,
+            "runner": "machine-A",
+            "trigger": "cron",
+            "started_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+            "finished_at": None,
+            "duration_secs": None,
+            "status": "running",
+        }
+        end_record = dict(start_record)
+        end_record["status"] = "success"
+        end_record["finished_at"] = datetime.now(UTC).isoformat()
+        end_record["duration_secs"] = 120
+
+        content = json.dumps(start_record) + "\n" + json.dumps(end_record) + "\n"
+        s3.put_object(Bucket=BUCKET, Key=RUNS_KEY, Body=content.encode("utf-8"))
+
+        since = datetime.now(UTC) - timedelta(days=7)
+        runs = _fetch_runs(s3, BUCKET, since)
+        report = _analyze(runs, [])
+
+        # No stale running entries — the completed run won
+        assert report["patterns"]["stale_running_entries"] == 0
+        assert report["summary"]["total_runs"] == 1
+        assert report["summary"]["successful"] == 1
+
+    def test_dedup_preserves_truly_orphaned_running_entry(self, s3):
+        """A run that ONLY has a start record (crashed before writing end) should
+        still be detected as potentially stuck."""
+        run_id = "1700000002_22222"
+        start_only = {
+            "run_id": run_id,
+            "runner": "machine-A",
+            "trigger": "cron",
+            "started_at": (datetime.now(UTC) - timedelta(hours=5)).isoformat(),
+            "finished_at": None,
+            "duration_secs": None,
+            "status": "running",
+        }
+        content = json.dumps(start_only) + "\n"
+        s3.put_object(Bucket=BUCKET, Key=RUNS_KEY, Body=content.encode("utf-8"))
+
+        since = datetime.now(UTC) - timedelta(days=7)
+        runs = _fetch_runs(s3, BUCKET, since)
+        report = _analyze(runs, [])
+
+        assert report["patterns"]["stale_running_entries"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _analyze — success_rate excludes in-progress runs from denominator
+# ---------------------------------------------------------------------------
+
+class TestSuccessRateExcludesRunningRuns:
+    def test_success_rate_excludes_running_from_denominator(self):
+        """A currently-running entry should not count as failure in success_rate."""
+        runs = [
+            _make_run(status="success"),
+            _make_run(status="running"),  # currently in progress — should be excluded
+        ]
+        report = _analyze(runs, [])
+        # 1 success, 0 failed, 1 running — rate = 1/(1+0) = 100%
+        assert report["summary"]["success_rate"] == "100.0%"
+
+    def test_success_rate_na_when_no_completed_runs(self):
+        """If all runs are still running (no completions), rate should be N/A."""
+        runs = [_make_run(status="running")]
+        report = _analyze(runs, [])
+        assert report["summary"]["success_rate"] == "N/A"

@@ -76,12 +76,14 @@ class TestAcquireNoExistingLock:
         assert data["runner"] == "machine-A"
 
     def test_acquire_writes_pid(self, s3_client):
+        # The lock stores the PARENT PID so that a separate release subprocess
+        # (which shares the same parent) can match it.
         lock = _make_lock()
         lock.acquire()
 
         resp = s3_client.get_object(Bucket=BUCKET, Key=LOCK_KEY)
         data = json.loads(resp["Body"].read())
-        assert data["pid"] == os.getpid()
+        assert data["pid"] == os.getppid()
 
     def test_acquire_writes_ttl(self, s3_client):
         lock = _make_lock(ttl_seconds=1800)
@@ -201,6 +203,35 @@ class TestRelease:
         lock = _make_lock()
         lock._acquired = False
         lock.release()  # should not raise
+
+    def test_release_matches_parent_pid_from_different_subprocess(self, s3_client):
+        """Simulates the run.sh pattern: acquire in subprocess A, release in subprocess B.
+
+        Both subprocesses share the same parent (the bash script). The lock
+        stores os.getppid() so that a release subprocess can verify ownership
+        without needing the exact PID of the acquire subprocess.
+        """
+        parent_pid = os.getppid()
+        data = {
+            "runner": "my-runner",
+            "pid": parent_pid,  # stored by acquire subprocess as os.getppid()
+            "acquired_at": datetime.now(UTC).isoformat(),
+            "ttl_seconds": DEFAULT_TTL_SECONDS,
+        }
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=LOCK_KEY,
+            Body=json.dumps(data).encode("utf-8"),
+            ContentType="application/json",
+        )
+
+        # Release from same process (shares the same parent PID) — should succeed.
+        with patch.dict(os.environ, {"RUNNER": "my-runner"}):
+            lock = S3Lock(bucket=BUCKET)
+            lock._acquired = True
+            lock.release()
+
+        assert not _key_exists(s3_client, LOCK_KEY)
 
 
 # ---------------------------------------------------------------------------

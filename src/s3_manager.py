@@ -385,7 +385,8 @@ class S3Manager:
         """Ping Overcast to trigger an immediate feed crawl.
 
         Uses Overcast's ping API: https://overcast.fm/podcasterinfo
-        Silently skips on failure.
+        Retries once on HTTP 429 (rate-limited) with a 5-second delay.
+        All other failures are logged as warnings and swallowed.
         """
         cloudfront_base = os.environ.get("CLOUDFRONT_BASE", "")
         if not cloudfront_base:
@@ -395,6 +396,7 @@ class S3Manager:
 
         try:
             import ssl
+            import urllib.error
             import urllib.parse
             import urllib.request
 
@@ -404,7 +406,18 @@ class S3Manager:
             params = urllib.parse.urlencode({"urlprefix": feed_url})
             url = f"https://overcast.fm/ping?{params}"
             req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
-                logger.info("Overcast ping sent for %s (status=%d)", feed_url, resp.status)
+
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
+                        logger.info("Overcast ping sent for %s (status=%d)", feed_url, resp.status)
+                        return
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 429 and attempt == 0:
+                        # Rate-limited — wait and retry once
+                        logger.debug("Overcast rate-limited (429), retrying in 5s for %s", feed_url)
+                        time.sleep(5)
+                        continue
+                    raise
         except Exception as exc:
             logger.warning("Overcast ping failed: %s", exc)

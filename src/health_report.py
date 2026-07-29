@@ -26,26 +26,47 @@ RUNS_KEY = "_meta/runs.jsonl"
 
 
 def _fetch_runs(s3, bucket: str, since: datetime) -> list[dict]:
-    """Fetch run history entries since a given date."""
+    """Fetch run history entries since a given date.
+
+    Deduplicates by run_id — later lines win — so the start-of-run
+    "running" record is replaced by the final "success"/"error" record
+    written at the end of each run.  Without this, every run contributes
+    two JSONL entries and the health metrics (success rate, stuck runs)
+    are wildly wrong.
+    """
     try:
         resp = s3.get_object(Bucket=bucket, Key=RUNS_KEY)
         content = resp["Body"].read().decode("utf-8")
     except Exception:
         return []
 
-    runs = []
+    # First pass: deduplicate — the final status record overwrites the
+    # start-of-run "running" record for the same run_id.
+    seen: dict = {}
     for line in content.strip().split("\n"):
         if not line.strip():
             continue
         try:
             record = json.loads(line)
-            started = record.get("started_at", "")
-            if started:
+            run_id = record.get("run_id")
+            if run_id:
+                seen[run_id] = record  # last occurrence wins (final status)
+            else:
+                seen[id(record)] = record  # no run_id: keep as-is
+        except json.JSONDecodeError:
+            continue
+
+    # Second pass: filter by date
+    runs = []
+    for record in seen.values():
+        started = record.get("started_at", "")
+        if started:
+            try:
                 dt = datetime.fromisoformat(started)
                 if dt >= since:
                     runs.append(record)
-        except (json.JSONDecodeError, ValueError):
-            continue
+            except ValueError:
+                continue
     return runs
 
 
@@ -139,12 +160,16 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
     durations = [r["duration_secs"] for r in runs if r.get("duration_secs")]
     avg_duration = sum(durations) / len(durations) if durations else 0
 
+    # Denominator is completed runs only — exclude in-progress runs so
+    # a currently-running job does not drag down the rate.
+    completed = successful + failed
+
     report["summary"] = {
         "total_runs": total_runs,
         "successful": successful,
         "failed": failed,
         "still_running": still_running,
-        "success_rate": f"{(successful / total_runs * 100):.1f}%" if total_runs else "N/A",
+        "success_rate": f"{(successful / completed * 100):.1f}%" if completed else "N/A",
         "avg_duration_mins": round(avg_duration / 60, 1),
         "max_duration_mins": round(max(durations) / 60, 1) if durations else 0,
     }
