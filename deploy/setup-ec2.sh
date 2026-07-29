@@ -35,6 +35,19 @@ fi
 sudo systemctl enable crond
 sudo systemctl start crond
 
+# --- Swap space (prevents silent OOM kill during long runs) ---
+echo "→ Configuring swap space..."
+if ! swapon --show | grep -q '/swapfile'; then
+  [ -f /swapfile ] || sudo fallocate -l 2G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap -f /swapfile
+  sudo swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  echo "  ✅ 2GB swapfile created and activated"
+else
+  echo "  Swap already configured ($(swapon --show --bytes | awk 'NR>1{sum+=$3} END{printf "%.1fGB", sum/1073741824}'))"
+fi
+
 # --- Set timezone to America/Los_Angeles (PDT/PST) ---
 echo "→ Setting timezone to America/Los_Angeles..."
 sudo timedatectl set-timezone America/Los_Angeles
