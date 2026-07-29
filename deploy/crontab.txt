@@ -1,12 +1,14 @@
-# PodcastDrive — runs 4x daily (times in local timezone: America/Los_Angeles)
+# PodcastDrive — runs 5x daily (times in local timezone: America/Los_Angeles)
+# Gaps: 6:30→9:30 (3h), 9:30→12:30 (3h), 12:30→16:00 (3.5h), 16:00→20:00 (4h)
 # Logs rotated by the application itself (LOG_RETENTION_DAYS in config.env)
 SHELL=/bin/bash
 PATH=/home/ec2-user/.deno/bin:/home/ec2-user/PodcastDrive/.venv/bin:/usr/local/bin:/usr/bin:/bin
 
 30 6  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
-30 8  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
+30 9  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
 30 12 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
-30 15 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
+0  16 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
+0  20 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
 
 # Weekly self-heal — retries failed episodes and clears stale caches (Sunday 10 AM PDT)
 0 10 * * 0 cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./health.sh --heal --apply >> logs/cron.log 2>&1
