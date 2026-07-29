@@ -271,14 +271,15 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
 
     # Detect long silence: no run started in the last 8 hours
     if runs:
-        latest_start = max(
-            (
-                datetime.fromisoformat(r["started_at"])
-                for r in runs
-                if r.get("started_at")
-            ),
-            default=None,
-        )
+        valid_starts = []
+        for r in runs:
+            started_str = r.get("started_at", "")
+            if started_str:
+                try:
+                    valid_starts.append(datetime.fromisoformat(started_str))
+                except ValueError:
+                    pass
+        latest_start = max(valid_starts) if valid_starts else None
         if latest_start is not None:
             hours_since = (now - latest_start).total_seconds() / 3600
             if hours_since > 8:
