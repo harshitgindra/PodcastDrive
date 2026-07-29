@@ -1595,9 +1595,105 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"ffmpeg splice failed (exit {exc.returncode}):\n{exc.stderr}"
-        ) from exc
+        if exc.returncode == -11:
+            # SIGSEGV — the atrim filter_complex path crashed ffmpeg (seen on
+            # ARM with long files).  Retry using the concat demuxer: extract
+            # each keep interval as an independent segment file, then join them.
+            logger.warning(
+                "[AdRemover] ffmpeg SIGSEGV (exit -11) — retrying with "
+                "concat-demuxer fallback for %s",
+                mp3_path,
+            )
+            _splice_concat_demuxer(mp3_path, keep, output_path)
+        else:
+            raise RuntimeError(
+                f"ffmpeg splice failed (exit {exc.returncode}):\n{exc.stderr}"
+            ) from exc
+
+
+def _splice_concat_demuxer(
+    mp3_path: str,
+    keep: list[tuple[float, float]],
+    output_path: str,
+) -> None:
+    """Concat-demuxer fallback for ``splice_audio``.
+
+    Extracts each keep interval as a separate segment file using stream-copy
+    (no re-encode), then joins all segments with the ``-f concat`` demuxer and
+    re-encodes to MP3 with libmp3lame.  Slower than the filter_complex path but
+    avoids the ARM ffmpeg SIGSEGV triggered by long filter graphs.
+
+    Args:
+        mp3_path:    Path to the source audio file.
+        keep:        List of ``(start, end)`` float tuples to retain.
+        output_path: Destination path for the cleaned audio file.
+
+    Raises:
+        RuntimeError: If any ffmpeg sub-command fails.
+    """
+    import tempfile
+
+    work_dir = os.path.dirname(output_path) or tempfile.gettempdir()
+    segment_paths: list[str] = []
+
+    try:
+        # Step 1: extract each keep interval via stream-copy
+        for i, (start, end) in enumerate(keep):
+            seg_path = os.path.join(work_dir, f"_seg_{i}_{os.getpid()}.mp3")
+            segment_paths.append(seg_path)
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(start),
+                "-to", str(end),
+                "-i", mp3_path,
+                "-c:a", "copy",
+                seg_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg segment {i} extraction failed "
+                    f"(exit {result.returncode}):\n{result.stderr}"
+                )
+
+        # Step 2: write concat list file
+        list_path = os.path.join(work_dir, f"_concat_{os.getpid()}.txt")
+        with open(list_path, "w") as fh:
+            for seg_path in segment_paths:
+                fh.write(f"file '{seg_path}'\n")
+
+        # Step 3: join and re-encode
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", list_path,
+            "-codec:a", "libmp3lame",
+            "-q:a", "2",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg concat-demuxer join failed "
+                f"(exit {result.returncode}):\n{result.stderr}"
+            )
+
+        logger.info(
+            "[AdRemover] concat-demuxer fallback succeeded for %s", mp3_path
+        )
+
+    finally:
+        # Clean up temp segment files
+        for seg_path in segment_paths:
+            try:
+                os.remove(seg_path)
+            except OSError:
+                pass
+        try:
+            os.remove(list_path)  # type: ignore[possibly-undefined]
+        except (OSError, NameError):
+            pass
 
 
 # ---------------------------------------------------------------------------

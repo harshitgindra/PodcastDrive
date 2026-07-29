@@ -3395,3 +3395,114 @@ class TestCachedPathSummaryGeneration:
             str(src), "ep-cached-no-gen", str(tmp_path)
         )
         assert summary == ""
+
+
+
+
+# ---------------------------------------------------------------------------
+# concat-demuxer fallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestSpliceConcatDemuxer:
+    """Unit tests for the _splice_concat_demuxer fallback function."""
+
+    def test_fallback_called_on_sigsegv(self, monkeypatch, tmp_path):
+        """splice_audio triggers _splice_concat_demuxer on ffmpeg exit -11."""
+        import subprocess
+        import ad_remover
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 5000)
+        out = tmp_path / "out.mp3"
+
+        sigsegv_exc = subprocess.CalledProcessError(-11, "ffmpeg", stderr="Segmentation fault")
+        fallback_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "-filter_complex" in cmd:
+                raise sigsegv_exc
+            return subprocess.CompletedProcess(cmd, 0, stdout="120.0", stderr="")
+
+        monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
+
+        def fake_fallback(mp3_path, keep, output_path):
+            fallback_called.append((mp3_path, keep, output_path))
+            import pathlib
+            pathlib.Path(output_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "_splice_concat_demuxer", fake_fallback)
+
+        ad_remover.splice_audio(
+            str(src),
+            [{"start": 30.0, "end": 60.0}],
+            str(out),
+        )
+
+        assert len(fallback_called) == 1
+        mp3_arg, keep_arg, out_arg = fallback_called[0]
+        assert mp3_arg == str(src)
+        assert out_arg == str(out)
+        assert keep_arg[0] == (0.0, 30.0)
+        assert keep_arg[1][0] == 60.0
+
+    def test_non_sigsegv_not_swallowed(self, monkeypatch, tmp_path):
+        """splice_audio re-raises CalledProcessError for non-SIGSEGV exit codes."""
+        import subprocess
+        import ad_remover
+        import pytest
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 5000)
+        out = tmp_path / "out.mp3"
+
+        exc = subprocess.CalledProcessError(1, "ffmpeg", stderr="error")
+
+        def fake_run(cmd, **kwargs):
+            if "-filter_complex" in cmd:
+                raise exc
+            return subprocess.CompletedProcess(cmd, 0, stdout="120.0", stderr="")
+
+        monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="ffmpeg splice failed"):
+            ad_remover.splice_audio(
+                str(src),
+                [{"start": 30.0, "end": 60.0}],
+                str(out),
+            )
+
+    def test_concat_demuxer_cleans_up_on_error(self, monkeypatch, tmp_path):
+        """_splice_concat_demuxer removes segment files even when join fails."""
+        import subprocess
+        import ad_remover
+        import pytest
+        import pathlib
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 5000)
+        out = tmp_path / "out.mp3"
+
+        created_segs: list = []
+
+        def fake_run(cmd, **kwargs):
+            if "-ss" in cmd and "-to" in cmd:
+                seg_path = cmd[-1]
+                pathlib.Path(seg_path).write_bytes(b"seg")
+                created_segs.append(seg_path)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "-f" in cmd and "concat" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="concat failed")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="concat-demuxer join failed"):
+            ad_remover._splice_concat_demuxer(
+                str(src),
+                [(0.0, 30.0), (60.0, 120.0)],
+                str(out),
+            )
+
+        for seg in created_segs:
+            assert not pathlib.Path(seg).exists(), f"Segment not cleaned up: {seg}"
