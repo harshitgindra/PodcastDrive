@@ -7,3 +7,6 @@ PATH=/home/ec2-user/.deno/bin:/home/ec2-user/PodcastDrive/.venv/bin:/usr/local/b
 30 8  * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
 30 12 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
 30 15 * * * cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./run.sh >> logs/cron.log 2>&1
+
+# Weekly self-heal — retries failed episodes and clears stale caches (Sunday 10 AM PDT)
+0 10 * * 0 cd /home/ec2-user/PodcastDrive && TRIGGER=cron ./health.sh --heal --apply >> logs/cron.log 2>&1
