@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads
 from downloader import download_and_convert
-from extractor import extract_playlist, extract_video_metadata
+from extractor import BotDetectedError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
 from s3_manager import S3Manager
@@ -138,6 +138,7 @@ def process_playlist(
         skipped_old = 0
         skipped_unavailable = 0
         failed_count = 0
+        bot_detected = False
 
         for i, video in enumerate(candidates):
             logger.info(
@@ -242,6 +243,14 @@ def process_playlist(
                 if sleep_between > 0 and (i + 1) < len(candidates):
                     time.sleep(sleep_between)
 
+            except BotDetectedError as bde:
+                bot_detected = True
+                logger.error(
+                    "[Step 4] BOT DETECTION: YouTube is blocking requests. "
+                    "All remaining candidates will be skipped. Error: %s", bde,
+                )
+                break
+
             except Exception as exc:
                 failed_count += 1
                 logger.error("[Step 4] FAILED %s: %s", video.video_id, exc, exc_info=True)
@@ -268,9 +277,10 @@ def process_playlist(
             final_keys = s3.list_existing_episodes()
 
         elapsed = time.monotonic() - _run_start
-        logger.info(
-            "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d failed=%d total_s3=%d elapsed=%.1fs",
-            playlist_id, new_count, skipped_old, failed_count, len(final_keys), elapsed,
+        log_fn = logger.error if bot_detected else logger.info
+        log_fn(
+            "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d failed=%d bot_detected=%s total_s3=%d elapsed=%.1fs",
+            playlist_id, new_count, skipped_old, failed_count, bot_detected, len(final_keys), elapsed,
         )
 
         return {
@@ -278,6 +288,7 @@ def process_playlist(
             "new_episodes": new_count,
             "skipped_old": skipped_old,
             "failed": failed_count,
+            "bot_detected": bot_detected,
             "total_episodes": len(final_keys),
             "elapsed_seconds": round(elapsed, 1),
         }

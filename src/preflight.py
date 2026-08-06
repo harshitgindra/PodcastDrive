@@ -183,6 +183,20 @@ def _check_yt_dlp() -> None:
         _fail(f"yt-dlp binary found at {yt_dlp_bin} but failed to run")
     _ok(f"yt-dlp binary version: {result.stdout.strip()} ({yt_dlp_bin})")
 
+    # Check deno (required JS runtime for YouTube n-challenge cipher)
+    deno_bin = shutil.which("deno")
+    if not deno_bin:
+        _warn(
+            "deno not found on PATH — YouTube extraction will be degraded. "
+            "Install with: curl -fsSL https://deno.land/install.sh | sh"
+        )
+    else:
+        deno_ver = subprocess.run(
+            [deno_bin, "--version"], capture_output=True, text=True
+        )
+        ver_line = deno_ver.stdout.splitlines()[0] if deno_ver.stdout else "unknown"
+        _ok(f"deno JS runtime: {ver_line} ({deno_bin})")
+
 
 def _check_ffmpeg() -> None:
     """Verify ffmpeg is available on PATH."""
@@ -337,6 +351,61 @@ def _check_cookies() -> None:
     else:
         _ok(f"cookies.txt is {age_days:.1f} days old (within 14-day threshold)")
 
+    # Check for authenticated cookies (SID/SSID = logged-in session)
+    with open(cookies_path) as f:
+        content = f.read()
+    auth_markers = ("SID", "SSID", "HSID", "LOGIN_INFO", "SAPISID")
+    has_auth = any(f"\t{m}\t" in content or f" {m} " in content for m in auth_markers)
+    if not has_auth:
+        _warn(
+            "cookies.txt has NO authenticated session cookies (missing SID/SSID/HSID). "
+            "YouTube will trigger bot detection from server IPs. "
+            "Log into YouTube in Firefox, then run: ./refresh_cookies.sh"
+        )
+    else:
+        _ok("cookies.txt contains authenticated session cookies")
+
+
+def _check_youtube_access() -> None:
+    """Test that yt-dlp can actually extract a video without bot detection.
+
+    Uses a known long-lived public video (Rick Astley - Never Gonna Give You Up)
+    as a canary. If this fails with bot detection, all channel syncs will fail.
+    """
+    _section("YouTube access (bot detection canary)")
+
+    import yt_dlp
+
+    # Use a well-known video that will never be deleted
+    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "ignoreerrors": False,
+    }
+
+    from ytdlp_cookies import inject_cookies
+    inject_cookies(ydl_opts)
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(test_url, download=False)
+        if info and info.get("title"):
+            _ok(f"YouTube extraction working (canary: {info['title'][:40]})")
+        else:
+            _warn("YouTube canary returned no data — downloads may fail")
+    except yt_dlp.utils.DownloadError as exc:
+        msg = str(exc).lower()
+        if "sign in to confirm" in msg or "bot" in msg:
+            _fail(
+                "YouTube BOT DETECTION active — all channel downloads will fail. "
+                "Fix: log into YouTube in Firefox, run ./refresh_cookies.sh, "
+                "and ensure deno is installed (for JS cipher)."
+            )
+        else:
+            _warn(f"YouTube canary failed (non-bot): {exc}")
+
 
 def _check_disk_space() -> None:
     """Verify sufficient disk space is available in the temp directory."""
@@ -383,6 +452,7 @@ def run_preflight(dry_run: bool = False) -> None:
     _check_yt_dlp()
     _check_ffmpeg()
     _check_cookies()
+    _check_youtube_access()
 
     _check_disk_space()
 

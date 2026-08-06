@@ -1,6 +1,6 @@
 #!/bin/bash
-# refresh_cookies.sh — Export fresh YouTube cookies from Firefox and deploy to EC2
-# Reads Firefox's cookie DB directly (no network, no hanging).
+# refresh_cookies.sh — Export fresh YouTube cookies from Chrome and deploy to EC2
+# Uses yt-dlp'"'"'s built-in Chrome cookie decryption (handles macOS Keychain).
 # Usage: ./refresh_cookies.sh
 set -euo pipefail
 
@@ -20,24 +20,40 @@ SSH_KEY="${HOME}/.ssh/${KEY_NAME}.pem"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=10"
 HOST="${PUBLIC_IP}"
 
-echo "[$(date '+%H:%M:%S')] Refreshing YouTube cookies..."
+echo "[$(date +%H:%M:%S)] Refreshing YouTube cookies..."
 
-# Step 1: Export fresh cookies from Firefox (reads SQLite directly — instant)
-OUTPUT=$("$VENV_PYTHON" "${SCRIPT_DIR}/src/export_cookies.py" "$COOKIES_FILE" 2>&1)
+# Step 1: Export cookies from Chrome using yt-dlp (decrypts Keychain-encrypted values).
+# Falls back to Firefox direct SQLite read if Chrome fails.
+"$VENV_PYTHON" -m yt_dlp \
+  --cookies-from-browser chrome \
+  --cookies "$COOKIES_FILE" \
+  --skip-download \
+  --no-warnings \
+  --no-update \
+  --print title \
+  "https://www.youtube.com/watch?v=dQw4w9WgXcQ" > /dev/null 2>&1
+EXPORT_RC=$?
+
+if [ $EXPORT_RC -ne 0 ]; then
+  echo "  Warning: Chrome cookie export failed (rc=$EXPORT_RC). Trying Firefox..."
+  OUTPUT=$("$VENV_PYTHON" "${SCRIPT_DIR}/src/export_cookies.py" "$COOKIES_FILE" 2>&1)
+  echo "  ${OUTPUT}"
+fi
+
 COOKIE_COUNT=$(grep -c "youtube.com\|google.com" "$COOKIES_FILE" 2>/dev/null || echo 0)
 
 if [ "$COOKIE_COUNT" -eq 0 ]; then
-  echo "  ⚠️  No YouTube cookies found in Firefox. Are you logged in?"
+  echo "  Warning: No YouTube cookies found. Are you logged into YouTube in Chrome?"
   exit 0
 fi
-echo "  ✅ ${OUTPUT}"
+echo "  OK: Exported $COOKIE_COUNT YouTube/Google cookies from Chrome"
 
 # Step 2: Copy to EC2
 if ssh $SSH_OPTS "ec2-user@${HOST}" "true" 2>/dev/null; then
   scp $SSH_OPTS "$COOKIES_FILE" "ec2-user@${HOST}:/home/ec2-user/PodcastDrive/cookies.txt" 2>/dev/null
-  echo "  ✅ Deployed to EC2 (${HOST})"
+  echo "  OK: Deployed to EC2 (${HOST})"
 else
-  echo "  ⚠️  EC2 unreachable (${HOST}). Cookies saved locally only."
+  echo "  Warning: EC2 unreachable (${HOST}). Cookies saved locally only."
 fi
 
-echo "[$(date '+%H:%M:%S')] Done."
+echo "[$(date +%H:%M:%S)] Done."

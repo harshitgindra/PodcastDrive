@@ -164,7 +164,7 @@ fi
 
 VENV_PIP="${SCRIPT_DIR}/.venv/bin/pip"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python3"
-export PATH="${SCRIPT_DIR}/.venv/bin:$PATH"
+export PATH="${HOME}/.deno/bin:${SCRIPT_DIR}/.venv/bin:$PATH"
 ok "Virtual environment ready"
 
 # Install dependencies if missing
@@ -540,7 +540,10 @@ for i, podcast in enumerate(enabled):
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
         feed_url = f'{cloudfront_base}/{playlist_id}/feed.xml' if playlist_id and cloudfront_base else ''
         if not dry_run:
-            provider.update_status(podcast, 'Done')
+            if result.get('bot_detected'):
+                provider.update_status(podcast, 'Error: Bot Detection')
+            else:
+                provider.update_status(podcast, 'Done')
             provider.update_last_run(podcast, feed_url=feed_url)
     except Exception as e:
         if not dry_run:

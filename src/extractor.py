@@ -100,6 +100,11 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
     return playlist_meta, video_entries
 
 
+class BotDetectedError(Exception):
+    """Raised when YouTube returns a bot-detection challenge."""
+    pass
+
+
 def extract_video_metadata(video_url: str) -> dict | None:
     """Extract full metadata for a single video.
 
@@ -108,13 +113,16 @@ def extract_video_metadata(video_url: str) -> dict | None:
 
     Returns:
         Dict with upload_date, description, thumbnail, duration, title.
-        None on failure.
+        None if video is genuinely unavailable (deleted/private/region-blocked).
+
+    Raises:
+        BotDetectedError: YouTube is blocking requests (cookies expired or IP flagged).
     """
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "ignoreerrors": True,
+        "ignoreerrors": False,
     }
     inject_cookies(ydl_opts)
 
@@ -134,6 +142,17 @@ def extract_video_metadata(video_url: str) -> dict | None:
             "live_status": info.get("live_status"),
             "chapters": info.get("chapters") or [],
         }
+    except yt_dlp.utils.DownloadError as exc:
+        msg = str(exc).lower()
+        if "sign in to confirm" in msg or "bot" in msg:
+            raise BotDetectedError(
+                f"YouTube bot detection triggered for {video_url}. "
+                "Cookies are expired or missing authentication. "
+                "Refresh with: ./refresh_cookies.sh"
+            ) from exc
+        # Genuine unavailability (private, deleted, region-blocked)
+        logger.info("Video unavailable %s: %s", video_url, exc)
+        return None
     except Exception as exc:
         logger.warning("Failed to extract metadata for %s: %s", video_url, exc)
         return None

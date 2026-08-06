@@ -145,8 +145,8 @@ class TestProcessPlaylistHappyPath:
         videos = [_make_video("vid001")]
         result, _, _ = self._run(videos)
         assert set(result.keys()) == {
-            "playlist_id", "new_episodes", "skipped_old", "failed", "total_episodes",
-            "elapsed_seconds",
+            "playlist_id", "new_episodes", "skipped_old", "failed", "bot_detected",
+            "total_episodes", "elapsed_seconds",
         }
 
     def test_downloads_new_episode(self):
