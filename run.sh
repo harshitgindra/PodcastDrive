@@ -178,6 +178,27 @@ if ! "${VENV_PYTHON}" -c "import yt_dlp, boto3, yaml, certifi" 2>/dev/null; then
 fi
 ok "Python dependencies installed"
 
+# Auto-update yt-dlp (YouTube changes download signatures frequently; stale yt-dlp → 403)
+YT_DLP_AGE_DAYS="${YT_DLP_UPDATE_INTERVAL_DAYS:-7}"
+YT_DLP_MARKER="${SCRIPT_DIR}/.venv/.ytdlp_updated"
+if [ ! -f "$YT_DLP_MARKER" ] || [ "$(find "$YT_DLP_MARKER" -mtime "+${YT_DLP_AGE_DAYS}" 2>/dev/null)" ]; then
+    "${VENV_PIP}" install --quiet --upgrade yt-dlp 2>/dev/null && touch "$YT_DLP_MARKER"
+    ok "yt-dlp updated (checked every ${YT_DLP_AGE_DAYS}d)"
+else
+    ok "yt-dlp up to date (last checked <${YT_DLP_AGE_DAYS}d ago)"
+fi
+
+# Auto-refresh cookies if stale (Mac only — skipped on EC2/Linux where no browser exists)
+COOKIE_MAX_AGE_HOURS="${COOKIE_REFRESH_HOURS:-4}"
+if [ "$(uname)" = "Darwin" ] && [ -f "${SCRIPT_DIR}/refresh_cookies.sh" ]; then
+    COOKIES="${SCRIPT_DIR}/cookies.txt"
+    if [ ! -f "$COOKIES" ] || [ "$(find "$COOKIES" -mmin "+$((COOKIE_MAX_AGE_HOURS * 60))" 2>/dev/null)" ]; then
+        "${SCRIPT_DIR}/refresh_cookies.sh" 2>/dev/null && ok "Cookies refreshed (>${COOKIE_MAX_AGE_HOURS}h old)" || warn "Cookie refresh failed (using existing)"
+    else
+        ok "Cookies fresh (<${COOKIE_MAX_AGE_HOURS}h old)"
+    fi
+fi
+
 # --- Defaults ---
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-west-2}"
 
@@ -408,6 +429,9 @@ fi
 
 # --- Track overall run status ---
 RUN_STATUS="success"
+NOTIFY_RESULTS="${LOG_DIR}/.notify_results.json"
+echo "[]" > "$NOTIFY_RESULTS"
+export NOTIFY_RESULTS
 
 # --- Preflight checks ---
 PODCAST_DRY_RUN="$DRY_RUN" "${VENV_PYTHON}" -c "
@@ -468,6 +492,14 @@ try:
     result = process_playlist(url, dry_run=dry_run)
     print(json.dumps(result, indent=2))
 
+    # Collect for notification
+    notify_file = os.environ.get('NOTIFY_RESULTS', '')
+    if notify_file:
+        entries = json.load(open(notify_file))
+        name = notion_podcast.name if notion_podcast else result.get('playlist_id', url.split('/@')[-1].split('/')[0] if '/@' in url else url)[:40]
+        entries.append({'name': name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'bot_detected': result.get('bot_detected', False)})
+        json.dump(entries, open(notify_file, 'w'))
+
     if notion_podcast and not dry_run:
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
         pid = result.get('playlist_id', '')
@@ -483,6 +515,13 @@ except Exception as e:
         except Exception:
             pass
     print(f'ERROR: {e}', file=sys.stderr)
+    # Collect failure for notification
+    notify_file = os.environ.get('NOTIFY_RESULTS', '')
+    if notify_file:
+        entries = json.load(open(notify_file))
+        name = notion_podcast.name if notion_podcast else (url.split('/@')[-1].split('/')[0] if '/@' in url else url)[:40]
+        entries.append({'name': name, 'new_episodes': 0, 'failed': 0, 'error': str(e)})
+        json.dump(entries, open(notify_file, 'w'))
 " || { echo "ERROR: Failed processing $URL"; RUN_STATUS="partial_failure"; }
     done
 else
@@ -535,6 +574,13 @@ for i, podcast in enumerate(enabled):
         )
         print(json.dumps(result, indent=2))
 
+        # Collect for notification
+        notify_file = os.environ.get('NOTIFY_RESULTS', '')
+        if notify_file:
+            entries = json.load(open(notify_file))
+            entries.append({'name': podcast.name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'bot_detected': result.get('bot_detected', False)})
+            json.dump(entries, open(notify_file, 'w'))
+
         # Build feed URL and update Notion
         playlist_id = result.get('playlist_id', '')
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
@@ -550,6 +596,12 @@ for i, podcast in enumerate(enabled):
             provider.update_status(podcast, 'Failed')
             provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
+        # Collect failure for notification
+        notify_file = os.environ.get('NOTIFY_RESULTS', '')
+        if notify_file:
+            entries = json.load(open(notify_file))
+            entries.append({'name': podcast.name, 'new_episodes': 0, 'failed': 0, 'error': str(e)})
+            json.dump(entries, open(notify_file, 'w'))
     print()
 " || { echo "ERROR: Failed processing YouTube podcasts"; RUN_STATUS="partial_failure"; }
 
@@ -584,6 +636,13 @@ for i, podcast in enumerate(enabled):
         result = process_podcast_feed(podcast, provider=provider, dry_run=dry_run)
         print(json.dumps(result, indent=2))
 
+        # Collect for notification
+        notify_file = os.environ.get('NOTIFY_RESULTS', '')
+        if notify_file:
+            entries = json.load(open(notify_file))
+            entries.append({'name': podcast.name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'bot_detected': False})
+            json.dump(entries, open(notify_file, 'w'))
+
         # Build feed URL and update Notion
         slug = result.get('slug', '')
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
@@ -596,6 +655,12 @@ for i, podcast in enumerate(enabled):
             provider.update_status(podcast, 'Failed')
             provider.update_last_run(podcast)
         print(f'ERROR: {e}', file=sys.stderr)
+        # Collect failure for notification
+        notify_file = os.environ.get('NOTIFY_RESULTS', '')
+        if notify_file:
+            entries = json.load(open(notify_file))
+            entries.append({'name': podcast.name, 'new_episodes': 0, 'failed': 0, 'error': str(e)})
+            json.dump(entries, open(notify_file, 'w'))
     print()
 " || { echo "ERROR: Failed processing RSS podcast feeds"; RUN_STATUS="partial_failure"; }
 fi
@@ -626,6 +691,20 @@ if os.path.exists(record_file):
     save_run_history(record)
     os.remove(record_file)
 upload_run_log()
+" 2>/dev/null || true
+
+  # --- Send Telegram notification ---
+  PODCAST_RUN_ELAPSED="$ELAPSED" PODCAST_RUN_STATUS="$RUN_STATUS" "${VENV_PYTHON}" -c "
+import json, os
+from notifier import send_run_notification
+notify_file = os.environ.get(\"NOTIFY_RESULTS\", \"\")
+if notify_file and os.path.exists(notify_file):
+    results = json.load(open(notify_file))
+    send_run_notification(
+        results,
+        elapsed_secs=int(os.environ.get(\"PODCAST_RUN_ELAPSED\", \"0\")),
+        status=os.environ.get(\"PODCAST_RUN_STATUS\", \"success\"),
+    )
 " 2>/dev/null || true
 fi
 
