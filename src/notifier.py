@@ -4,8 +4,9 @@ Formats a per-podcast summary and sends it through Herald (if installed).
 When Herald is not installed or not configured, notifications are silently
 skipped — this is by design so PodcastDrive works standalone.
 
-Install Herald: pip install -e ~/Projects/Herald
+Install Herald: pipx install herald (or pip install -e ~/Projects/Herald)
 Configure: ~/.config/herald/config.yaml
+Requires: Herald >= 0.2.0 (for --message flag support)
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
+
+_MIN_HERALD_VERSION = (0, 2, 0)
 
 
 def send_run_notification(
@@ -38,6 +41,9 @@ def send_run_notification(
     """
     if not _herald_available():
         logger.debug("Herald not installed — skipping notification")
+        return False
+
+    if not _herald_supports_message_flag():
         return False
 
     message = _format_message(results, elapsed_secs=elapsed_secs, status=status)
@@ -92,11 +98,62 @@ def _herald_available() -> bool:
     return shutil.which("herald") is not None
 
 
-def _send_via_herald(message: str) -> bool:
-    """Call Herald CLI to send the message."""
+def _herald_supports_message_flag() -> bool:
+    """Check that installed Herald is >= 0.2.0 (supports --message flag).
+
+    Runs ``herald version``, parses the X.Y.Z output, and compares against
+    the minimum required version. On any failure, returns False with a
+    warning log — never raises.
+    """
     try:
         result = subprocess.run(
-            ["herald", "notify", message],
+            ["herald", "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "Herald version check failed (exit %d) — upgrade with `pipx upgrade herald`",
+                result.returncode,
+            )
+            return False
+
+        version_str = result.stdout.strip()
+        parts = version_str.split(".")
+        if len(parts) < 3:
+            logger.warning(
+                "Herald <0.2.0 detected (%r) — upgrade with `pipx upgrade herald`",
+                version_str,
+            )
+            return False
+
+        version_tuple = tuple(int(p) for p in parts[:3])
+        if version_tuple < _MIN_HERALD_VERSION:
+            logger.warning(
+                "Herald %s is too old (need >= 0.2.0) — upgrade with `pipx upgrade herald`",
+                version_str,
+            )
+            return False
+
+        return True
+
+    except FileNotFoundError:
+        logger.debug("Herald binary not found during version check")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("Herald version check timed out")
+        return False
+    except (OSError, ValueError) as exc:
+        logger.warning("Herald version check failed: %s", exc)
+        return False
+
+
+def _send_via_herald(message: str) -> bool:
+    """Call Herald CLI to send the message using the --message flag."""
+    try:
+        result = subprocess.run(
+            ["herald", "notify", "--message", message],
             capture_output=True,
             text=True,
             timeout=30,
