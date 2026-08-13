@@ -205,9 +205,8 @@ cp config.env.example config.env
 | `LOG_LEVEL` | | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `LOG_RETENTION_DAYS` | | `30` | Number of daily log files to keep |
 | **Notifications** | | | |
-| `TELEGRAM_BOT_TOKEN` | | — | Telegram Bot API token (from @BotFather). Enables run-completion notifications |
-| `TELEGRAM_CHAT_ID` | | — | Telegram chat/user ID to send notifications to (from @userinfobot) |
 | `HEALTH_ALERT_URL` | | — | Webhook URL for HIGH-priority health alerts (Slack, ntfy.sh, PagerDuty, etc.) |
+| *(Herald)* | | — | Run-completion notifications are sent via [Herald](https://github.com/harshitgindra/Herald) if installed. No PodcastDrive config needed — Herald manages its own providers. |
 
 ---
 

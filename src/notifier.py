@@ -1,25 +1,22 @@
-"""Telegram notification for run summaries.
+"""Run-completion notifications via Herald.
 
-Sends a concise per-podcast summary at the end of each run so you know
-what happened without checking logs.
+Formats a per-podcast summary and sends it through Herald (if installed).
+When Herald is not installed or not configured, notifications are silently
+skipped — this is by design so PodcastDrive works standalone.
 
-Env vars:
-    TELEGRAM_BOT_TOKEN – Bot API token.
-    TELEGRAM_CHAT_ID   – Chat/user ID to send to.
+Install Herald: pip install -e ~/Projects/Herald
+Configure: ~/.config/herald/config.yaml
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import platform
-import urllib.request
-import urllib.error
+import shutil
+import subprocess
 
 logger = logging.getLogger(__name__)
-
-TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 def send_run_notification(
@@ -28,7 +25,7 @@ def send_run_notification(
     elapsed_secs: int = 0,
     status: str = "success",
 ) -> bool:
-    """Format and send a Telegram message summarizing the run.
+    """Format and send a run summary via Herald.
 
     Args:
         results: List of per-podcast dicts with keys:
@@ -37,15 +34,23 @@ def send_run_notification(
         status: Overall run status (success/partial_failure/failure).
 
     Returns:
-        True if sent successfully, False otherwise.
+        True if sent successfully, False otherwise (including Herald not installed).
     """
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-
-    if not token or not chat_id:
-        logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — skipping notification")
+    if not _herald_available():
+        logger.debug("Herald not installed — skipping notification")
         return False
 
+    message = _format_message(results, elapsed_secs=elapsed_secs, status=status)
+    return _send_via_herald(message)
+
+
+def _format_message(
+    results: list[dict],
+    *,
+    elapsed_secs: int = 0,
+    status: str = "success",
+) -> str:
+    """Build the notification message text."""
     runner = os.environ.get("RUNNER", platform.node() or "unknown")
     mins, secs = divmod(elapsed_secs, 60)
 
@@ -79,50 +84,35 @@ def send_run_notification(
     status_emoji = "✅" if status == "success" else "⚠️"
     lines.append(f"\n{status_emoji} {total_new} downloaded, {total_failed} failed")
 
-    message = "\n".join(lines)
-    return _send_telegram(token, chat_id, message)
+    return "\n".join(lines)
 
 
-def _send_telegram(token: str, chat_id: str, text: str) -> bool:
-    """POST message to Telegram Bot API."""
-    url = TELEGRAM_API.format(token=token)
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }).encode("utf-8")
+def _herald_available() -> bool:
+    """Check if Herald CLI is installed and on PATH."""
+    return shutil.which("herald") is not None
 
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+
+def _send_via_herald(message: str) -> bool:
+    """Call Herald CLI to send the message."""
     try:
-        with urllib.request.urlopen(req, timeout=15):
-            logger.info("Telegram notification sent")
+        result = subprocess.run(
+            ["herald", "notify", message],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            logger.info("Notification sent via Herald")
             return True
-    except (urllib.error.URLError, OSError) as exc:
-        logger.error("Failed to send Telegram notification: %s", exc)
+        else:
+            logger.warning("Herald exited %d: %s", result.returncode, result.stderr.strip())
+            return False
+    except FileNotFoundError:
+        logger.debug("Herald binary not found")
         return False
-
-
-# CLI entry point — called from run.sh
-if __name__ == "__main__":
-    import sys
-
-    results_file = sys.argv[1] if len(sys.argv) > 1 else None
-    if not results_file or not os.path.exists(results_file):
-        print("Usage: python notifier.py <results.json>", file=sys.stderr)
-        sys.exit(1)
-
-    with open(results_file) as f:
-        data = json.load(f)
-
-    ok = send_run_notification(
-        data.get("results", []),
-        elapsed_secs=data.get("elapsed_secs", 0),
-        status=data.get("status", "success"),
-    )
-    sys.exit(0 if ok else 1)
+    except subprocess.TimeoutExpired:
+        logger.warning("Herald timed out after 30s")
+        return False
+    except OSError as exc:
+        logger.warning("Failed to call Herald: %s", exc)
+        return False

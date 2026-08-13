@@ -1,130 +1,141 @@
-"""Tests for src/notifier.py — Telegram run notifications."""
+"""Tests for src/notifier.py — Herald-based run notifications."""
 
-import json
-import os
+import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from notifier import send_run_notification, _send_telegram
+from notifier import send_run_notification, _format_message, _herald_available, _send_via_herald
 
 
-class TestSendRunNotification:
-    """Tests for send_run_notification()."""
+class TestFormatMessage:
+    """Tests for _format_message() — message content formatting."""
 
-    def test_skips_when_no_token(self, monkeypatch):
-        """No-op when TELEGRAM_BOT_TOKEN is unset."""
-        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-        assert send_run_notification([]) is False
-
-    def test_skips_when_no_chat_id(self, monkeypatch):
-        """No-op when TELEGRAM_CHAT_ID is unset."""
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-        assert send_run_notification([]) is False
-
-    @patch("notifier._send_telegram", return_value=True)
-    def test_formats_success_message(self, mock_send, monkeypatch):
-        """Formats a successful run with new episodes."""
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
-        monkeypatch.setenv("RUNNER", "test-mac")
-
+    def test_success_with_new_episodes(self, monkeypatch):
+        monkeypatch.setenv("RUNNER", "mac-mini")
         results = [
             {"name": "MKBHD", "new_episodes": 2, "failed": 0, "bot_detected": False},
             {"name": "Huberman", "new_episodes": 0, "failed": 0, "bot_detected": False},
         ]
-        assert send_run_notification(results, elapsed_secs=134, status="success") is True
-
-        msg = mock_send.call_args[0][2]
-        assert "test-mac" in msg
+        msg = _format_message(results, elapsed_secs=134, status="success")
+        assert "mac-mini" in msg
         assert "2m 14s" in msg
-        assert "MKBHD" in msg
-        assert "2 new" in msg
-        assert "Huberman" in msg
-        assert "up to date" in msg
+        assert "✅ MKBHD — 2 new" in msg
+        assert "— Huberman — up to date" in msg
         assert "✅ 2 downloaded, 0 failed" in msg
 
-    @patch("notifier._send_telegram", return_value=True)
-    def test_formats_failure_message(self, mock_send, monkeypatch):
-        """Formats a run with failures."""
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    def test_failure_message(self, monkeypatch):
         monkeypatch.setenv("RUNNER", "ec2")
-
         results = [
             {"name": "ThinkSchool", "new_episodes": 0, "failed": 2, "bot_detected": False},
         ]
-        assert send_run_notification(results, elapsed_secs=55, status="partial_failure") is True
-
-        msg = mock_send.call_args[0][2]
+        msg = _format_message(results, elapsed_secs=55, status="partial_failure")
         assert "ThinkSchool" in msg
         assert "2 failed" in msg
         assert "⚠️" in msg
 
-    @patch("notifier._send_telegram", return_value=True)
-    def test_formats_bot_detected(self, mock_send, monkeypatch):
-        """Shows bot detection warning."""
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
-
+    def test_bot_detected(self, monkeypatch):
+        monkeypatch.setenv("RUNNER", "test")
         results = [{"name": "Lex", "new_episodes": 0, "failed": 0, "bot_detected": True}]
-        assert send_run_notification(results, elapsed_secs=10, status="success") is True
-
-        msg = mock_send.call_args[0][2]
+        msg = _format_message(results, elapsed_secs=10, status="success")
         assert "bot detected" in msg
 
-    @patch("notifier._send_telegram", return_value=True)
-    def test_formats_error_message(self, mock_send, monkeypatch):
-        """Shows error string when present."""
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
-
+    def test_error_message(self, monkeypatch):
+        monkeypatch.setenv("RUNNER", "test")
         results = [{"name": "Broken", "error": "Connection timeout"}]
-        assert send_run_notification(results, elapsed_secs=5, status="failure") is True
-
-        msg = mock_send.call_args[0][2]
+        msg = _format_message(results, elapsed_secs=5, status="failure")
         assert "Broken" in msg
         assert "Connection timeout" in msg
 
-    @patch("notifier._send_telegram", return_value=True)
-    def test_empty_results(self, mock_send, monkeypatch):
-        """Handles empty results list gracefully."""
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
-
-        assert send_run_notification([], elapsed_secs=3, status="success") is True
-        msg = mock_send.call_args[0][2]
+    def test_empty_results(self, monkeypatch):
+        monkeypatch.setenv("RUNNER", "test")
+        msg = _format_message([], elapsed_secs=3, status="success")
         assert "0 downloaded, 0 failed" in msg
 
+    def test_mixed_results(self, monkeypatch):
+        monkeypatch.setenv("RUNNER", "test")
+        results = [
+            {"name": "A", "new_episodes": 3, "failed": 0},
+            {"name": "B", "new_episodes": 1, "failed": 1},
+            {"name": "C", "new_episodes": 0, "failed": 0, "bot_detected": True},
+            {"name": "D", "error": "timeout"},
+        ]
+        msg = _format_message(results, elapsed_secs=200, status="partial_failure")
+        assert "✅ A — 3 new" in msg
+        assert "❌ B — 1 failed, 1 new" in msg
+        assert "⚠️ C — bot detected" in msg
+        assert "❌ D — timeout" in msg
+        assert "⚠️ 4 downloaded, 1 failed" in msg
 
-class TestSendTelegram:
-    """Tests for _send_telegram() HTTP call."""
 
-    @patch("notifier.urllib.request.urlopen")
-    def test_successful_send(self, mock_urlopen):
-        """Returns True on successful HTTP call."""
-        mock_urlopen.return_value.__enter__ = MagicMock()
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
-        assert _send_telegram("token", "123", "hello") is True
+class TestHeraldAvailable:
+    """Tests for _herald_available() — checks PATH."""
 
-    @patch("notifier.urllib.request.urlopen")
-    def test_sends_correct_payload(self, mock_urlopen):
-        """Verifies correct URL and payload structure."""
-        mock_urlopen.return_value.__enter__ = MagicMock()
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
+    @patch("notifier.shutil.which", return_value="/usr/local/bin/herald")
+    def test_available(self, mock_which):
+        assert _herald_available() is True
+        mock_which.assert_called_once_with("herald")
 
-        _send_telegram("mytoken", "999", "test msg")
+    @patch("notifier.shutil.which", return_value=None)
+    def test_not_available(self, mock_which):
+        assert _herald_available() is False
 
-        req = mock_urlopen.call_args[0][0]
-        assert "mytoken" in req.full_url
-        payload = json.loads(req.data)
-        assert payload["chat_id"] == "999"
-        assert payload["text"] == "test msg"
-        assert payload["parse_mode"] == "Markdown"
 
-    @patch("notifier.urllib.request.urlopen", side_effect=OSError("network down"))
-    def test_handles_network_error(self, mock_urlopen):
-        """Returns False on network error without raising."""
-        assert _send_telegram("token", "123", "hello") is False
+class TestSendViaHerald:
+    """Tests for _send_via_herald() — subprocess call."""
+
+    @patch("notifier.subprocess.run")
+    def test_successful_send(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["herald", "notify", "msg"], returncode=0, stdout="", stderr=""
+        )
+        assert _send_via_herald("hello") is True
+        mock_run.assert_called_once_with(
+            ["herald", "notify", "hello"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    @patch("notifier.subprocess.run")
+    def test_nonzero_exit(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["herald", "notify", "msg"], returncode=1, stdout="", stderr="error"
+        )
+        assert _send_via_herald("hello") is False
+
+    @patch("notifier.subprocess.run", side_effect=FileNotFoundError)
+    def test_binary_not_found(self, mock_run):
+        assert _send_via_herald("hello") is False
+
+    @patch("notifier.subprocess.run", side_effect=subprocess.TimeoutExpired("herald", 30))
+    def test_timeout(self, mock_run):
+        assert _send_via_herald("hello") is False
+
+    @patch("notifier.subprocess.run", side_effect=OSError("permission denied"))
+    def test_os_error(self, mock_run):
+        assert _send_via_herald("hello") is False
+
+
+class TestSendRunNotification:
+    """Tests for send_run_notification() — integration."""
+
+    @patch("notifier._herald_available", return_value=False)
+    def test_skips_when_herald_not_installed(self, mock_avail):
+        assert send_run_notification([]) is False
+
+    @patch("notifier._send_via_herald", return_value=True)
+    @patch("notifier._herald_available", return_value=True)
+    def test_sends_when_herald_available(self, mock_avail, mock_send, monkeypatch):
+        monkeypatch.setenv("RUNNER", "test")
+        results = [{"name": "MKBHD", "new_episodes": 1, "failed": 0}]
+        assert send_run_notification(results, elapsed_secs=60, status="success") is True
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "MKBHD" in msg
+
+    @patch("notifier._send_via_herald", return_value=False)
+    @patch("notifier._herald_available", return_value=True)
+    def test_returns_false_when_send_fails(self, mock_avail, mock_send, monkeypatch):
+        monkeypatch.setenv("RUNNER", "test")
+        assert send_run_notification([], elapsed_secs=5, status="success") is False

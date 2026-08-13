@@ -693,7 +693,7 @@ if os.path.exists(record_file):
 upload_run_log()
 " 2>/dev/null || true
 
-  # --- Send Telegram notification ---
+  # --- Send run notification (via Herald if installed) ---
   PODCAST_RUN_ELAPSED="$ELAPSED" PODCAST_RUN_STATUS="$RUN_STATUS" "${VENV_PYTHON}" -c "
 import json, os
 from notifier import send_run_notification
