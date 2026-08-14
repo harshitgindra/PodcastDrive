@@ -65,6 +65,31 @@ class TestFormatMessage:
         msg = _format_message([], elapsed_secs=3, status="success")
         assert "0 downloaded" in msg
 
+    def test_splice_failed_warns_and_counts(self, monkeypatch):
+        """A splice failure means ads were not removed — warn even on a success run."""
+        monkeypatch.setenv("RUNNER", "test")
+        results = [{"name": "Acquired", "new_episodes": 2, "failed": 0, "splice_failed": 1}]
+        msg = _format_message(results, elapsed_secs=30, status="success")
+        assert "⚠️ Acquired — 1 splice failed (ads not removed, will retry)" in msg
+        assert "1 splice failed" in msg.splitlines()[-1]
+
+    def test_splice_failure_downgrades_a_successful_run(self, monkeypatch):
+        """status=success plus a splice failure must not show a green footer."""
+        monkeypatch.setenv("RUNNER", "test")
+        results = [{"name": "Acquired", "new_episodes": 1, "splice_failed": 2}]
+        msg = _format_message(results, elapsed_secs=30, status="success")
+        footer = msg.splitlines()[-1]
+        assert footer.startswith("⚠️")
+        assert "1 downloaded" in footer and "2 splice failed" in footer
+
+    def test_error_outranks_splice_failure(self, monkeypatch):
+        """One line per podcast: the hard error is the one worth showing."""
+        monkeypatch.setenv("RUNNER", "test")
+        results = [{"name": "Acquired", "splice_failed": 1, "error": "download timeout"}]
+        msg = _format_message(results, elapsed_secs=5, status="failure")
+        assert "❌ Acquired — download timeout" in msg
+        assert "splice failed (ads not removed" not in msg
+
     def test_mixed_results(self, monkeypatch):
         monkeypatch.setenv("RUNNER", "test")
         results = [
@@ -178,6 +203,18 @@ class TestHeraldVersionSupported:
         assert _herald_version_supported() is False
 
     @patch("notifier.subprocess.run")
+    def test_non_numeric_version_parts(self, mock_run):
+        """Three dot-separated but non-numeric parts: caught, not raised."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["herald", "version"], returncode=0, stdout="a.b.c\n", stderr=""
+        )
+        assert _herald_version_supported() is False
+
+    @patch("notifier.subprocess.run", side_effect=OSError("exec format error"))
+    def test_os_error_during_version_check(self, mock_run):
+        assert _herald_version_supported() is False
+
+    @patch("notifier.subprocess.run")
     def test_version_check_calls_correct_command(self, mock_run):
         """Verifies the exact subprocess call."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -232,6 +269,16 @@ class TestSendViaHerald:
     def test_empty_job_id_is_ignored(self, mock_run, monkeypatch):
         """An empty HERALD_JOB_ID must not produce `--job ""`."""
         monkeypatch.setenv("HERALD_JOB_ID", "")
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["herald", "notify"], returncode=0, stdout="", stderr=""
+        )
+        assert _send_via_herald("hello") is True
+        assert "--job" not in mock_run.call_args[0][0]
+
+    @patch("notifier.subprocess.run")
+    def test_whitespace_job_id_is_ignored(self, mock_run, monkeypatch):
+        """A blank-but-not-empty job id would be forwarded and misroute the reply."""
+        monkeypatch.setenv("HERALD_JOB_ID", "   ")
         mock_run.return_value = subprocess.CompletedProcess(
             args=["herald", "notify"], returncode=0, stdout="", stderr=""
         )

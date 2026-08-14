@@ -177,7 +177,7 @@ def _send_via_herald(message: str) -> bool:
 
     # Herald also reads HERALD_JOB_ID itself, but passing it explicitly keeps
     # the routing visible here instead of hiding in an inherited env var.
-    job_id = os.environ.get("HERALD_JOB_ID")
+    job_id = os.environ.get("HERALD_JOB_ID", "").strip()
     if job_id:
         argv += ["--job", job_id]
 
