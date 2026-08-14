@@ -31,9 +31,7 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.dom.minidom import parseString
 
-import boto3
-
-from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads
+from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
 from config_provider import PodcastConfig
 from podcast_downloader import (
     EpisodeMeta,
@@ -92,6 +90,57 @@ def _format_duration(seconds: int) -> str:
     if h:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
+
+
+# CDN/SSAI detection — regex table matched against the episode download URL.
+# Order matters: first match wins. SSAI (server-side ad-insertion) CDNs
+# dynamically stitch per-request audio, which occasionally produces a
+# corrupt/truncated fetch that crashes ffmpeg during splicing (confirmed for
+# Megaphone and Acast in production). Known-flaky CDNs get extra splice
+# retry attempts by default; unknown/direct-hosted sources use the plain
+# SPLICE_MAX_ATTEMPTS_PER_RUN default.
+_CDN_PATTERNS: list[tuple[str, str]] = [
+    (r"megaphone\.fm|podtrac\.com", "megaphone"),
+    (r"acast\.com", "acast"),
+    (r"art19\.com", "art19"),
+    (r"anchor\.fm|simplecastaudio\.com|simplecast\.com", "anchor"),
+    (r"cloudfront\.net", "cloudfront"),
+    (r"libsyn\.com", "libsyn"),
+]
+
+# Per-CDN splice-attempt overrides (fresh-download retries within a single run).
+# Falls back to SPLICE_MAX_ATTEMPTS_PER_RUN (env, default 2) when the CDN is
+# unknown or not listed here.
+CDN_RETRY_OVERRIDES: dict[str, int] = {
+    "megaphone": 3,
+    "acast": 3,
+}
+
+
+def detect_cdn(url: str) -> str:
+    """Best-effort CDN/SSAI provider tag derived from an episode download URL.
+
+    Args:
+        url: Episode enclosure URL (may be a redirect-tracking URL that
+             embeds the true CDN host, e.g. ``podtrac.com/.../megaphone.fm/...``).
+
+    Returns:
+        A short lowercase tag (e.g. ``"megaphone"``, ``"acast"``) or
+        ``"unknown"`` if no pattern matches.
+    """
+    if not url:
+        return "unknown"
+    for pattern, tag in _CDN_PATTERNS:
+        if re.search(pattern, url, re.IGNORECASE):
+            return tag
+    return "unknown"
+
+
+def _splice_attempts_for_cdn(cdn: str) -> int:
+    """Resolve the max fresh-download splice-retry attempts for a CDN tag."""
+    if cdn in CDN_RETRY_OVERRIDES:
+        return CDN_RETRY_OVERRIDES[cdn]
+    return int(os.environ.get("SPLICE_MAX_ATTEMPTS_PER_RUN", "2"))
 
 
 def _build_podcast_feed_xml(
@@ -366,12 +415,32 @@ def process_podcast_feed(
         skipped = 0
         for ep in episodes:
             ep_id = episode_id_from_guid(ep.guid)
+            # Permanently exhausted — never uploaded, no infinite retry loop
+            if ep_id in _splice_exhausted:
+                logger.warning(
+                    "[PodcastSync] Skipping %s permanently — splice failed %d time(s), "                     "reached MAX_SPLICE_RETRIES=%d; manual intervention required",
+                    ep_id,
+                    manifest.get(ep_id, {}).get("splice_failed_count", 0),
+                    _max_splice_retries,
+                )
+                skipped += 1
+                continue
+            # Successfully published in a prior run — skip unless eligible for splice retry.
+            # The splice_retry_ids bypass handles both new behaviour (episode never
+            # uploaded) and the migration case where the old code uploaded the original
+            # file with ads and we still need to re-process it.
             if ep_id in existing_ids and ep_id not in splice_retry_ids:
                 skipped += 1
                 logger.debug("[PodcastSync] Already in S3, skipping: %s", ep_id)
                 continue
+            # New episode, or previously splice-failed (under or over retries threshold)
             if ep_id in splice_retry_ids:
-                logger.info("[PodcastSync] Re-queuing %s for splice retry", ep_id)
+                logger.info(
+                    "[PodcastSync] Re-queuing %s for splice retry (run attempt %d/%d)",
+                    ep_id,
+                    manifest.get(ep_id, {}).get("splice_failed_count", 0) + 1,
+                    _max_splice_retries,
+                )
             candidates.append((ep, ep_id))
             if len(candidates) >= max_episodes:
                 break
@@ -409,44 +478,61 @@ def process_podcast_feed(
 
         def _process_episode(ep: EpisodeMeta, ep_id: str) -> dict:
             """Download, clean, and upload one episode.  Returns a result dict."""
-            # Each thread gets its own S3Manager to avoid sharing the boto3 client.
             thread_s3 = S3Manager(bucket=bucket, playlist_id=slug)
-            original_path = None
+            # Each attempt re-downloads from the CDN so a transiently corrupt
+            # SSAI-stitched file (different bytes per request) doesn't block
+            # the episode permanently.  Both the transcript AND ad-segment
+            # caches (keyed by ep_id, independent of file bytes) are left
+            # intact across attempts -- a retry only re-pays download +
+            # ffprobe-validate + splice cost.  Transcribe + Bedrock detection
+            # run at most once per episode, even across separate cron runs
+            # (remove_ads() itself checks the ad-segment cache and skips
+            # straight to splicing when present) -- this is what decouples
+            # splice reliability from the expensive detection pipeline.
+            cdn = detect_cdn(ep.url)
+            _splice_max_attempts = _splice_attempts_for_cdn(cdn)
+
+            original_path: str | None = None
+            cleaned_path: str | None = None
+            ad_segments: list = []
+            summary = ""
+            splice_failed = False
+            fail_reason = ""
+
             try:
-                original_path = download_episode(ep.url, ep_id, tmp_dir)
+                for attempt in range(1, _splice_max_attempts + 1):
+                    if attempt > 1:
+                        logger.info(
+                            "[PodcastSync] Retrying with fresh download for %s (attempt %d/%d, cdn=%s)",
+                            ep_id, attempt, _splice_max_attempts, cdn,
+                        )
+                        if original_path and os.path.exists(original_path):
+                            with contextlib.suppress(OSError):
+                                os.remove(original_path)
 
-                logger.info("[PodcastSync] Running ad removal for %s", ep_id)
-                cleaned_path, ad_segments, summary = remove_ads(
-                    original_path,
-                    ep_id,
-                    tmp_dir,
-                    ad_hints=podcast.ad_hints,
-                    trim_music_intro=podcast.trim_music_intro,
-                    trim_music_outro=podcast.trim_music_outro,
-                    min_music_intro_secs=podcast.min_music_intro_secs,
-                    min_music_outro_secs=podcast.min_music_outro_secs,
-                    episode_title=ep.title,
-                    duration_secs=ep.duration,
-                )
+                    original_path = download_episode(ep.url, ep_id, tmp_dir)
 
-                # Detect splice failure: ads were found but the file wasn't changed.
-                # This happens when ffmpeg fails transiently. Retry once.
-                splice_failed = bool(ad_segments) and cleaned_path == original_path
-                if splice_failed:
-                    logger.warning(
-                        "[PodcastSync] Splice appears to have failed for %s "
-                        "(%d ads detected but original file returned) — retrying",
-                        ep_id,
-                        len(ad_segments),
+                    # ffprobe pre-flight: catch a corrupt/truncated SSAI-stitched
+                    # fetch before paying for Transcribe + Bedrock.
+                    is_valid, invalid_reason = validate_audio_file(original_path)
+                    if not is_valid:
+                        splice_failed = True
+                        fail_reason = f"download validation failed: {invalid_reason}"
+                        logger.warning(
+                            "[PodcastSync] Downloaded file failed ffprobe validation for %s "                             "on attempt %d/%d (cdn=%s): %s%s",
+                            ep_id,
+                            attempt,
+                            _splice_max_attempts,
+                            cdn,
+                            invalid_reason,
+                            " — will retry with fresh download" if attempt < _splice_max_attempts else " — all attempts exhausted",
+                        )
+                        continue  # skip Transcribe/Bedrock entirely — retry download
+
+                    logger.info(
+                        "[PodcastSync] Running ad removal for %s (attempt %d/%d, cdn=%s)",
+                        ep_id, attempt, _splice_max_attempts, cdn,
                     )
-                    # Delete ad-segment cache so retry re-executes splice_audio
-                    # rather than returning the same cached (failed) result
-                    try:
-                        _retry_s3 = boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
-                        cache_key = f"{os.environ.get('TRANSCRIBE_CACHE_PREFIX', 'transcribe-cache')}/{ep_id}_ads.json"
-                        _retry_s3.delete_object(Bucket=bucket, Key=cache_key)
-                    except Exception:
-                        pass
                     cleaned_path, ad_segments, summary = remove_ads(
                         original_path,
                         ep_id,
@@ -459,12 +545,45 @@ def process_podcast_feed(
                         episode_title=ep.title,
                         duration_secs=ep.duration,
                     )
+
                     splice_failed = bool(ad_segments) and cleaned_path == original_path
-                    if splice_failed:
-                        logger.error(
-                            "[PodcastSync] Splice retry also failed for %s — uploading original",
-                            ep_id,
-                        )
+                    if not splice_failed:
+                        break  # success — exit retry loop
+
+                    fail_reason = f"splice crashed ({len(ad_segments)} ads detected but original returned)"
+                    logger.warning(
+                        "[PodcastSync] Splice failed for %s on attempt %d/%d (cdn=%s) "                         "(%d ads detected but original returned)%s",
+                        ep_id,
+                        attempt,
+                        _splice_max_attempts,
+                        cdn,
+                        len(ad_segments),
+                        " — will retry with fresh download" if attempt < _splice_max_attempts else " — all attempts exhausted",
+                    )
+
+                if splice_failed:
+                    # All attempts exhausted — do NOT upload the original with ads.
+                    # The episode is absent from S3, so the next scheduled run will
+                    # naturally re-queue it (up to the cross-run MAX_SPLICE_RETRIES cap).
+                    logger.error(
+                        "[PodcastSync] Splice permanently failed for %s after %d attempt(s) (cdn=%s, reason=%s) "                         "— episode will NOT be published until splice succeeds",
+                        ep_id, _splice_max_attempts, cdn, fail_reason,
+                    )
+                    # cleaned_path == original_path here (that's the splice-failed
+                    # detection criterion), so only the original download needs removing.
+                    if original_path and os.path.exists(original_path):
+                        with contextlib.suppress(OSError):
+                            os.remove(original_path)
+                    return {
+                        "ok": True,
+                        "ep": ep,
+                        "ep_id": ep_id,
+                        "uploaded": False,
+                        "splice_failed": True,
+                        "ads_detected": len(ad_segments),
+                        "cdn": cdn,
+                        "fail_reason": fail_reason,
+                    }
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if cleaned_path != original_path:
@@ -481,7 +600,7 @@ def process_podcast_feed(
                         logger.warning("[PodcastSync] Ad evaluation failed for %s: %s", ep_id, eval_exc)
 
                 # Clean up the original if ad removal produced a separate file
-                if cleaned_path != original_path and os.path.exists(original_path):
+                if cleaned_path != original_path and original_path and os.path.exists(original_path):
                     os.remove(original_path)
 
                 logger.info("[PodcastSync] Uploading %s to S3", ep_id)
@@ -492,7 +611,7 @@ def process_podcast_feed(
                 except OSError:
                     file_size = 0
 
-                if os.path.exists(cleaned_path):
+                if cleaned_path and os.path.exists(cleaned_path):
                     os.remove(cleaned_path)
 
                 logger.info("[PodcastSync] Done: %s", ep_id)
@@ -501,31 +620,36 @@ def process_podcast_feed(
                     "ok": True,
                     "ep": ep,
                     "ep_id": ep_id,
+                    "uploaded": True,
                     "file_size": file_size,
                     "summary": summary,
                     "ads_removed": ads_removed,
-                    "splice_failed": splice_failed,
+                    "splice_failed": False,
+                    "cdn": cdn,
                 }
 
             except Exception as exc:
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
-                if original_path and os.path.exists(original_path):
-                    with contextlib.suppress(OSError):
-                        os.remove(original_path)
+                for p in (original_path, cleaned_path):
+                    if p and os.path.exists(p):
+                        with contextlib.suppress(OSError):
+                            os.remove(p)
                 return {"ok": False, "ep_id": ep_id, "error": exc}
 
         workers = int(os.environ.get("PODCAST_EPISODE_WORKERS", "1"))
         workers = max(1, min(workers, len(candidates)))  # clamp to [1, n_candidates]
         logger.info("[PodcastSync] Processing %d candidate(s) with %d worker(s)", len(candidates), workers)
 
+        splice_failed_this_run = 0
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_process_episode, ep, ep_id): (ep, ep_id) for ep, ep_id in candidates}
             for future in as_completed(futures):
                 result = future.result()
-                if result["ok"]:
+                if result["ok"] and result.get("uploaded", True):
+                    # Episode successfully cleaned and uploaded
                     with manifest_lock:
                         ep, ep_id = result["ep"], result["ep_id"]
-                        _splice_failed = result.get("splice_failed", False)
                         _prev_fail_count = manifest.get(ep_id, {}).get("splice_failed_count", 0)
                         manifest[ep_id] = {
                             "size": result["file_size"],
@@ -534,20 +658,41 @@ def process_podcast_feed(
                             "pub_date": ep.pub_date.isoformat(),
                             "duration": ep.duration,
                             "ads_removed": result.get("ads_removed", False),
-                            "splice_failed": _splice_failed,
-                            # Cumulative count — used by the retry cap on subsequent runs.
-                            "splice_failed_count": _prev_fail_count + int(_splice_failed),
+                            "splice_failed": False,
+                            # Preserve historical count so the exhaustion cap still works
+                            "splice_failed_count": _prev_fail_count,
+                            "cdn": result.get("cdn", "unknown"),
                         }
                         if result.get("summary") and result["summary"] not in REMOVE_ADS_ERROR_CODES:
                             manifest[ep_id]["summary"] = result["summary"]
                         new_count += 1
                         uploaded_pairs.append((ep, ep_id))
+                elif result["ok"] and result.get("splice_failed"):
+                    # Splice failed after all per-run attempts — episode NOT uploaded.
+                    # Write attempt count to manifest so the cross-run cap is enforced.
+                    # Episode is absent from S3, so the next run naturally re-queues it.
+                    with manifest_lock:
+                        ep, ep_id = result["ep"], result["ep_id"]
+                        _prev_fail_count = manifest.get(ep_id, {}).get("splice_failed_count", 0)
+                        manifest[ep_id] = {
+                            **{k: v for k, v in manifest.get(ep_id, {}).items()
+                               if k not in ("size", "ads_removed", "splice_failed", "splice_failed_count")},
+                            "title": ep.title,
+                            "guid": ep.guid,
+                            "pub_date": ep.pub_date.isoformat(),
+                            "duration": ep.duration,
+                            "splice_failed": True,
+                            "splice_failed_count": _prev_fail_count + 1,
+                            "cdn": result.get("cdn", "unknown"),
+                            "fail_reason": result.get("fail_reason", ""),
+                        }
+                        splice_failed_this_run += 1
                 else:
                     with manifest_lock:
                         failed_count += 1
 
-        # Persist updated manifest after all uploads
-        if new_count > 0:
+        # Persist manifest whenever something changed — uploads or splice-fail count updates
+        if new_count > 0 or splice_failed_this_run > 0:
             s3.save_manifest(manifest)
 
         # ------------------------------------------------------------------
@@ -646,9 +791,11 @@ def process_podcast_feed(
             s3.upload_feed(xml_content)
             logger.info("[PodcastSync] feed.xml uploaded")
 
-        # Check if any episodes had splice failures
-        splice_failed_count = sum(1 for v in manifest.values() if isinstance(v, dict) and v.get("splice_failed"))
-        if splice_failed_count and provider:
+        # Update Notion status based on this run's outcomes.
+        # splice_failed_this_run is used (not the historical manifest total) so
+        # a podcast that previously had a splice failure but succeeded today
+        # correctly shows 'Done' rather than a stale 'Splice Failed'.
+        if splice_failed_this_run > 0 and provider:
             try:
                 provider.update_status(podcast, "Splice Failed")
             except Exception as exc:
@@ -666,7 +813,7 @@ def process_podcast_feed(
             new_count,
             skipped,
             failed_count,
-            splice_failed_count,
+            splice_failed_this_run,
             elapsed,
         )
         return {
@@ -674,7 +821,7 @@ def process_podcast_feed(
             "new_episodes": new_count,
             "skipped": skipped,
             "failed": failed_count,
-            "splice_failed": splice_failed_count,
+            "splice_failed": splice_failed_this_run,
             "elapsed_seconds": round(elapsed, 1),
         }
 

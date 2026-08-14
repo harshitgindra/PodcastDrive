@@ -632,19 +632,22 @@ for i, podcast in enumerate(enabled):
         result = process_podcast_feed(podcast, provider=provider, dry_run=dry_run)
         print(json.dumps(result, indent=2))
 
-        # Collect for notification
+        # Collect for notification — include splice_failed so Herald can alert
         notify_file = os.environ.get('NOTIFY_RESULTS', '')
         if notify_file:
             entries = json.load(open(notify_file))
-            entries.append({'name': podcast.name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'bot_detected': False})
+            entries.append({'name': podcast.name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'splice_failed': result.get('splice_failed', 0), 'bot_detected': False})
             json.dump(entries, open(notify_file, 'w'))
 
-        # Build feed URL and update Notion
+        # Build feed URL and update Notion — honour splice-failure status
         slug = result.get('slug', '')
         cloudfront_base = os.environ.get('CLOUDFRONT_BASE', '')
         feed_url = f'{cloudfront_base}/{slug}/feed.xml' if slug and cloudfront_base else ''
         if not dry_run:
-            provider.update_status(podcast, 'Done')
+            if result.get('splice_failed', 0) > 0:
+                provider.update_status(podcast, 'Splice Failed')
+            else:
+                provider.update_status(podcast, 'Done')
             provider.update_last_run(podcast, feed_url=feed_url)
     except Exception as e:
         if not dry_run:

@@ -1506,7 +1506,132 @@ def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
 
 
 # ---------------------------------------------------------------------------
-# Step 3 – Audio splicing (ffmpeg)
+# Step 2.5 - Downloaded-file validation (ffprobe pre-flight)
+# ---------------------------------------------------------------------------
+
+
+def _ffprobe_duration(path: str, force_format: str | None = None) -> float:
+    """Run ffprobe to get duration in seconds. Raises RuntimeError on failure."""
+    cmd = ["ffprobe", "-v", "error"]
+    if force_format:
+        cmd += ["-f", force_format]
+    cmd += [
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    if result.stderr.strip():
+        logger.debug("[AdRemover] ffprobe stderr (non-fatal): %s", result.stderr.strip())
+    return float(result.stdout.strip())
+
+
+def _mutagen_duration(path: str) -> float:
+    """Use mutagen to read MP3 duration - pure Python, crash-proof fallback."""
+    try:
+        from mutagen.mp3 import MP3  # noqa: PLC0415
+
+        return MP3(path).info.length
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"mutagen could not read duration: {exc}") from exc
+
+
+def probe_duration_with_fallbacks(mp3_path: str) -> float:
+    """Determine the duration (seconds) of *mp3_path* using a 3-tier fallback chain.
+
+    Tier 1: plain ``ffprobe`` (format auto-detected).
+    Tier 2: ``ffprobe -f mp3`` (handles non-standard/SSAI-stitched containers).
+    Tier 3: ``mutagen`` (pure Python, immune to ffprobe crashes).
+
+    Raises:
+        RuntimeError: If all three methods fail - a strong signal the file is
+                      corrupt/truncated rather than just unusually encoded.
+    """
+    total_duration: float | None = None
+    try:
+        total_duration = _ffprobe_duration(mp3_path)
+    except subprocess.CalledProcessError as exc:
+        stdout = (exc.stdout or "").strip()
+        stderr = (exc.stderr or "").strip()
+        logger.warning(
+            "[AdRemover] ffprobe auto-detect failed (exit %s) for %s - retrying with -f mp3.\n  stdout: %r  stderr: %r",
+            exc.returncode,
+            mp3_path,
+            stdout,
+            stderr,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AdRemover] ffprobe error (%s): %s - retrying with -f mp3.", type(exc).__name__, exc)
+
+    if total_duration is None:
+        try:
+            total_duration = _ffprobe_duration(mp3_path, force_format="mp3")
+        except subprocess.CalledProcessError as exc:
+            stdout = (exc.stdout or "").strip()
+            stderr = (exc.stderr or "").strip()
+            logger.warning(
+                "[AdRemover] ffprobe -f mp3 also failed (exit %s) for %s - falling back to mutagen.\n"
+                "  stdout: %r  stderr: %r",
+                exc.returncode,
+                mp3_path,
+                stdout,
+                stderr,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AdRemover] ffprobe -f mp3 error (%s): %s - falling back to mutagen.",
+                type(exc).__name__,
+                exc,
+            )
+
+    if total_duration is None:
+        total_duration = _mutagen_duration(mp3_path)
+        logger.info("[AdRemover] Used mutagen fallback for duration of %s: %.2fs", mp3_path, total_duration)
+
+    return total_duration
+
+
+def validate_audio_file(path: str, min_bytes: int = 1024) -> tuple[bool, str]:
+    """Cheap pre-flight validation of a freshly downloaded audio file.
+
+    Intended to run immediately after download, *before* the expensive
+    Transcribe + Bedrock steps, so a corrupt/truncated SSAI-stitched fetch is
+    caught and re-downloaded cheaply instead of discovered only when splicing
+    crashes after paying for transcription and ad detection.
+
+    Args:
+        path:      Path to the downloaded audio file.
+        min_bytes: Minimum acceptable file size in bytes (default 1024).
+
+    Returns:
+        ``(True, "")`` if the file looks structurally sound (exists, non-trivial
+        size, and a duration can be determined via ffprobe/mutagen).
+        ``(False, reason)`` otherwise, where *reason* is a short human-readable
+        explanation suitable for logging.
+    """
+    try:
+        file_size = os.path.getsize(path)
+    except OSError as exc:
+        return False, f"cannot stat file: {exc}"
+
+    if file_size < min_bytes:
+        return False, f"suspiciously small ({file_size} bytes < {min_bytes})"
+
+    try:
+        duration = probe_duration_with_fallbacks(path)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"duration probe failed: {exc}"
+
+    if duration <= 0:
+        return False, f"zero/negative duration ({duration})"
+
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Step 3 - Audio splicing (ffmpeg)
 # ---------------------------------------------------------------------------
 
 
@@ -1534,86 +1659,19 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     except OSError as exc:
         raise RuntimeError(f"ffprobe aborted: cannot stat input file '{mp3_path}': {exc}") from exc
 
-    logger.debug("[AdRemover] ffprobe input '%s' — size %d bytes", mp3_path, file_size)
+    logger.debug("[AdRemover] ffprobe input '%s' - size %d bytes", mp3_path, file_size)
     if file_size < 1024:
         raise RuntimeError(
             f"ffprobe aborted: input file is suspiciously small ({file_size} bytes), "
             f"likely corrupt or incomplete: '{mp3_path}'"
         )
 
-    # Probe total duration via ffprobe
-    def _ffprobe_duration(path: str, force_format: str | None = None) -> float:
-        """Run ffprobe to get duration in seconds. Raises RuntimeError on failure."""
-        cmd = ["ffprobe", "-v", "error"]
-        if force_format:
-            cmd += ["-f", force_format]
-        cmd += [
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            path,
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        if result.stderr.strip():
-            logger.debug("[AdRemover] ffprobe stderr (non-fatal): %s", result.stderr.strip())
-        return float(result.stdout.strip())
-
-    def _mutagen_duration(path: str) -> float:
-        """Use mutagen to read MP3 duration — pure Python, crash-proof fallback."""
-        try:
-            from mutagen.mp3 import MP3  # noqa: PLC0415
-
-            return MP3(path).info.length
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"mutagen could not read duration: {exc}") from exc
-
-    total_duration: float | None = None
-    # Attempt 1 — plain ffprobe (format auto-detected)
+    # Probe total duration via the shared 3-tier fallback chain (ffprobe ->
+    # ffprobe -f mp3 -> mutagen); see probe_duration_with_fallbacks().
     try:
-        total_duration = _ffprobe_duration(mp3_path)
-    except subprocess.CalledProcessError as exc:
-        stdout = (exc.stdout or "").strip()
-        stderr = (exc.stderr or "").strip()
-        logger.warning(
-            "[AdRemover] ffprobe auto-detect failed (exit %s) for %s — retrying with -f mp3.\n  stdout: %r  stderr: %r",
-            exc.returncode,
-            mp3_path,
-            stdout,
-            stderr,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[AdRemover] ffprobe error (%s): %s — retrying with -f mp3.", type(exc).__name__, exc)
-
-    # Attempt 2 — ffprobe with explicit MP3 format (handles acast/non-standard containers)
-    if total_duration is None:
-        try:
-            total_duration = _ffprobe_duration(mp3_path, force_format="mp3")
-        except subprocess.CalledProcessError as exc:
-            stdout = (exc.stdout or "").strip()
-            stderr = (exc.stderr or "").strip()
-            logger.warning(
-                "[AdRemover] ffprobe -f mp3 also failed (exit %s) for %s — falling back to mutagen.\n"
-                "  stdout: %r  stderr: %r",
-                exc.returncode,
-                mp3_path,
-                stdout,
-                stderr,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[AdRemover] ffprobe -f mp3 error (%s): %s — falling back to mutagen.",
-                type(exc).__name__,
-                exc,
-            )
-
-    # Attempt 3 — mutagen (pure Python, immune to ffprobe crashes)
-    if total_duration is None:
-        try:
-            total_duration = _mutagen_duration(mp3_path)
-            logger.info("[AdRemover] Used mutagen fallback for duration of %s: %.2fs", mp3_path, total_duration)
-        except RuntimeError as exc:
-            raise RuntimeError(f"All duration-detection methods failed for '{mp3_path}': {exc}") from exc
+        total_duration = probe_duration_with_fallbacks(mp3_path)
+    except RuntimeError as exc:
+        raise RuntimeError(f"All duration-detection methods failed for '{mp3_path}': {exc}") from exc
 
     # Sort ad segments and merge overlaps
     sorted_ads = sorted(ad_segments, key=lambda s: s["start"])

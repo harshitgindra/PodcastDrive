@@ -64,21 +64,26 @@ def _format_message(
 
     total_new = 0
     total_failed = 0
+    total_splice_failed = 0
 
     for r in results:
         name = r.get("name", "?")
         new = r.get("new_episodes", 0)
         failed = r.get("failed", 0)
+        splice_failed = r.get("splice_failed", 0)
         bot = r.get("bot_detected", False)
         error_msg = r.get("error")
 
         total_new += new
         total_failed += failed
+        total_splice_failed += splice_failed
 
         if error_msg:
             lines.append(f"❌ {name} — {error_msg}")
         elif bot:
             lines.append(f"⚠️ {name} — bot detected")
+        elif splice_failed > 0:
+            lines.append(f"⚠️ {name} — {splice_failed} splice failed (ads not removed, will retry)")
         elif failed > 0:
             lines.append(f"❌ {name} — {failed} failed, {new} new")
         elif new > 0:
@@ -87,8 +92,13 @@ def _format_message(
             lines.append(f"— {name} — up to date")
 
     # Footer
-    status_emoji = "✅" if status == "success" else "⚠️"
-    lines.append(f"\n{status_emoji} {total_new} downloaded, {total_failed} failed")
+    status_emoji = "✅" if status == "success" and total_splice_failed == 0 else "⚠️"
+    summary_parts = [f"{total_new} downloaded"]
+    if total_failed:
+        summary_parts.append(f"{total_failed} failed")
+    if total_splice_failed:
+        summary_parts.append(f"{total_splice_failed} splice failed")
+    lines.append(f"\n{status_emoji} {', '.join(summary_parts)}")
 
     return "\n".join(lines)
 

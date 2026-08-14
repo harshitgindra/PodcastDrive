@@ -14,9 +14,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from config_provider import PodcastConfig
 from podcast_downloader import EpisodeMeta
 from podcast_sync import (
+    CDN_RETRY_OVERRIDES,
     _build_podcast_feed_xml,
     _format_duration,
     _podcast_slug,
+    _splice_attempts_for_cdn,
+    detect_cdn,
     process_podcast_feed,
 )
 
@@ -247,6 +250,16 @@ def _make_episode_meta(guid="guid-1", title="Episode 1"):
 def set_env(monkeypatch):
     monkeypatch.setenv("S3_BUCKET", "test-bucket")
     monkeypatch.setenv("CLOUDFRONT_BASE", "https://cdn.example.com")
+
+
+@pytest.fixture(autouse=True)
+def _skip_ffprobe_validation(monkeypatch):
+    """Most tests use tiny fake mp3 fixtures that legitimately fail real
+    ffprobe validation (a few placeholder bytes, not real audio). Default
+    the pre-flight check to 'valid' so existing tests keep exercising the
+    retry/upload/manifest logic they were written for; dedicated validation
+    tests override this per-test with monkeypatch/patch as needed."""
+    monkeypatch.setattr("podcast_sync.validate_audio_file", lambda path, min_bytes=1024: (True, ""))
 
 
 class TestProcessPodcastFeedDryRun:
@@ -1053,3 +1066,248 @@ class TestProcessPodcastFeedSummaryIntegration:
         assert "summary" not in saved.get("guid-err", {}), (
             f"Error code {error_code!r} should not be stored as a summary"
         )
+
+
+# ---------------------------------------------------------------------------
+# CDN/SSAI detection
+# ---------------------------------------------------------------------------
+
+
+class TestDetectCdn:
+    """detect_cdn() tags episode URLs by CDN/SSAI provider."""
+
+    @pytest.mark.parametrize(
+        "url,expected",
+        [
+            ("https://podtrac.com/pts/redirect.mp3/media.megaphone.fm/ep1.mp3", "megaphone"),
+            ("https://traffic.megaphone.fm/ep1.mp3", "megaphone"),
+            ("https://sphinx.acast.com/p/show/ep/media.mp3", "acast"),
+            ("https://rss.art19.com/episodes/abc.mp3", "art19"),
+            ("https://anchor.fm/s/abc/podcast/play/1.mp3", "anchor"),
+            ("https://d3ctxlq1ktw2nl.cloudfront.net/staging/ep.mp3", "cloudfront"),
+            ("https://traffic.libsyn.com/secure/show/ep.mp3", "libsyn"),
+            ("https://example.com/direct-host/ep.mp3", "unknown"),
+            ("", "unknown"),
+        ],
+    )
+    def test_known_and_unknown_cdns(self, url, expected):
+        assert detect_cdn(url) == expected
+
+    def test_case_insensitive(self):
+        assert detect_cdn("https://TRAFFIC.MEGAPHONE.FM/ep1.mp3") == "megaphone"
+
+
+class TestSpliceAttemptsForCdn:
+    """_splice_attempts_for_cdn() resolves per-CDN retry-attempt overrides."""
+
+    def test_known_flaky_cdn_gets_override(self):
+        assert _splice_attempts_for_cdn("megaphone") == CDN_RETRY_OVERRIDES["megaphone"]
+        assert _splice_attempts_for_cdn("acast") == CDN_RETRY_OVERRIDES["acast"]
+
+    def test_unknown_cdn_falls_back_to_env_default(self, monkeypatch):
+        monkeypatch.delenv("SPLICE_MAX_ATTEMPTS_PER_RUN", raising=False)
+        assert _splice_attempts_for_cdn("unknown") == 2
+
+    def test_unknown_cdn_respects_env_override(self, monkeypatch):
+        monkeypatch.setenv("SPLICE_MAX_ATTEMPTS_PER_RUN", "5")
+        assert _splice_attempts_for_cdn("unknown") == 5
+
+    def test_known_cdn_ignores_env_override(self, monkeypatch):
+        """A CDN-specific override takes precedence over the generic env var."""
+        monkeypatch.setenv("SPLICE_MAX_ATTEMPTS_PER_RUN", "1")
+        assert _splice_attempts_for_cdn("megaphone") == CDN_RETRY_OVERRIDES["megaphone"]
+
+
+class TestCdnTagInManifest:
+    """The detected CDN tag is persisted to the manifest for observability."""
+
+    def test_cdn_tag_saved_on_success(self, tmp_path):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-cdn", "Ep")
+        ep.url = "https://traffic.megaphone.fm/ep1.mp3"
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-cdn.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-cdn"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert saved["guid-cdn"]["cdn"] == "megaphone"
+
+    def test_cdn_tag_and_fail_reason_saved_on_splice_failure(self, tmp_path):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-cdn2", "Ep")
+        ep.url = "https://sphinx.acast.com/show/ep.mp3"
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-cdn2.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-cdn2"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            # Detection finds ads but splice keeps returning the original path -> splice_failed
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [{"start": 0, "end": 5}], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert saved["guid-cdn2"]["cdn"] == "acast"
+        assert saved["guid-cdn2"]["splice_failed"] is True
+        assert "splice crashed" in saved["guid-cdn2"]["fail_reason"]
+
+
+# ---------------------------------------------------------------------------
+# ffprobe pre-download validation
+# ---------------------------------------------------------------------------
+
+
+class TestFfprobeValidationRetry:
+    """A corrupt/truncated download is caught by validate_audio_file() before
+    Transcribe/Bedrock ever runs, and retried with a fresh download."""
+
+    def test_invalid_download_skips_remove_ads_and_retries(self, tmp_path):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-bad", "Ep")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-bad.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-bad"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)) as mock_dl,
+            # Override the autouse "always valid" fixture: fail once, then succeed
+            patch(
+                "podcast_sync.validate_audio_file",
+                side_effect=[(False, "suspiciously small (3 bytes)"), (True, "")],
+            ) as mock_validate,
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")) as mock_remove_ads,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            result = process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        # Two download attempts (initial + one retry after validation failure)
+        assert mock_dl.call_count == 2
+        # remove_ads (Transcribe + Bedrock) is only ever called once — the
+        # invalid attempt never reaches it. This is the "no wasted detection
+        # spend on a corrupt download" guarantee.
+        assert mock_remove_ads.call_count == 1
+        assert mock_validate.call_count == 2
+        assert result["new_episodes"] == 1
+
+    def test_all_attempts_invalid_results_in_splice_failed_no_upload(self, tmp_path):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-bad2", "Ep")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-bad2.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-bad2"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.validate_audio_file", return_value=(False, "zero/negative duration (0)")),
+            patch("podcast_sync.remove_ads") as mock_remove_ads,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        mock_remove_ads.assert_not_called()
+        saved = mock_s3.save_manifest.call_args[0][0]
+        assert saved["guid-bad2"]["splice_failed"] is True
+        assert "download validation failed" in saved["guid-bad2"]["fail_reason"]
+        assert "size" not in saved["guid-bad2"]  # never uploaded
+
+
+# ---------------------------------------------------------------------------
+# Decoupling: ad-segment cache is preserved across in-run retries so a splice
+# crash never forces a redundant Transcribe/Bedrock pass.
+# ---------------------------------------------------------------------------
+
+
+class TestSpliceRetryReusesDetection:
+    """Splice-only retries (ad_segments detected, but splice crashed and
+    returned the original file) must NOT re-run Transcribe/Bedrock — the
+    ad-segment + transcript caches inside remove_ads() are keyed by ep_id
+    and untouched by podcast_sync, so a second remove_ads() call on the
+    freshly re-downloaded file is expected to hit the cache internally.
+    This test asserts podcast_sync's contract: it never clears any cache
+    key itself and calls remove_ads() again with the same arguments."""
+
+    def test_retry_calls_remove_ads_again_without_clearing_any_cache(self, tmp_path):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-retry", "Ep")
+        feed_xml = b"<rss/>"
+        fake_mp3 = tmp_path / "guid-retry.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        call_count = {"n": 0}
+
+        def fake_remove_ads(path, ep_id, tmp, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # First call: ads detected, splice crashed -> original returned
+                return (path, [{"start": 0, "end": 5}], "")
+            # Second call (post-retry): splice succeeds -> different path
+            cleaned = tmp_path / "guid-retry_clean.mp3"
+            cleaned.write_bytes(b"ID3-clean")
+            return (str(cleaned), [{"start": 0, "end": 5}], "")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=feed_xml),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-retry"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", side_effect=fake_remove_ads) as mock_remove_ads,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = None
+
+            result = process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        # remove_ads called twice (attempt 1 crashed, attempt 2 succeeded);
+        # podcast_sync performed no S3 cache-clearing calls of its own between
+        # attempts (no boto3 client is even constructed for that purpose any more).
+        assert mock_remove_ads.call_count == 2
+        assert result["new_episodes"] == 1

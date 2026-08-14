@@ -26,7 +26,7 @@ class TestFormatMessage:
         assert "2m 14s" in msg
         assert "✅ MKBHD — 2 new" in msg
         assert "— Huberman — up to date" in msg
-        assert "✅ 2 downloaded, 0 failed" in msg
+        assert "✅ 2 downloaded" in msg
 
     def test_failure_message(self, monkeypatch):
         monkeypatch.setenv("RUNNER", "ec2")
@@ -54,7 +54,7 @@ class TestFormatMessage:
     def test_empty_results(self, monkeypatch):
         monkeypatch.setenv("RUNNER", "test")
         msg = _format_message([], elapsed_secs=3, status="success")
-        assert "0 downloaded, 0 failed" in msg
+        assert "0 downloaded" in msg
 
     def test_mixed_results(self, monkeypatch):
         monkeypatch.setenv("RUNNER", "test")
