@@ -151,18 +151,14 @@ def run_reset(force: bool = False) -> int:
             feed_status = "✓" if result["feed_deleted"] else "–"
             manifest_status = "✓" if result["manifest_deleted"] else "–"
             print(
-                f"  ✅  {result['episodes_deleted']} episode(s) deleted  "
-                f"feed={feed_status}  manifest={manifest_status}"
+                f"  ✅  {result['episodes_deleted']} episode(s) deleted  feed={feed_status}  manifest={manifest_status}"
             )
         except Exception as exc:
             print(f"  ❌  Failed to reset '{name}': {exc}", file=sys.stderr)
             logger.error("[Reset] Failed to reset '%s': %s", name, exc)
 
     print()
-    print(
-        f"✅  Reset complete — {grand_total_episodes} episode(s) deleted across "
-        f"{len(slugs)} podcast(s)."
-    )
+    print(f"✅  Reset complete — {grand_total_episodes} episode(s) deleted across {len(slugs)} podcast(s).")
     print("   Run './run.sh' to start fresh.")
     return 0
 
@@ -171,6 +167,7 @@ if __name__ == "__main__":
     import argparse
 
     from logger_config import setup_logging
+
     setup_logging()
 
     parser = argparse.ArgumentParser(

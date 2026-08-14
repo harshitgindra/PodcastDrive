@@ -32,7 +32,6 @@ export LOG_DIR
 LOCK_FILE="${SCRIPT_DIR}/.podcastdrive.lock"
 
 cleanup() {
-    rm -f "$LOCK_FILE"
     # Release distributed lock (S3) — safe even if not acquired
     if [ -n "${VENV_PYTHON:-}" ] && [ -x "${VENV_PYTHON:-}" ]; then
       PYTHONPATH="${SCRIPT_DIR}/src" "${VENV_PYTHON}" -c "
@@ -43,16 +42,13 @@ S3Lock().release()
 }
 trap cleanup EXIT INT TERM
 
-if [ -f "$LOCK_FILE" ]; then
-    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
-    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
-        fail "Another instance is running (PID $LOCK_PID). Remove $LOCK_FILE if stale."
-    else
-        warn "Stale lock file found (PID $LOCK_PID no longer running) — removing."
-        rm -f "$LOCK_FILE"
-    fi
+# Atomic lock using flock — eliminates TOCTOU race condition.
+# The lock is released automatically when the file descriptor (9) is closed at exit.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    fail "Another instance is running. Remove $LOCK_FILE if stale."
 fi
-echo $$ > "$LOCK_FILE"
+echo $$ >&9
 
 # --- Help ---
 show_help() {

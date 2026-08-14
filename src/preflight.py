@@ -16,12 +16,12 @@ import botocore.exceptions
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 
-_RED    = "\033[0;31m"
-_GREEN  = "\033[0;32m"
+_RED = "\033[0;31m"
+_GREEN = "\033[0;32m"
 _YELLOW = "\033[1;33m"
-_CYAN   = "\033[0;36m"
-_BOLD   = "\033[1m"
-_RESET  = "\033[0m"
+_CYAN = "\033[0;36m"
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
 
 
 def _ok(msg: str) -> None:
@@ -162,6 +162,7 @@ def _check_yt_dlp() -> None:
 
     try:
         import yt_dlp  # noqa: F401
+
         _ok("yt-dlp Python package importable")
     except ImportError:
         _fail("yt-dlp is not installed — run: pip install yt-dlp")
@@ -177,7 +178,8 @@ def _check_yt_dlp() -> None:
 
     result = subprocess.run(
         [yt_dlp_bin, "--version"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         _fail(f"yt-dlp binary found at {yt_dlp_bin} but failed to run")
@@ -191,9 +193,7 @@ def _check_yt_dlp() -> None:
             "Install with: curl -fsSL https://deno.land/install.sh | sh"
         )
     else:
-        deno_ver = subprocess.run(
-            [deno_bin, "--version"], capture_output=True, text=True
-        )
+        deno_ver = subprocess.run([deno_bin, "--version"], capture_output=True, text=True)
         ver_line = deno_ver.stdout.splitlines()[0] if deno_ver.stdout else "unknown"
         _ok(f"deno JS runtime: {ver_line} ({deno_bin})")
 
@@ -207,7 +207,8 @@ def _check_ffmpeg() -> None:
 
     result = subprocess.run(
         ["ffmpeg", "-version"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         _fail("ffmpeg binary found but failed to run")
@@ -273,7 +274,7 @@ def _check_notion() -> None:
     _section("Notion (config provider)")
 
     api_key = os.environ.get("NOTION_API_KEY", "")
-    db_id   = os.environ.get("NOTION_DATABASE_ID", "")
+    db_id = os.environ.get("NOTION_DATABASE_ID", "")
 
     if not api_key:
         _fail("NOTION_API_KEY is not set — add it to config.env")
@@ -342,12 +343,10 @@ def _check_cookies() -> None:
         return
 
     import time
+
     age_days = (time.time() - os.path.getmtime(cookies_path)) / 86400
     if age_days > 14:
-        _warn(
-            f"cookies.txt is {age_days:.0f} days old (>{14}d threshold) — "
-            "refresh with: ./refresh_cookies.sh"
-        )
+        _warn(f"cookies.txt is {age_days:.0f} days old (>{14}d threshold) — refresh with: ./refresh_cookies.sh")
     else:
         _ok(f"cookies.txt is {age_days:.1f} days old (within 14-day threshold)")
 
@@ -386,6 +385,7 @@ def _check_youtube_access() -> None:
     }
 
     from ytdlp_cookies import inject_cookies
+
     inject_cookies(ydl_opts)
 
     try:
@@ -416,12 +416,9 @@ def _check_disk_space() -> None:
     tmp_dir = tempfile.gettempdir()
     try:
         stat = os.statvfs(tmp_dir)
-        free_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+        free_gb = (stat.f_bavail * stat.f_frsize) / (1024**3)
         if free_gb < 1.0:
-            _fail(
-                f"Less than 1 GB free in {tmp_dir} ({free_gb:.2f} GB) — "
-                "downloads may fail. Free up disk space."
-            )
+            _fail(f"Less than 1 GB free in {tmp_dir} ({free_gb:.2f} GB) — downloads may fail. Free up disk space.")
         elif free_gb < 5.0:
             _warn(f"Only {free_gb:.1f} GB free in {tmp_dir} — consider freeing space")
         else:
@@ -470,6 +467,7 @@ def run_preflight(dry_run: bool = False) -> None:
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Run PodcastDrive preflight checks")
     parser.add_argument("--dry-run", action="store_true", help="Skip write-access checks")
     args = parser.parse_args()

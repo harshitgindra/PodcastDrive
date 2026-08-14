@@ -15,20 +15,22 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Error codes that indicate a transient AWS service issue and are safe to retry.
-_RETRYABLE_CODES: frozenset[str] = frozenset({
-    "Throttling",
-    "ThrottlingException",
-    "RequestLimitExceeded",
-    "RequestThrottled",
-    "ProvisionedThroughputExceededException",
-    "TransactionInProgressException",
-    "ServiceUnavailable",
-    "InternalServerError",
-    "InternalFailure",
-    "RequestExpired",
-    "SlowDown",
-    "EC2ThrottledException",
-})
+_RETRYABLE_CODES: frozenset[str] = frozenset(
+    {
+        "Throttling",
+        "ThrottlingException",
+        "RequestLimitExceeded",
+        "RequestThrottled",
+        "ProvisionedThroughputExceededException",
+        "TransactionInProgressException",
+        "ServiceUnavailable",
+        "InternalServerError",
+        "InternalFailure",
+        "RequestExpired",
+        "SlowDown",
+        "EC2ThrottledException",
+    }
+)
 
 _T = TypeVar("_T")
 
@@ -74,12 +76,16 @@ def retry_aws_call(
         except (ConnectionError, OSError, EndpointResolutionError) as exc:
             last_exc = exc
 
-        delay = min(max_delay, base_delay * (2 ** attempt))
+        delay = min(max_delay, base_delay * (2**attempt))
         jitter = random.uniform(0, delay * 0.5)
         sleep_time = min(max_delay, delay + jitter)
         _logger.warning(
             "Transient AWS error on %s (attempt %d/%d): %s — retrying in %.1fs",
-            label or getattr(fn, "__name__", repr(fn)), attempt + 1, max_attempts, last_exc, sleep_time,
+            label or getattr(fn, "__name__", repr(fn)),
+            attempt + 1,
+            max_attempts,
+            last_exc,
+            sleep_time,
         )
         time.sleep(sleep_time)
 
@@ -102,8 +108,7 @@ def _validate_playlist_id(playlist_id: str) -> str:
         raise ValueError("Playlist ID is empty")
     if not _SAFE_ID_RE.match(playlist_id):
         raise ValueError(
-            f"Playlist ID contains unsafe characters: {playlist_id!r} "
-            "(only alphanumeric, @, ., _, - are allowed)"
+            f"Playlist ID contains unsafe characters: {playlist_id!r} (only alphanumeric, @, ., _, - are allowed)"
         )
     if ".." in playlist_id:
         raise ValueError(f"Playlist ID contains path traversal: {playlist_id!r}")
@@ -164,12 +169,13 @@ def parse_upload_date(date_str: str) -> datetime:
         date_str: Date string in YYYYMMDD format (e.g. ``"20250101"``).
 
     Returns:
-        A :class:`datetime` with UTC timezone. Falls back to today's UTC date
-        if *date_str* is not a valid YYYYMMDD string.
+        A :class:`datetime` with UTC timezone. Falls back to epoch (1970-01-01)
+        if *date_str* is not a valid YYYYMMDD string — this ensures episodes
+        with missing dates are caught by age filtering rather than appearing
+        as the newest.
     """
     try:
         dt = datetime.strptime(date_str, "%Y%m%d")
         return dt.replace(tzinfo=UTC)
     except (ValueError, TypeError):
-        now = datetime.now(UTC)
-        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return datetime(1970, 1, 1, tzinfo=UTC)

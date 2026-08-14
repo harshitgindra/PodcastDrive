@@ -101,27 +101,35 @@ def upload_run_log(
                 jsonl_lines.append(json.dumps(parsed, separators=(",", ":")))
             else:
                 # Unparseable line — include as raw message
-                jsonl_lines.append(json.dumps({
-                    "level": "RAW",
-                    "message": line.strip(),
-                    "runner": runner,
-                }, separators=(",", ":")))
+                jsonl_lines.append(
+                    json.dumps(
+                        {
+                            "level": "RAW",
+                            "message": line.strip(),
+                            "runner": runner,
+                        },
+                        separators=(",", ":"),
+                    )
+                )
 
         if not jsonl_lines:
             logger.debug("Log file is empty, nothing to upload")
             return None
 
         # Add run metadata header
-        header = json.dumps({
-            "type": "run_header",
-            "runner": runner,
-            "trigger": os.environ.get("TRIGGER", "manual"),
-            "date": date_prefix,
-            "timestamp": now.isoformat(),
-            "total_lines": len(jsonl_lines),
-            "errors": sum(1 for l in jsonl_lines if '"ERROR"' in l),
-            "warnings": sum(1 for l in jsonl_lines if '"WARNING"' in l),
-        }, separators=(",", ":"))
+        header = json.dumps(
+            {
+                "type": "run_header",
+                "runner": runner,
+                "trigger": os.environ.get("TRIGGER", "manual"),
+                "date": date_prefix,
+                "timestamp": now.isoformat(),
+                "total_lines": len(jsonl_lines),
+                "errors": sum(1 for l in jsonl_lines if '"ERROR"' in l),
+                "warnings": sum(1 for l in jsonl_lines if '"WARNING"' in l),
+            },
+            separators=(",", ":"),
+        )
 
         body = header + "\n" + "\n".join(jsonl_lines) + "\n"
 

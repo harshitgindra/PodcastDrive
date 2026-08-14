@@ -333,6 +333,7 @@ class TestValidationRules:
 # extract_video_metadata
 # ---------------------------------------------------------------------------
 
+
 class TestExtractVideoMetadata:
     """Tests for full single-video metadata extraction."""
 

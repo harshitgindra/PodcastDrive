@@ -59,6 +59,7 @@ def _key_exists(s3_client, key):
 # acquire()
 # ---------------------------------------------------------------------------
 
+
 class TestAcquireNoExistingLock:
     def test_acquire_when_no_lock_exists(self, s3_client):
         lock = _make_lock()
@@ -168,6 +169,7 @@ class TestAcquireNoBucket:
 # release()
 # ---------------------------------------------------------------------------
 
+
 class TestRelease:
     def test_release_deletes_lock_when_owned(self, s3_client):
         with patch.dict(os.environ, {"RUNNER": "my-runner"}):
@@ -238,6 +240,7 @@ class TestRelease:
 # Context manager
 # ---------------------------------------------------------------------------
 
+
 class TestContextManager:
     def test_context_manager_acquires_and_releases(self, s3_client):
         with patch.dict(os.environ, {"RUNNER": "ctx-runner"}):
@@ -280,6 +283,7 @@ class TestContextManager:
 # _is_expired helper
 # ---------------------------------------------------------------------------
 
+
 class TestIsExpired:
     def test_fresh_lock_is_not_expired(self):
         with mock_aws():
@@ -310,6 +314,7 @@ class TestIsExpired:
 # _read_lock — ClientError that is NOT NoSuchKey/404 (line 63)
 # ---------------------------------------------------------------------------
 
+
 class TestReadLockClientError:
     def test_read_lock_reraises_non_404_client_error(self, s3_client):
         """Line 63: ClientError with code other than NoSuchKey/404 is re-raised."""
@@ -334,6 +339,7 @@ class TestReadLockClientError:
 # ---------------------------------------------------------------------------
 # _write_lock_conditional — success and ClientError paths (lines 95, 99)
 # ---------------------------------------------------------------------------
+
 
 class TestWriteLockConditional:
     def test_returns_true_on_successful_put(self, s3_client):
@@ -368,6 +374,7 @@ class TestWriteLockConditional:
 # _write_lock — unconditional write (lines 110-111)
 # ---------------------------------------------------------------------------
 
+
 class TestWriteLockUnconditional:
     def test_write_lock_puts_object_without_condition(self, s3_client):
         """Lines 110-111: _write_lock puts the object unconditionally."""
@@ -397,6 +404,7 @@ class TestWriteLockUnconditional:
 # acquire() — race condition after expiry override (line 164)
 # and final LockAcquireError (line 175)
 # ---------------------------------------------------------------------------
+
 
 class TestAcquireRaceConditionAfterExpiry:
     def test_raises_when_another_runner_wins_after_expiry_delete(self, s3_client):

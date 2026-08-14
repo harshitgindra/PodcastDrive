@@ -18,15 +18,14 @@ from summary_generator import generate_episode_summary
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_segments(text: str = "Hello, welcome to the show. Today we talk about AI.") -> list[dict]:
     return [{"start": 0.0, "end": 5.0, "text": text}]
 
 
 def _make_client(response_text: str) -> MagicMock:
     client = MagicMock()
-    client.converse.return_value = {
-        "output": {"message": {"content": [{"text": response_text}]}}
-    }
+    client.converse.return_value = {"output": {"message": {"content": [{"text": response_text}]}}}
     return client
 
 
@@ -34,12 +33,15 @@ def _make_client(response_text: str) -> MagicMock:
 # Happy path
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateEpisodeSummaryHappyPath:
     def test_returns_bedrock_text(self, monkeypatch):
         """Bedrock response text is returned as-is (stripped)."""
         client = _make_client("  A great episode about AI.  ")
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             mock_boto3.client.return_value = client
             result = generate_episode_summary(_make_segments(), "AI Today")
         assert result == "A great episode about AI."
@@ -54,8 +56,10 @@ class TestGenerateEpisodeSummaryHappyPath:
 
         client = MagicMock()
         client.converse.side_effect = fake_converse
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             mock_boto3.client.return_value = client
             generate_episode_summary(_make_segments(), "Tech Deep Dive")
 
@@ -72,13 +76,12 @@ class TestGenerateEpisodeSummaryHappyPath:
 
         client = MagicMock()
         client.converse.side_effect = fake_converse
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             mock_boto3.client.return_value = client
-            generate_episode_summary(
-                [{"start": 0.0, "end": 5.0, "text": "unique phrase xyz789"}],
-                "Episode"
-            )
+            generate_episode_summary([{"start": 0.0, "end": 5.0, "text": "unique phrase xyz789"}], "Episode")
 
         prompt = captured[0]["messages"][0]["content"][0]["text"]
         assert "unique phrase xyz789" in prompt
@@ -87,6 +90,7 @@ class TestGenerateEpisodeSummaryHappyPath:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestGenerateEpisodeSummaryEdgeCases:
     def test_empty_segments_returns_empty_string(self):
@@ -105,12 +109,12 @@ class TestGenerateEpisodeSummaryEdgeCases:
         client = MagicMock()
         client.converse.side_effect = fake_converse
         long_text = "word " * 20_000  # ~100k chars
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             mock_boto3.client.return_value = client
-            generate_episode_summary(
-                [{"start": 0.0, "end": 5.0, "text": long_text}], "Long Episode"
-            )
+            generate_episode_summary([{"start": 0.0, "end": 5.0, "text": long_text}], "Long Episode")
 
         prompt = captured[0]["messages"][0]["content"][0]["text"]
         # The transcript section after the "Transcript:\n" marker must be ≤ 40k chars
@@ -127,8 +131,10 @@ class TestGenerateEpisodeSummaryEdgeCases:
 
         client = MagicMock()
         client.converse.side_effect = fake_converse
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             mock_boto3.client.return_value = client
             generate_episode_summary(
                 [
@@ -146,6 +152,7 @@ class TestGenerateEpisodeSummaryEdgeCases:
 # Model selection
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateEpisodeSummaryModel:
     def test_uses_bedrock_model_id_env_var(self, monkeypatch):
         """BEDROCK_MODEL_ID env var is used as the model."""
@@ -157,9 +164,11 @@ class TestGenerateEpisodeSummaryModel:
 
         client = MagicMock()
         client.converse.side_effect = fake_converse
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()), \
-             patch.dict(os.environ, {"BEDROCK_MODEL_ID": "my-custom-model-v1"}):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+            patch.dict(os.environ, {"BEDROCK_MODEL_ID": "my-custom-model-v1"}),
+        ):
             mock_boto3.client.return_value = client
             generate_episode_summary(_make_segments(), "Episode")
 
@@ -176,9 +185,11 @@ class TestGenerateEpisodeSummaryModel:
         client = MagicMock()
         client.converse.side_effect = fake_converse
         clean_env = {k: v for k, v in os.environ.items() if k != "BEDROCK_MODEL_ID"}
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()), \
-             patch.dict(os.environ, clean_env, clear=True):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+            patch.dict(os.environ, clean_env, clear=True),
+        ):
             mock_boto3.client.return_value = client
             generate_episode_summary(_make_segments(), "Episode")
 
@@ -194,9 +205,11 @@ class TestGenerateEpisodeSummaryModel:
 
         client = MagicMock()
         client.converse.side_effect = fake_converse
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()), \
-             patch.dict(os.environ, {"BEDROCK_MODEL_ID": "env-model"}):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+            patch.dict(os.environ, {"BEDROCK_MODEL_ID": "env-model"}),
+        ):
             mock_boto3.client.return_value = client
             generate_episode_summary(_make_segments(), "Episode", model_id="explicit-model")
 
@@ -207,11 +220,14 @@ class TestGenerateEpisodeSummaryModel:
 # Failure handling
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateEpisodeSummaryFailures:
     def test_bedrock_exception_returns_empty_string(self, monkeypatch):
         """Any Bedrock exception returns '' without re-raising."""
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=RuntimeError("Bedrock down")):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=RuntimeError("Bedrock down")),
+        ):
             mock_boto3.client.return_value = MagicMock()
             result = generate_episode_summary(_make_segments(), "Episode")
         assert result == ""
@@ -220,8 +236,10 @@ class TestGenerateEpisodeSummaryFailures:
         """Malformed Bedrock response (missing keys) returns '' without crashing."""
         client = MagicMock()
         client.converse.return_value = {}  # missing 'output' key
-        with patch("summary_generator.boto3") as mock_boto3, \
-             patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("summary_generator.boto3") as mock_boto3,
+            patch("summary_generator.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             mock_boto3.client.return_value = client
             result = generate_episode_summary(_make_segments(), "Episode")
         assert result == ""

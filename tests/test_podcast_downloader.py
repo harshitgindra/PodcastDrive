@@ -28,16 +28,13 @@ from podcast_downloader import (
 # is_apple_podcasts_url
 # ---------------------------------------------------------------------------
 
+
 class TestIsApplePodcastsUrl:
     def test_apple_podcasts_url(self):
-        assert is_apple_podcasts_url(
-            "https://podcasts.apple.com/us/podcast/my-show/id123456789"
-        )
+        assert is_apple_podcasts_url("https://podcasts.apple.com/us/podcast/my-show/id123456789")
 
     def test_itunes_url(self):
-        assert is_apple_podcasts_url(
-            "https://itunes.apple.com/podcast/id987654321"
-        )
+        assert is_apple_podcasts_url("https://itunes.apple.com/podcast/id987654321")
 
     def test_direct_rss_url(self):
         assert not is_apple_podcasts_url("https://feeds.example.com/podcast.rss")
@@ -53,6 +50,7 @@ class TestIsApplePodcastsUrl:
 # resolve_feed_url
 # ---------------------------------------------------------------------------
 
+
 class TestResolveFeedUrl:
     def test_non_apple_url_returned_as_is(self):
         url = "https://feeds.example.com/podcast.rss"
@@ -60,9 +58,7 @@ class TestResolveFeedUrl:
 
     def test_apple_url_resolved(self):
         apple_url = "https://podcasts.apple.com/us/podcast/test/id111222333"
-        itunes_response = json.dumps({
-            "results": [{"feedUrl": "https://feeds.example.com/real.rss"}]
-        }).encode("utf-8")
+        itunes_response = json.dumps({"results": [{"feedUrl": "https://feeds.example.com/real.rss"}]}).encode("utf-8")
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = itunes_response
@@ -100,9 +96,7 @@ class TestResolveFeedUrl:
 
     def test_apple_url_no_feed_url_in_result(self):
         apple_url = "https://podcasts.apple.com/us/podcast/test/id111222333"
-        itunes_response = json.dumps({"results": [{"name": "no feedUrl"}]}).encode(
-            "utf-8"
-        )
+        itunes_response = json.dumps({"results": [{"name": "no feedUrl"}]}).encode("utf-8")
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = itunes_response
@@ -118,6 +112,7 @@ class TestResolveFeedUrl:
 # ---------------------------------------------------------------------------
 # _parse_duration
 # ---------------------------------------------------------------------------
+
 
 class TestParseDuration:
     def test_hms_format(self):
@@ -140,6 +135,7 @@ class TestParseDuration:
 # fetch_feed_xml
 # ---------------------------------------------------------------------------
 
+
 class TestFetchFeedXml:
     def test_successful_fetch(self):
         fake_xml = b"<rss><channel></channel></rss>"
@@ -154,18 +150,24 @@ class TestFetchFeedXml:
         assert result == fake_xml
 
     def test_network_failure_raises_runtime_error(self):
-        with patch(
-            "podcast_downloader.urllib.request.urlopen",
-            side_effect=OSError("connection refused"),
-        ), pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
+        with (
+            patch(
+                "podcast_downloader.urllib.request.urlopen",
+                side_effect=OSError("connection refused"),
+            ),
+            pytest.raises(RuntimeError, match="Failed to fetch RSS feed"),
+        ):
             fetch_feed_xml("https://feeds.example.com/rss")
 
     def test_non_network_exception_raises_runtime_error(self):
         """Covers the generic `except Exception` branch (line 227-228)."""
-        with patch(
-            "podcast_downloader.urllib.request.urlopen",
-            side_effect=ValueError("unexpected error"),
-        ), pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
+        with (
+            patch(
+                "podcast_downloader.urllib.request.urlopen",
+                side_effect=ValueError("unexpected error"),
+            ),
+            pytest.raises(RuntimeError, match="Failed to fetch RSS feed"),
+        ):
             fetch_feed_xml("https://feeds.example.com/rss")
 
 
@@ -314,6 +316,7 @@ class TestParseEpisodes:
 # episode_id_from_guid
 # ---------------------------------------------------------------------------
 
+
 class TestEpisodeIdFromGuid:
     def test_url_guid_uses_last_segment(self):
         eid = episode_id_from_guid("https://example.com/episodes/abc123")
@@ -343,6 +346,7 @@ class TestEpisodeIdFromGuid:
 # download_episode
 # ---------------------------------------------------------------------------
 
+
 class TestDownloadEpisode:
     def test_successful_download(self, tmp_path):
         fake_audio = b"ID3" + b"\x00" * 100
@@ -351,24 +355,21 @@ class TestDownloadEpisode:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch(
-            "podcast_downloader.urllib.request.urlopen", return_value=mock_resp
-        ):
-            path = download_episode(
-                "https://example.com/ep.mp3", "ep001", str(tmp_path)
-            )
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+            path = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert path == str(tmp_path / "ep001.mp3")
         assert os.path.exists(path)
 
     def test_network_failure_raises_runtime_error(self, tmp_path):
-        with patch(
-            "podcast_downloader.urllib.request.urlopen",
-            side_effect=OSError("timeout"),
-        ), pytest.raises(RuntimeError, match="Failed to download episode"):
-            download_episode(
-                "https://example.com/ep.mp3", "ep001", str(tmp_path)
-            )
+        with (
+            patch(
+                "podcast_downloader.urllib.request.urlopen",
+                side_effect=OSError("timeout"),
+            ),
+            pytest.raises(RuntimeError, match="Failed to download episode"),
+        ):
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
     def test_partial_file_removed_on_download_failure(self, tmp_path):
         """Covers line 432: partial file is deleted when download raises."""
@@ -381,9 +382,7 @@ class TestDownloadEpisode:
 
         with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
             with pytest.raises(RuntimeError, match="Failed to download episode"):
-                download_episode(
-                    "https://example.com/ep.mp3", "ep001", str(tmp_path)
-                )
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         # Partial file must have been cleaned up
         assert not partial.exists()
@@ -392,6 +391,7 @@ class TestDownloadEpisode:
 # ---------------------------------------------------------------------------
 # search_feed_url_by_name
 # ---------------------------------------------------------------------------
+
 
 class TestSearchFeedUrlByName:
     def _mock_response(self, data: dict) -> MagicMock:
@@ -402,9 +402,7 @@ class TestSearchFeedUrlByName:
         return mock_resp
 
     def test_returns_feed_url_on_match(self):
-        mock_resp = self._mock_response(
-            {"results": [{"feedUrl": "https://feeds.example.com/my-podcast.rss"}]}
-        )
+        mock_resp = self._mock_response({"results": [{"feedUrl": "https://feeds.example.com/my-podcast.rss"}]})
         with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
             result = search_feed_url_by_name("My Podcast")
         assert result == "https://feeds.example.com/my-podcast.rss"
@@ -567,6 +565,7 @@ class TestParseEpisodesThumbnails:
 # ---------------------------------------------------------------------------
 # Fix #10 – HTTP range-request download resume
 # ---------------------------------------------------------------------------
+
 
 class TestDownloadEpisodeRangeResume:
     """Tests for range-request resumption in download_episode (fix #10)."""

@@ -28,6 +28,7 @@ BUCKET = "test-self-heal-bucket"
 # Fixtures & helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def s3(monkeypatch):
     monkeypatch.setenv("S3_BUCKET", BUCKET)
@@ -65,6 +66,7 @@ def _make_error_record(message: str):
 # ---------------------------------------------------------------------------
 # _load_retry_queue
 # ---------------------------------------------------------------------------
+
 
 class TestLoadRetryQueue:
     def test_loads_existing_queue(self, s3):
@@ -106,6 +108,7 @@ class TestLoadRetryQueue:
 # _save_retry_queue
 # ---------------------------------------------------------------------------
 
+
 class TestSaveRetryQueue:
     def test_saves_queue_to_s3(self, s3):
         queue = {"episodes": {"vid001": {"failure_count": 1}}}
@@ -129,6 +132,7 @@ class TestSaveRetryQueue:
 # ---------------------------------------------------------------------------
 # _scan_logs_for_failures
 # ---------------------------------------------------------------------------
+
 
 class TestScanLogsForFailures:
     def test_finds_failures_in_logs(self, s3):
@@ -198,6 +202,7 @@ class TestScanLogsForFailures:
 # ---------------------------------------------------------------------------
 # heal_retry_queue
 # ---------------------------------------------------------------------------
+
 
 class TestHealRetryQueue:
     def test_adds_new_failures_to_queue(self, s3):
@@ -283,6 +288,7 @@ class TestHealRetryQueue:
 # ---------------------------------------------------------------------------
 # heal_cache_clear
 # ---------------------------------------------------------------------------
+
 
 class TestHealCacheClear:
     def _setup_splice_failure(self, s3_client, vid: str, failure_count: int = 2):
@@ -373,6 +379,7 @@ class TestHealCacheClear:
 # ---------------------------------------------------------------------------
 # heal_manifest_backfill
 # ---------------------------------------------------------------------------
+
 
 class TestHealManifestBackfill:
     def _put_manifest(self, s3_client, playlist: str, manifest: dict):
@@ -478,6 +485,7 @@ class TestHealManifestBackfill:
 # run_all_healers
 # ---------------------------------------------------------------------------
 
+
 class TestRunAllHealers:
     def test_returns_list_of_three_results(self, s3):
         results = run_all_healers(dry_run=True)
@@ -507,6 +515,7 @@ class TestRunAllHealers:
 # _scan_logs_for_failures — exception handling (lines 99-102)
 # ---------------------------------------------------------------------------
 
+
 class TestScanLogsForFailuresExceptions:
     def test_continues_when_single_log_read_fails(self, s3):
         """Lines 99-100: get_object failure for a single log file is caught and skipped."""
@@ -531,6 +540,7 @@ class TestScanLogsForFailuresExceptions:
         """Lines 101-102: outer exception in paginator logs a warning."""
         with patch.object(s3, "get_paginator", side_effect=Exception("paginator broken")):
             import logging
+
             with caplog.at_level(logging.WARNING, logger="self_heal"):
                 failures = _scan_logs_for_failures(s3, BUCKET, days=3)
         assert failures == {}
@@ -539,6 +549,7 @@ class TestScanLogsForFailuresExceptions:
 # ---------------------------------------------------------------------------
 # heal_retry_queue — episode found in S3 removed (lines 157-158)
 # ---------------------------------------------------------------------------
+
 
 class TestHealRetryQueueEpisodeFound:
     def test_removes_episode_found_in_s3_across_playlists(self, s3):
@@ -570,6 +581,7 @@ class TestHealRetryQueueEpisodeFound:
 # ---------------------------------------------------------------------------
 # heal_cache_clear — no matching cache file (lines 200-201)
 # ---------------------------------------------------------------------------
+
 
 class TestHealCacheClearNoCacheFile:
     def test_cleared_stays_zero_when_no_ads_json_found(self, s3):
@@ -616,6 +628,7 @@ class TestHealCacheClearNoCacheFile:
 # and non-dict manifest entries
 # ---------------------------------------------------------------------------
 
+
 class TestHealManifestBackfillEdgeCases:
     def _put_manifest(self, s3_client, playlist: str, manifest: dict):
         s3_client.put_object(
@@ -656,6 +669,7 @@ class TestHealManifestBackfillEdgeCases:
             return original_put(**kwargs)
 
         import logging
+
         with patch("yt_dlp.YoutubeDL", return_value=mock_ydl_instance):
             with patch.object(s3, "put_object", side_effect=fail_manifest_save):
                 with caplog.at_level(logging.WARNING, logger="self_heal"):
@@ -667,6 +681,7 @@ class TestHealManifestBackfillEdgeCases:
         """Lines 268-269: top-level exception in paginator is caught."""
         with patch.object(s3, "get_paginator", side_effect=Exception("pager fail")):
             import logging
+
             with caplog.at_level(logging.WARNING, logger="self_heal"):
                 result = heal_manifest_backfill(s3, BUCKET)
         assert result["backfilled"] == 0
@@ -676,6 +691,7 @@ class TestHealManifestBackfillEdgeCases:
 # ---------------------------------------------------------------------------
 # main() — argparse entry point (lines 302-329)
 # ---------------------------------------------------------------------------
+
 
 class TestSelfHealMain:
     def test_main_exits_when_no_bucket(self, monkeypatch, capsys):

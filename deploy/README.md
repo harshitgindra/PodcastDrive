@@ -68,26 +68,38 @@ Trigger runs remotely via HTTP (no SSH key needed on phone):
 
 ```bash
 # Trigger a run
-curl http://<IP>:9090/run?token=<TOKEN>
+curl -H "Authorization: Bearer <TOKEN>" http://<IP>:9090/run
 
 # Check status (is a run in progress?)
-curl http://<IP>:9090/status?token=<TOKEN>
+curl -H "Authorization: Bearer <TOKEN>" http://<IP>:9090/status
 
 # View recent logs
-curl http://<IP>:9090/logs?token=<TOKEN>
+curl -H "Authorization: Bearer <TOKEN>" http://<IP>:9090/logs
 
-# Health check (no auth)
+# Health check (no auth required)
 curl http://<IP>:9090/health
 ```
+
+Environment variables:
+- `WEBHOOK_TOKEN` — Required. Shared secret for Bearer auth.
+- `WEBHOOK_PORT` — Listen port (default: `9090`).
+- `WEBHOOK_BIND` — Bind address (default: `127.0.0.1`). Set to `0.0.0.0` if
+  accessed directly from the network (ensure TLS termination via reverse proxy).
+- `PROJECT_DIR` — Path to the PodcastDrive repo on disk.
 
 Token is stored in `deploy/.webhook-env` on the EC2 instance (git-ignored).
 
 ### iOS Shortcut Setup
 
 1. **Shortcuts** app → **+** → **Add Action** → **"Get Contents of URL"**
-2. URL: `http://<IP>:9090/run?token=<TOKEN>`
+2. URL: `http://<IP>:9090/run`
 3. Method: GET
-4. Add to Home Screen for one-tap trigger
+4. Headers → Add: `Authorization` = `Bearer <TOKEN>`
+5. Add to Home Screen for one-tap trigger
+
+> **Security note:** The webhook accepts only `Authorization: Bearer <token>` header
+> authentication. Query-string tokens (`?token=...`) are not supported — they leak
+> into server logs, proxy logs, and browser history.
 
 ## Manual Operations
 

@@ -742,6 +742,7 @@ class TestCheckCookies:
         """Warns when cookies.txt is older than 14 days."""
         import os
         import time
+
         from preflight import _check_cookies
 
         cookies = tmp_path / "cookies.txt"

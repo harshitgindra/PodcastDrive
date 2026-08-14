@@ -46,10 +46,27 @@ class _JsonFormatter(logging.Formatter):
 
     _RESERVED = frozenset(
         {
-            "args", "created", "exc_info", "exc_text", "filename", "funcName",
-            "levelname", "levelno", "lineno", "message", "module", "msecs",
-            "msg", "name", "pathname", "process", "processName", "relativeCreated",
-            "stack_info", "thread", "threadName",
+            "args",
+            "created",
+            "exc_info",
+            "exc_text",
+            "filename",
+            "funcName",
+            "levelname",
+            "levelno",
+            "lineno",
+            "message",
+            "module",
+            "msecs",
+            "msg",
+            "name",
+            "pathname",
+            "process",
+            "processName",
+            "relativeCreated",
+            "stack_info",
+            "thread",
+            "threadName",
         }
     )
 
@@ -60,10 +77,7 @@ class _JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "message": record.message,
-            **{
-                k: v for k, v in record.__dict__.items()
-                if k not in self._RESERVED and not k.startswith("_")
-            },
+            **{k: v for k, v in record.__dict__.items() if k not in self._RESERVED and not k.startswith("_")},
         }
 
         if record.exc_info:
@@ -130,8 +144,8 @@ def setup_logging(
 
         file_handler = TimedRotatingFileHandler(
             filename=log_file,
-            when="midnight",       # rotate at midnight
-            interval=1,            # every 1 day
+            when="midnight",  # rotate at midnight
+            interval=1,  # every 1 day
             backupCount=retention_days,
             encoding="utf-8",
             utc=False,

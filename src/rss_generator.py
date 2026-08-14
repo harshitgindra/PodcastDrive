@@ -64,17 +64,11 @@ def _validate_cloudfront_base(cloudfront_base: str) -> None:
         ValueError: If the URL is empty, not HTTPS, or has a trailing slash.
     """
     if not cloudfront_base:
-        raise ValueError(
-            "cloudfront_base is empty — set the CLOUDFRONT_BASE environment variable"
-        )
+        raise ValueError("cloudfront_base is empty — set the CLOUDFRONT_BASE environment variable")
     if not cloudfront_base.startswith("https://"):
-        raise ValueError(
-            f"cloudfront_base must start with 'https://' (got: {cloudfront_base!r})"
-        )
+        raise ValueError(f"cloudfront_base must start with 'https://' (got: {cloudfront_base!r})")
     if cloudfront_base.endswith("/"):
-        raise ValueError(
-            f"cloudfront_base must not have a trailing slash (got: {cloudfront_base!r})"
-        )
+        raise ValueError(f"cloudfront_base must not have a trailing slash (got: {cloudfront_base!r})")
 
 
 def generate_rss(
@@ -158,7 +152,7 @@ def _add_channel_metadata(
     ET.SubElement(channel, "link").text = channel_link
     ET.SubElement(channel, "description").text = meta.description or meta.title
     ET.SubElement(channel, "language").text = language
-    ET.SubElement(channel, "generator").text = "yt-podcast-lambda"
+    ET.SubElement(channel, "generator").text = "PodcastDrive"
 
     now = datetime.now(UTC)
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(now)
@@ -255,9 +249,7 @@ def _add_item(
     ET.SubElement(item, "description").text = desc_text
 
     # iTunes item tags
-    ET.SubElement(item, f"{{{ITUNES_NS}}}duration").text = _format_duration(
-        episode.duration
-    )
+    ET.SubElement(item, f"{{{ITUNES_NS}}}duration").text = _format_duration(episode.duration)
     ET.SubElement(item, f"{{{ITUNES_NS}}}summary").text = desc_text
     ET.SubElement(item, f"{{{ITUNES_NS}}}explicit").text = "no"
 
@@ -266,9 +258,7 @@ def _add_item(
         img.set("href", episode.thumbnail)
 
     if episode.playlist_index is not None:
-        ET.SubElement(item, f"{{{ITUNES_NS}}}episode").text = str(
-            episode.playlist_index
-        )
+        ET.SubElement(item, f"{{{ITUNES_NS}}}episode").text = str(episode.playlist_index)
 
 
 def build_episode_metadata(

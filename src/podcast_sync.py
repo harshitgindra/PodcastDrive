@@ -56,6 +56,7 @@ _ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 
 try:
     import xml.etree.ElementTree as ET
+
     ET.register_namespace("itunes", _ITUNES_NS)
 except Exception:
     pass
@@ -64,6 +65,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _podcast_slug(name: str) -> str:
     """Convert a podcast name to a filesystem/S3-safe slug.
@@ -141,9 +143,7 @@ def _build_podcast_feed_xml(
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}summary").text = podcast.description or podcast.name
     ET.SubElement(channel, "language").text = language
     ET.SubElement(channel, "generator").text = "PodcastDrive"
-    ET.SubElement(channel, "lastBuildDate").text = format_datetime(
-        datetime.now(UTC)
-    )
+    ET.SubElement(channel, "lastBuildDate").text = format_datetime(datetime.now(UTC))
 
     # Standard RSS 2.0 <image> block (required by many non-iTunes podcast apps)
     if artwork_url:
@@ -184,9 +184,7 @@ def _build_podcast_feed_xml(
         enc.set("type", "audio/mpeg")
 
         ET.SubElement(item, "pubDate").text = format_datetime(ep.pub_date)
-        ET.SubElement(item, f"{{{_ITUNES_NS}}}duration").text = _format_duration(
-            ep.duration
-        )
+        ET.SubElement(item, f"{{{_ITUNES_NS}}}duration").text = _format_duration(ep.duration)
         ET.SubElement(item, f"{{{_ITUNES_NS}}}explicit").text = "no"
 
         # Episode description: prefer AI summary from manifest
@@ -212,6 +210,7 @@ def _build_podcast_feed_xml(
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
+
 
 def process_podcast_feed(
     podcast: PodcastConfig,
@@ -263,11 +262,14 @@ def process_podcast_feed(
 
     logger.info(
         "[PodcastSync] Starting '%s' (slug=%s, max_episodes=%s, max_age_days=%s, dry_run=%s)",
-        podcast.name, slug, max_episodes, max_age_days, dry_run,
+        podcast.name,
+        slug,
+        max_episodes,
+        max_age_days,
+        dry_run,
     )
 
     try:
-
         # ------------------------------------------------------------------
         # Step 1: Resolve feed URL
         #   1a. No URL → search iTunes by podcast name
@@ -277,9 +279,7 @@ def process_podcast_feed(
 
         if not feed_url:
             # No URL configured — search iTunes by podcast name
-            logger.info(
-                "[PodcastSync] No URL for '%s' — searching iTunes by name", podcast.name
-            )
+            logger.info("[PodcastSync] No URL for '%s' — searching iTunes by name", podcast.name)
             discovered = search_feed_url_by_name(podcast.name)
             if not discovered:
                 logger.error(
@@ -297,9 +297,7 @@ def process_podcast_feed(
         elif is_apple_podcasts_url(feed_url):
             resolved = resolve_feed_url(feed_url)
             if resolved != feed_url:
-                logger.info(
-                    "[PodcastSync] Resolved Apple Podcasts URL → %s", resolved
-                )
+                logger.info("[PodcastSync] Resolved Apple Podcasts URL → %s", resolved)
                 if not dry_run and provider and hasattr(provider, "update_url"):
                     provider.update_url(podcast, resolved)
                     podcast.url = resolved  # update in-memory for this run
@@ -313,11 +311,14 @@ def process_podcast_feed(
         all_feed_episodes = parse_episodes(feed_xml, max_age_days=None)
         if max_age_days is not None:
             from datetime import timedelta
+
             cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
             episodes = [ep for ep in all_feed_episodes if ep.pub_date >= cutoff]
         else:
             episodes = all_feed_episodes
-        logger.info("[PodcastSync] Feed has %d episodes (after age filter, %d total)", len(episodes), len(all_feed_episodes))
+        logger.info(
+            "[PodcastSync] Feed has %d episodes (after age filter, %d total)", len(episodes), len(all_feed_episodes)
+        )
 
         if not episodes:
             logger.info("[PodcastSync] No episodes to process for '%s'", podcast.name)
@@ -336,27 +337,28 @@ def process_podcast_feed(
         manifest = s3.load_manifest()
         _max_splice_retries = int(os.environ.get("MAX_SPLICE_RETRIES", "3"))
         splice_retry_ids = {
-            k for k, v in manifest.items()
-            if isinstance(v, dict)
-            and v.get("splice_failed")
-            and v.get("splice_failed_count", 0) < _max_splice_retries
+            k
+            for k, v in manifest.items()
+            if isinstance(v, dict) and v.get("splice_failed") and v.get("splice_failed_count", 0) < _max_splice_retries
         }
         _splice_exhausted = {
-            k for k, v in manifest.items()
-            if isinstance(v, dict)
-            and v.get("splice_failed")
-            and v.get("splice_failed_count", 0) >= _max_splice_retries
+            k
+            for k, v in manifest.items()
+            if isinstance(v, dict) and v.get("splice_failed") and v.get("splice_failed_count", 0) >= _max_splice_retries
         }
         if splice_retry_ids:
             logger.info(
                 "[PodcastSync] %d episode(s) marked for splice retry: %s",
-                len(splice_retry_ids), splice_retry_ids,
+                len(splice_retry_ids),
+                splice_retry_ids,
             )
         if _splice_exhausted:
             logger.warning(
                 "[PodcastSync] %d episode(s) have exhausted splice retries "
                 "(MAX_SPLICE_RETRIES=%d) and will not be retried: %s",
-                len(_splice_exhausted), _max_splice_retries, _splice_exhausted,
+                len(_splice_exhausted),
+                _max_splice_retries,
+                _splice_exhausted,
             )
 
         # Build (episode, episode_id) pairs for candidates
@@ -376,14 +378,13 @@ def process_podcast_feed(
 
         logger.info(
             "[PodcastSync] %d new candidates (skipped %d already in S3)",
-            len(candidates), skipped,
+            len(candidates),
+            skipped,
         )
 
         if dry_run:
             for ep, ep_id in candidates:
-                logger.info(
-                    "[DRY-RUN] Would download + upload: %s (%s)", ep.title, ep_id
-                )
+                logger.info("[DRY-RUN] Would download + upload: %s (%s)", ep.title, ep_id)
             return {
                 "slug": slug,
                 "new_episodes": len(candidates),
@@ -416,7 +417,9 @@ def process_podcast_feed(
 
                 logger.info("[PodcastSync] Running ad removal for %s", ep_id)
                 cleaned_path, ad_segments, summary = remove_ads(
-                    original_path, ep_id, tmp_dir,
+                    original_path,
+                    ep_id,
+                    tmp_dir,
                     ad_hints=podcast.ad_hints,
                     trim_music_intro=podcast.trim_music_intro,
                     trim_music_outro=podcast.trim_music_outro,
@@ -433,7 +436,8 @@ def process_podcast_feed(
                     logger.warning(
                         "[PodcastSync] Splice appears to have failed for %s "
                         "(%d ads detected but original file returned) — retrying",
-                        ep_id, len(ad_segments),
+                        ep_id,
+                        len(ad_segments),
                     )
                     # Delete ad-segment cache so retry re-executes splice_audio
                     # rather than returning the same cached (failed) result
@@ -444,7 +448,9 @@ def process_podcast_feed(
                     except Exception:
                         pass
                     cleaned_path, ad_segments, summary = remove_ads(
-                        original_path, ep_id, tmp_dir,
+                        original_path,
+                        ep_id,
+                        tmp_dir,
                         ad_hints=podcast.ad_hints,
                         trim_music_intro=podcast.trim_music_intro,
                         trim_music_outro=podcast.trim_music_outro,
@@ -464,6 +470,7 @@ def process_podcast_feed(
                 if cleaned_path != original_path:
                     try:
                         from ad_evaluator import evaluate_ad_removal
+
                         evaluate_ad_removal(
                             cleaned_mp3=cleaned_path,
                             episode_id=ep_id,
@@ -490,7 +497,15 @@ def process_podcast_feed(
 
                 logger.info("[PodcastSync] Done: %s", ep_id)
                 ads_removed = bool(ad_segments) and cleaned_path != original_path
-                return {"ok": True, "ep": ep, "ep_id": ep_id, "file_size": file_size, "summary": summary, "ads_removed": ads_removed, "splice_failed": splice_failed}
+                return {
+                    "ok": True,
+                    "ep": ep,
+                    "ep_id": ep_id,
+                    "file_size": file_size,
+                    "summary": summary,
+                    "ads_removed": ads_removed,
+                    "splice_failed": splice_failed,
+                }
 
             except Exception as exc:
                 logger.error("[PodcastSync] Failed %s: %s", ep_id, exc)
@@ -598,26 +613,32 @@ def process_podcast_feed(
                     # Backfill episode metadata from the RSS feed (if available)
                     if eid in id_to_ep and not entry.get("title"):
                         ep_meta = id_to_ep[eid]
-                        entry.update({
-                            "title": ep_meta.title,
-                            "guid": ep_meta.guid,
-                            "pub_date": ep_meta.pub_date.isoformat(),
-                            "duration": ep_meta.duration,
-                        })
+                        entry.update(
+                            {
+                                "title": ep_meta.title,
+                                "guid": ep_meta.guid,
+                                "pub_date": ep_meta.pub_date.isoformat(),
+                                "duration": ep_meta.duration,
+                            }
+                        )
                         logger.debug(
                             "[PodcastSync] Backfilled metadata for %s: %s",
-                            eid, ep_meta.title,
+                            eid,
+                            ep_meta.title,
                         )
 
                 # Persist the backfilled manifest entries
                 s3.save_manifest(manifest)
 
-            logger.info(
-                "[PodcastSync] Generating feed.xml with %d episodes", len(feed_episodes)
-            )
+            logger.info("[PodcastSync] Generating feed.xml with %d episodes", len(feed_episodes))
             channel_thumbnail = parse_channel_thumbnail(feed_xml)
             xml_content = _build_podcast_feed_xml(
-                podcast, feed_episodes, feed_ep_ids, cloudfront_base, slug, ep_sizes,
+                podcast,
+                feed_episodes,
+                feed_ep_ids,
+                cloudfront_base,
+                slug,
+                ep_sizes,
                 channel_thumbnail=channel_thumbnail,
                 language=podcast.language,
                 manifest=manifest,
@@ -626,10 +647,7 @@ def process_podcast_feed(
             logger.info("[PodcastSync] feed.xml uploaded")
 
         # Check if any episodes had splice failures
-        splice_failed_count = sum(
-            1 for v in manifest.values()
-            if isinstance(v, dict) and v.get("splice_failed")
-        )
+        splice_failed_count = sum(1 for v in manifest.values() if isinstance(v, dict) and v.get("splice_failed"))
         if splice_failed_count and provider:
             try:
                 provider.update_status(podcast, "Splice Failed")
@@ -644,7 +662,12 @@ def process_podcast_feed(
         elapsed = time.monotonic() - _run_start
         logger.info(
             "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d splice_failed=%d elapsed=%.1fs",
-            slug, new_count, skipped, failed_count, splice_failed_count, elapsed,
+            slug,
+            new_count,
+            skipped,
+            failed_count,
+            splice_failed_count,
+            elapsed,
         )
         return {
             "slug": slug,

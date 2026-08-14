@@ -34,12 +34,13 @@ logger.setLevel(logging.INFO)
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class EpisodeMeta:
     """Metadata for a single podcast episode."""
 
     title: str
-    url: str           # Direct MP3/audio URL
+    url: str  # Direct MP3/audio URL
     pub_date: datetime
     guid: str
     duration: int = 0  # seconds, 0 if unknown
@@ -152,7 +153,9 @@ def search_feed_url_by_name(name: str) -> str:
         track_name = results[0].get("trackName") or results[0].get("collectionName", "")
         logger.info(
             "[PodcastDownloader] Found feed URL for %r → matched %r: %s",
-            name, track_name, feed_url,
+            name,
+            track_name,
+            feed_url,
         )
         return feed_url
 
@@ -289,6 +292,7 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
     cutoff: datetime | None = None
     if max_age_days is not None:
         from datetime import timedelta
+
         cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
 
     # Channel-level thumbnail used as fallback for episodes without their own art
@@ -341,14 +345,16 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
         if not thumbnail:
             thumbnail = channel_thumbnail
 
-        episodes.append(EpisodeMeta(
-            title=title,
-            url=audio_url,
-            pub_date=pub_date,
-            guid=guid,
-            duration=duration,
-            thumbnail=thumbnail,
-        ))
+        episodes.append(
+            EpisodeMeta(
+                title=title,
+                url=audio_url,
+                pub_date=pub_date,
+                guid=guid,
+                duration=duration,
+                thumbnail=thumbnail,
+            )
+        )
 
     logger.info("[PodcastDownloader] Parsed %d episodes from feed", len(episodes))
     return episodes
@@ -357,6 +363,7 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
 # ---------------------------------------------------------------------------
 # Episode ID (stable key for S3 / de-duplication)
 # ---------------------------------------------------------------------------
+
 
 def episode_id_from_guid(guid: str) -> str:
     """Derive a filesystem/S3-safe episode ID from a feed GUID.
@@ -431,7 +438,8 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
             headers["Range"] = f"bytes={existing_bytes}-"
             logger.info(
                 "[PodcastDownloader] Resuming %s from byte %d",
-                episode_id, existing_bytes,
+                episode_id,
+                existing_bytes,
             )
 
         req = urllib.request.Request(url, headers=headers)
@@ -454,7 +462,8 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
                 if existing_bytes:
                     logger.info(
                         "[PodcastDownloader] Server returned %d (no range support) — restarting %s",
-                        status, episode_id,
+                        status,
+                        episode_id,
                     )
                 open_mode = "wb"
 

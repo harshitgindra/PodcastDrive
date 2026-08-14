@@ -24,14 +24,15 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Classification constants
-RESULT_CLEAN = "clean"       # No residual ads detected
-RESULT_PARTIAL = "partial"   # Residual at boundary of a removed segment (trim miss)
-RESULT_MISSED = "missed"     # Residual falls outside all originally removed segments
+RESULT_CLEAN = "clean"  # No residual ads detected
+RESULT_PARTIAL = "partial"  # Residual at boundary of a removed segment (trim miss)
+RESULT_MISSED = "missed"  # Residual falls outside all originally removed segments
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _classify_residual(
     residual: dict,
@@ -57,8 +58,7 @@ def _classify_residual(
 
     for seg in original_segments:
         # Overlap or near-boundary
-        if (r_start <= seg["end"] + boundary_tolerance and
-                r_end >= seg["start"] - boundary_tolerance):
+        if r_start <= seg["end"] + boundary_tolerance and r_end >= seg["start"] - boundary_tolerance:
             return RESULT_PARTIAL
 
     return RESULT_MISSED
@@ -95,32 +95,36 @@ def _build_proposals(
             )
             gap = round(max(0.0, r_start - closest["end"], closest["start"] - r_end), 1)
             suggestions_seconds = max(4, int(gap) + 2)
-            proposals.append({
-                "type": "boundary_extension",
-                "affected_segment": closest,
-                "residual": {"start": r_start, "end": r_end},
-                "suggestion": (
-                    f"Extend segment boundary padding from 2s to ~{suggestions_seconds}s "
-                    f"— residual found at [{r_start:.1f}–{r_end:.1f}], "
-                    f"original segment ended at {closest['end']:.1f}s. "
-                    "Update the '±2 seconds' padding rule in the Bedrock prompt "
-                    "(_AD_DETECTION_PROMPT in ad_remover.py)."
-                ),
-            })
+            proposals.append(
+                {
+                    "type": "boundary_extension",
+                    "affected_segment": closest,
+                    "residual": {"start": r_start, "end": r_end},
+                    "suggestion": (
+                        f"Extend segment boundary padding from 2s to ~{suggestions_seconds}s "
+                        f"— residual found at [{r_start:.1f}–{r_end:.1f}], "
+                        f"original segment ended at {closest['end']:.1f}s. "
+                        "Update the '±2 seconds' padding rule in the Bedrock prompt "
+                        "(_AD_DETECTION_PROMPT in ad_remover.py)."
+                    ),
+                }
+            )
 
         else:  # RESULT_MISSED
             phrase = r_text[:100].strip() if r_text else "(no transcript text)"
-            proposals.append({
-                "type": "missed_detection",
-                "residual": {"start": r_start, "end": r_end},
-                "suggestion": (
-                    f"Ad segment [{r_start:.1f}–{r_end:.1f}] was not detected in the "
-                    f"first pass. Transcript snippet: '{phrase}'. "
-                    "Consider adding matching keywords/phrases to the 'Common ad signals' "
-                    "section of _AD_DETECTION_PROMPT in ad_remover.py, or reduce "
-                    "AD_DETECT_OVERLAP_SECS to improve chunk boundary coverage."
-                ),
-            })
+            proposals.append(
+                {
+                    "type": "missed_detection",
+                    "residual": {"start": r_start, "end": r_end},
+                    "suggestion": (
+                        f"Ad segment [{r_start:.1f}–{r_end:.1f}] was not detected in the "
+                        f"first pass. Transcript snippet: '{phrase}'. "
+                        "Consider adding matching keywords/phrases to the 'Common ad signals' "
+                        "section of _AD_DETECTION_PROMPT in ad_remover.py, or reduce "
+                        "AD_DETECT_OVERLAP_SECS to improve chunk boundary coverage."
+                    ),
+                }
+            )
 
     return proposals
 
@@ -128,6 +132,7 @@ def _build_proposals(
 # ---------------------------------------------------------------------------
 # Fix #1 – Timestamp coordinate translation
 # ---------------------------------------------------------------------------
+
 
 def _translate_cleaned_to_original(
     cleaned_time: float,
@@ -168,6 +173,7 @@ def _translate_cleaned_to_original(
 # ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
+
 
 def evaluate_ad_removal(
     cleaned_mp3: str,
@@ -237,31 +243,25 @@ def evaluate_ad_removal(
         residual["original_time_start"] = round(
             _translate_cleaned_to_original(residual["start"], original_ad_segments), 2
         )
-        residual["original_time_end"] = round(
-            _translate_cleaned_to_original(residual["end"], original_ad_segments), 2
-        )
+        residual["original_time_end"] = round(_translate_cleaned_to_original(residual["end"], original_ad_segments), 2)
 
     # Attach transcript text to residual segments for better proposals
     for residual in residual_segments:
         covered_text = " ".join(
-            s["text"] for s in segments
-            if s["start"] >= residual["start"] - 2 and s["end"] <= residual["end"] + 2
+            s["text"] for s in segments if s["start"] >= residual["start"] - 2 and s["end"] <= residual["end"] + 2
         )
         residual["text"] = covered_text[:300]
 
     # --- Step 3: Classify and build proposals (using original-space timestamps) ---
     # Build translated copies for classification so proposals show original times.
     translated_residuals = [
-        {**r, "start": r["original_time_start"], "end": r["original_time_end"]}
-        for r in residual_segments
+        {**r, "start": r["original_time_start"], "end": r["original_time_end"]} for r in residual_segments
     ]
     if not residual_segments:
         result = RESULT_CLEAN
         proposals: list[dict] = []
     else:
-        classifications = [
-            _classify_residual(r, original_ad_segments) for r in translated_residuals
-        ]
+        classifications = [_classify_residual(r, original_ad_segments) for r in translated_residuals]
         # Overall result is the worst classification found
         result = RESULT_MISSED if RESULT_MISSED in classifications else RESULT_PARTIAL
         proposals = _build_proposals(translated_residuals, original_ad_segments)
@@ -290,7 +290,11 @@ def evaluate_ad_removal(
             json.dump(report, f, indent=2)
         logger.info(
             "[AdEvaluator] %s — result=%s residuals=%d (%.1fs) → %s",
-            episode_id, result, len(residual_segments), residual_secs, report_path,
+            episode_id,
+            result,
+            len(residual_segments),
+            residual_secs,
+            report_path,
         )
     except OSError as exc:
         logger.warning("[AdEvaluator] Could not write report for %s: %s", episode_id, exc)

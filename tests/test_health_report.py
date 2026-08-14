@@ -29,6 +29,7 @@ LOGS_PREFIX = "_meta/logs"
 # Fixtures & helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def s3(monkeypatch):
     monkeypatch.setenv("S3_BUCKET", BUCKET)
@@ -38,8 +39,9 @@ def s3(monkeypatch):
         yield client
 
 
-def _make_run(status="success", runner="machine-A", trigger="cron", days_ago=0,
-              podcasts=5, episodes=10, errors=0, duration=300):
+def _make_run(
+    status="success", runner="machine-A", trigger="cron", days_ago=0, podcasts=5, episodes=10, errors=0, duration=300
+):
     started = datetime.now(UTC) - timedelta(days=days_ago, seconds=10)
     finished = started + timedelta(seconds=duration)
     return {
@@ -95,6 +97,7 @@ def _put_log_file(s3_client, key: str, content: str):
 # _fetch_runs
 # ---------------------------------------------------------------------------
 
+
 class TestFetchRuns:
     def test_returns_runs_within_date_range(self, s3):
         runs = [_make_run(days_ago=1), _make_run(days_ago=3)]
@@ -143,6 +146,7 @@ class TestFetchRuns:
 # _fetch_log_files
 # ---------------------------------------------------------------------------
 
+
 class TestFetchLogFiles:
     def test_returns_log_files_within_date_range(self, s3):
         today = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -181,6 +185,7 @@ class TestFetchLogFiles:
 # ---------------------------------------------------------------------------
 # _parse_log_file
 # ---------------------------------------------------------------------------
+
 
 class TestParseLogFile:
     def test_extracts_errors(self, s3):
@@ -238,6 +243,7 @@ class TestParseLogFile:
 # ---------------------------------------------------------------------------
 # _analyze
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyze:
     def test_summary_total_runs(self):
@@ -327,6 +333,7 @@ class TestAnalyze:
 # _format_markdown
 # ---------------------------------------------------------------------------
 
+
 class TestFormatMarkdown:
     def _get_report(self, runs=None, summaries=None):
         runs = runs or [_make_run()]
@@ -379,6 +386,7 @@ class TestFormatMarkdown:
 # ---------------------------------------------------------------------------
 # generate_health_report (end-to-end)
 # ---------------------------------------------------------------------------
+
 
 class TestGenerateHealthReport:
     def test_returns_markdown_by_default(self, s3):
@@ -457,6 +465,7 @@ class TestGenerateHealthReport:
 # main() — argparse entry point (lines 364-377)
 # ---------------------------------------------------------------------------
 
+
 class TestMain:
     def test_main_default_args_prints_markdown(self, s3, capsys):
         with patch("health_report.boto3") as mock_boto3:
@@ -489,6 +498,7 @@ class TestMain:
 # Additional _fetch_runs edge cases (line 39 — exception path)
 # ---------------------------------------------------------------------------
 
+
 class TestFetchRunsEdgeCases:
     def test_returns_empty_on_s3_exception(self, s3):
         """Line 39 (exception branch): get_object raises — return []."""
@@ -513,6 +523,7 @@ class TestFetchRunsEdgeCases:
 # _fetch_log_files short-path skipping (lines 69-70)
 # ---------------------------------------------------------------------------
 
+
 class TestFetchLogFilesEdgeCases:
     def test_skips_keys_with_fewer_than_4_parts(self, s3):
         """Lines 69-70: keys with < 4 path parts are not added."""
@@ -527,6 +538,7 @@ class TestFetchLogFilesEdgeCases:
 # ---------------------------------------------------------------------------
 # _parse_log_file empty content (line 85)
 # ---------------------------------------------------------------------------
+
 
 class TestParseLogFileEdgeCases:
     def test_returns_lines_zero_for_whitespace_only_content(self, s3):
@@ -547,6 +559,7 @@ class TestParseLogFileEdgeCases:
 # ---------------------------------------------------------------------------
 # _analyze error categorization (lines 172-178)
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyzeErrorCategorization:
     def test_categorizes_download_failure(self):
@@ -590,6 +603,7 @@ class TestAnalyzeErrorCategorization:
 # _analyze stale running detection (lines 204-205)
 # ---------------------------------------------------------------------------
 
+
 class TestAnalyzeStaleRunning:
     def test_skips_running_entry_with_bad_started_at(self):
         """Lines 204-205: ValueError/TypeError on bad started_at is silently ignored."""
@@ -605,6 +619,7 @@ class TestAnalyzeStaleRunning:
 # ---------------------------------------------------------------------------
 # _format_markdown by_runner / by_trigger sections (lines 283-291)
 # ---------------------------------------------------------------------------
+
 
 class TestFormatMarkdownRunsSections:
     def test_by_runner_entries_appear_in_markdown(self):
@@ -646,6 +661,7 @@ class TestFormatMarkdownRunsSections:
 # ---------------------------------------------------------------------------
 # _fetch_runs — deduplication by run_id (fix for double-entry bug)
 # ---------------------------------------------------------------------------
+
 
 class TestFetchRunsDeduplication:
     def test_dedup_keeps_last_entry_per_run_id(self, s3):
@@ -738,6 +754,7 @@ class TestFetchRunsDeduplication:
 # _analyze — success_rate excludes in-progress runs from denominator
 # ---------------------------------------------------------------------------
 
+
 class TestSuccessRateExcludesRunningRuns:
     def test_success_rate_excludes_running_from_denominator(self):
         """A currently-running entry should not count as failure in success_rate."""
@@ -767,11 +784,13 @@ class TestMaybeSendAlert:
     def test_no_op_when_url_not_set(self, monkeypatch):
         """No HTTP request when HEALTH_ALERT_URL is unset."""
         import health_report
+
         monkeypatch.delenv("HEALTH_ALERT_URL", raising=False)
 
         requests_made = []
         monkeypatch.setattr(
-            health_report.urllib.request, "urlopen",
+            health_report.urllib.request,
+            "urlopen",
             lambda req, timeout=None: requests_made.append(req),
         )
 
@@ -782,11 +801,13 @@ class TestMaybeSendAlert:
     def test_no_op_when_no_high_issues(self, monkeypatch):
         """No HTTP request when there are no HIGH-priority recommendations."""
         import health_report
+
         monkeypatch.setenv("HEALTH_ALERT_URL", "http://example.com/webhook")
 
         requests_made = []
         monkeypatch.setattr(
-            health_report.urllib.request, "urlopen",
+            health_report.urllib.request,
+            "urlopen",
             lambda req, timeout=None: requests_made.append(req),
         )
 
@@ -797,14 +818,19 @@ class TestMaybeSendAlert:
     def test_posts_on_high_priority_issue(self, monkeypatch):
         """HTTP POST is made when there is at least one HIGH recommendation."""
         import json
+
         import health_report
+
         monkeypatch.setenv("HEALTH_ALERT_URL", "http://example.com/webhook")
 
         posted = []
 
         class FakeResponse:
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
 
         def fake_urlopen(req, timeout=None):
             posted.append(req)
@@ -831,7 +857,9 @@ class TestMaybeSendAlert:
     def test_warning_logged_on_network_error(self, monkeypatch, caplog):
         """Network errors are caught and logged as warnings (not raised)."""
         import urllib.error
+
         import health_report
+
         monkeypatch.setenv("HEALTH_ALERT_URL", "http://example.com/webhook")
 
         def fake_urlopen(req, timeout=None):
@@ -846,6 +874,7 @@ class TestMaybeSendAlert:
             ],
         }
         import logging
+
         with caplog.at_level(logging.WARNING, logger="health_report"):
             health_report._maybe_send_alert(report)  # must not raise
 
@@ -860,18 +889,16 @@ class TestNoRunsIn8hDetection:
         from health_report import _analyze
 
         # days_ago=3/24 means the run started 3 hours ago (well within 8h threshold)
-        runs = [_make_run(status="success", days_ago=3/24)]
+        runs = [_make_run(status="success", days_ago=3 / 24)]
         report = _analyze(runs, [])
-        assert not any(
-            "No runs in the last" in r["issue"] for r in report["recommendations"]
-        )
+        assert not any("No runs in the last" in r["issue"] for r in report["recommendations"])
 
     def test_alert_when_no_run_in_8h(self):
         """HIGH recommendation when latest run is older than 8 hours."""
         from health_report import _analyze
 
         # days_ago=10/24 means the run started 10 hours ago (exceeds 8h threshold)
-        runs = [_make_run(status="success", days_ago=10/24)]
+        runs = [_make_run(status="success", days_ago=10 / 24)]
         report = _analyze(runs, [])
         high_recs = [r for r in report["recommendations"] if r["priority"] == "HIGH"]
         assert any("No runs in the last" in r["issue"] for r in high_recs)

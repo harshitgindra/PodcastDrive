@@ -83,7 +83,7 @@ def export_cookies(output_path: str) -> int:
         f.write("# Exported from Firefox by PodcastDrive/export_cookies.py\n")
         f.write("# https://curl.haxx.se/rfc/cookie_spec.html\n\n")
 
-        for host, name, value, path, expiry, is_secure, is_http_only in rows:
+        for host, name, value, path, expiry, is_secure, _is_http_only in rows:
             # Netscape format: domain, flag, path, secure, expiry, name, value
             include_subdomains = "TRUE" if host.startswith(".") else "FALSE"
             secure = "TRUE" if is_secure else "FALSE"

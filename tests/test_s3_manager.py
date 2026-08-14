@@ -154,29 +154,20 @@ class TestSetLifecycleExpiration:
     def test_lifecycle_rule_has_correct_days(self, s3_manager):
         s3_manager.set_lifecycle_expiration(10)
         response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
-        rule = next(
-            r for r in response["Rules"]
-            if r["ID"] == f"expire-{PLAYLIST_ID}-episodes"
-        )
+        rule = next(r for r in response["Rules"] if r["ID"] == f"expire-{PLAYLIST_ID}-episodes")
         assert rule["Expiration"]["Days"] == 10
 
     def test_lifecycle_rule_has_correct_prefix(self, s3_manager):
         s3_manager.set_lifecycle_expiration(5)
         response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
-        rule = next(
-            r for r in response["Rules"]
-            if r["ID"] == f"expire-{PLAYLIST_ID}-episodes"
-        )
+        rule = next(r for r in response["Rules"] if r["ID"] == f"expire-{PLAYLIST_ID}-episodes")
         assert rule["Filter"]["Prefix"] == f"{PLAYLIST_ID}/episodes/"
 
     def test_updates_existing_rule_for_same_playlist(self, s3_manager):
         s3_manager.set_lifecycle_expiration(5)
         s3_manager.set_lifecycle_expiration(14)  # update to 14 days
         response = s3_manager.s3_client.get_bucket_lifecycle_configuration(Bucket=BUCKET)
-        matching = [
-            r for r in response["Rules"]
-            if r["ID"] == f"expire-{PLAYLIST_ID}-episodes"
-        ]
+        matching = [r for r in response["Rules"] if r["ID"] == f"expire-{PLAYLIST_ID}-episodes"]
         assert len(matching) == 1
         assert matching[0]["Expiration"]["Days"] == 14
 
@@ -186,12 +177,14 @@ class TestSetLifecycleExpiration:
         s3_manager.s3_client.put_bucket_lifecycle_configuration(
             Bucket=BUCKET,
             LifecycleConfiguration={
-                "Rules": [{
-                    "ID": other_rule_id,
-                    "Status": "Enabled",
-                    "Filter": {"Prefix": "OtherPlaylist/episodes/"},
-                    "Expiration": {"Days": 7},
-                }]
+                "Rules": [
+                    {
+                        "ID": other_rule_id,
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": "OtherPlaylist/episodes/"},
+                        "Expiration": {"Days": 7},
+                    }
+                ]
             },
         )
         # Now set lifecycle for our playlist
@@ -203,6 +196,7 @@ class TestSetLifecycleExpiration:
 
     def test_handles_s3_error_gracefully(self, s3_manager):
         from botocore.exceptions import ClientError
+
         error_resp = {"Error": {"Code": "AccessDenied", "Message": "Forbidden"}}
         s3_manager.s3_client.get_bucket_lifecycle_configuration = unittest.mock.MagicMock(
             side_effect=ClientError(error_resp, "GetBucketLifecycleConfiguration")
@@ -328,17 +322,13 @@ class TestManifest:
 
     def test_load_manifest_returns_empty_on_corrupt_json(self, s3_manager):
         key = f"{PLAYLIST_ID}/manifest.json"
-        s3_manager.s3_client.put_object(
-            Bucket=BUCKET, Key=key, Body=b"not valid json"
-        )
+        s3_manager.s3_client.put_object(Bucket=BUCKET, Key=key, Body=b"not valid json")
         result = s3_manager.load_manifest()
         assert result == {}
 
     def test_load_manifest_returns_empty_on_non_dict_json(self, s3_manager):
         key = f"{PLAYLIST_ID}/manifest.json"
-        s3_manager.s3_client.put_object(
-            Bucket=BUCKET, Key=key, Body=b'["not", "a", "dict"]'
-        )
+        s3_manager.s3_client.put_object(Bucket=BUCKET, Key=key, Body=b'["not", "a", "dict"]')
         result = s3_manager.load_manifest()
         assert result == {}
 
@@ -359,6 +349,7 @@ class TestManifest:
 class TestPingOvercast:
     def test_skips_when_no_cloudfront_base(self):
         import os
+
         with mock_aws():
             conn = boto3.client("s3", region_name="us-east-1")
             conn.create_bucket(Bucket=BUCKET)
@@ -547,6 +538,7 @@ class TestResetPodcast:
 # Exception-path coverage for lines 237-238, 265-266, 283, 353-354, 365-366
 # ---------------------------------------------------------------------------
 
+
 class TestManifestExceptionPaths:
     """Cover non-404 ClientError and generic Exception branches in load/save_manifest."""
 
@@ -627,6 +619,7 @@ class TestResetPodcastExceptionPaths:
 
         # First delete_object call (feed.xml) raises; second (manifest.json) succeeds
         call_count = [0]
+
         def fake_delete_object(**kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
@@ -651,6 +644,7 @@ class TestResetPodcastExceptionPaths:
 
         # First delete_object (feed.xml) succeeds; second (manifest.json) raises
         call_count = [0]
+
         def fake_delete_object(**kwargs):
             call_count[0] += 1
             if call_count[0] == 2:
@@ -669,25 +663,30 @@ class TestResetPodcastExceptionPaths:
 # _ping_overcast — 429 retry with backoff
 # ---------------------------------------------------------------------------
 
+
 class TestPingOvercastRetry:
     """Tests for the 429 retry logic in _ping_overcast."""
 
     def _make_manager(self, cloudfront_base="https://cdn.example.com"):
         import os
+
         os.environ["CLOUDFRONT_BASE"] = cloudfront_base
         manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
         return manager
 
     def test_succeeds_on_first_attempt(self, monkeypatch):
         """Normal case: first ping succeeds, no retry needed."""
-        import urllib.error
 
         call_count = [0]
 
         class FakeResponse:
             status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
 
         def fake_urlopen(req, timeout, context):
             call_count[0] += 1
@@ -710,8 +709,12 @@ class TestPingOvercastRetry:
 
         class FakeResponse:
             status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
 
         def fake_urlopen(req, timeout, context):
             call_count[0] += 1

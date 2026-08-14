@@ -37,9 +37,7 @@ class TestDownloadAndConvertSuccess:
             mock_ydl.__exit__ = MagicMock(return_value=False)
             mock_ydl_cls.return_value = mock_ydl
 
-            result = download_and_convert(
-                "https://youtube.com/watch?v=testvid", video_id, tmp_dir
-            )
+            result = download_and_convert("https://youtube.com/watch?v=testvid", video_id, tmp_dir)
 
             assert result == mp3_path
             assert os.path.exists(result)
@@ -62,9 +60,7 @@ class TestDownloadAndConvertSuccess:
             mock_ydl.__exit__ = MagicMock(return_value=False)
             mock_ydl_cls.return_value = mock_ydl
 
-            download_and_convert(
-                "https://youtube.com/watch?v=cfgtest", video_id, tmp_dir
-            )
+            download_and_convert("https://youtube.com/watch?v=cfgtest", video_id, tmp_dir)
 
             opts = mock_ydl_cls.call_args[0][0]
             assert opts["format"] == "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
@@ -95,9 +91,7 @@ class TestDownloadAndConvertSuccess:
             mock_ydl.__exit__ = MagicMock(return_value=False)
             mock_ydl_cls.return_value = mock_ydl
 
-            download_and_convert(
-                "https://youtube.com/watch?v=tmpltest", video_id, tmp_dir
-            )
+            download_and_convert("https://youtube.com/watch?v=tmpltest", video_id, tmp_dir)
 
             opts = mock_ydl_cls.call_args[0][0]
             expected_template = os.path.join(tmp_dir, f"{video_id}.%(ext)s")
@@ -119,9 +113,7 @@ class TestIntermediateFileCleanup:
                     f.write(b"\xff\xfb\x90\x00" * 100)
                 # Create intermediate files
                 for ext in ["webm", "opus", "m4a"]:
-                    with open(
-                        os.path.join(tmp_dir, f"{video_id}.{ext}"), "wb"
-                    ) as f:
+                    with open(os.path.join(tmp_dir, f"{video_id}.{ext}"), "wb") as f:
                         f.write(b"intermediate")
 
             mock_ydl = MagicMock()
@@ -130,17 +122,13 @@ class TestIntermediateFileCleanup:
             mock_ydl.__exit__ = MagicMock(return_value=False)
             mock_ydl_cls.return_value = mock_ydl
 
-            result = download_and_convert(
-                "https://youtube.com/watch?v=cleantest", video_id, tmp_dir
-            )
+            result = download_and_convert("https://youtube.com/watch?v=cleantest", video_id, tmp_dir)
 
             # MP3 should exist
             assert os.path.exists(result)
             # Intermediate files should be gone
             for ext in ["webm", "opus", "m4a"]:
-                assert not os.path.exists(
-                    os.path.join(tmp_dir, f"{video_id}.{ext}")
-                )
+                assert not os.path.exists(os.path.join(tmp_dir, f"{video_id}.{ext}"))
 
 
 class TestDownloadFailureHandling:
@@ -161,9 +149,7 @@ class TestDownloadFailureHandling:
             mock_ydl_cls.return_value = mock_ydl
 
             with pytest.raises(DownloadError, match="Failed to download/convert"):
-                download_and_convert(
-                    "https://youtube.com/watch?v=failtest", video_id, tmp_dir
-                )
+                download_and_convert("https://youtube.com/watch?v=failtest", video_id, tmp_dir)
 
     @patch("downloader._MAX_RETRIES", 1)
     @patch("downloader._RETRY_WAIT_MIN", 0)
@@ -176,9 +162,7 @@ class TestDownloadFailureHandling:
             def failing_download(urls):
                 # Create partial files before failing
                 for ext in ["webm", "mp3"]:
-                    with open(
-                        os.path.join(tmp_dir, f"{video_id}.{ext}"), "wb"
-                    ) as f:
+                    with open(os.path.join(tmp_dir, f"{video_id}.{ext}"), "wb") as f:
                         f.write(b"partial")
                 raise Exception("Conversion failed")
 
@@ -196,12 +180,8 @@ class TestDownloadFailureHandling:
                 )
 
             # All partial files should be cleaned up
-            assert not os.path.exists(
-                os.path.join(tmp_dir, f"{video_id}.webm")
-            )
-            assert not os.path.exists(
-                os.path.join(tmp_dir, f"{video_id}.mp3")
-            )
+            assert not os.path.exists(os.path.join(tmp_dir, f"{video_id}.webm"))
+            assert not os.path.exists(os.path.join(tmp_dir, f"{video_id}.mp3"))
 
     @patch("downloader.yt_dlp.YoutubeDL")
     def test_error_raised_when_mp3_missing_after_download(self, mock_ydl_cls):
@@ -217,9 +197,7 @@ class TestDownloadFailureHandling:
             mock_ydl_cls.return_value = mock_ydl
 
             with pytest.raises(DownloadError, match="MP3 file not found"):
-                download_and_convert(
-                    "https://youtube.com/watch?v=nomp3", video_id, tmp_dir
-                )
+                download_and_convert("https://youtube.com/watch?v=nomp3", video_id, tmp_dir)
 
     @patch("downloader.yt_dlp.YoutubeDL")
     def test_error_raised_when_mp3_is_empty(self, mock_ydl_cls):
@@ -239,9 +217,7 @@ class TestDownloadFailureHandling:
             mock_ydl_cls.return_value = mock_ydl
 
             with pytest.raises(DownloadError, match="MP3 file is empty"):
-                download_and_convert(
-                    "https://youtube.com/watch?v=emptymp3", video_id, tmp_dir
-                )
+                download_and_convert("https://youtube.com/watch?v=emptymp3", video_id, tmp_dir)
 
             # Empty MP3 should be cleaned up
             assert not os.path.exists(mp3_path)
@@ -261,9 +237,7 @@ class TestDownloadFailureHandling:
             mock_ydl_cls.return_value = mock_ydl
 
             with pytest.raises(DownloadError, match="errmsg123"):
-                download_and_convert(
-                    "https://youtube.com/watch?v=errmsg123", video_id, tmp_dir
-                )
+                download_and_convert("https://youtube.com/watch?v=errmsg123", video_id, tmp_dir)
 
 
 class TestOsErrorHandling:
@@ -302,11 +276,11 @@ class TestOsErrorHandling:
             mock_remove.side_effect = selective_remove
 
             # Should not raise even though cleanup fails
-            with patch("downloader.os.path.exists", return_value=True), \
-                 patch("downloader.os.path.getsize", return_value=400):
-                result = download_and_convert(
-                    f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
-                )
+            with (
+                patch("downloader.os.path.exists", return_value=True),
+                patch("downloader.os.path.getsize", return_value=400),
+            ):
+                result = download_and_convert(f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir)
             assert result == mp3_path
 
     @patch("downloader._MAX_RETRIES", 1)
@@ -335,10 +309,9 @@ class TestOsErrorHandling:
             mock_remove.side_effect = OSError("locked")
 
             from downloader import DownloadError
+
             with pytest.raises(DownloadError), patch("downloader.os.path.exists", return_value=True):
-                download_and_convert(
-                    f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
-                )
+                download_and_convert(f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir)
 
     @patch("downloader._MAX_RETRIES", 1)
     @patch("downloader._RETRY_WAIT_MIN", 0)
@@ -364,12 +337,13 @@ class TestOsErrorHandling:
             mock_remove.side_effect = OSError("locked")
 
             from downloader import DownloadError
+
             with pytest.raises(DownloadError, match="empty"):
-                with patch("downloader.os.path.exists", return_value=True), \
-                     patch("downloader.os.path.getsize", return_value=0):
-                    download_and_convert(
-                        f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir
-                    )
+                with (
+                    patch("downloader.os.path.exists", return_value=True),
+                    patch("downloader.os.path.getsize", return_value=0),
+                ):
+                    download_and_convert(f"https://youtube.com/watch?v={video_id}", video_id, tmp_dir)
 
 
 class TestFfmpegPathSetup:
@@ -396,15 +370,11 @@ class TestFfmpegPathSetup:
             original_path = os.environ.get("PATH", "")
 
             # Remove /opt/bin if it's already there to test the addition
-            cleaned_path = os.pathsep.join(
-                p for p in original_path.split(os.pathsep) if p != "/opt/bin"
-            )
+            cleaned_path = os.pathsep.join(p for p in original_path.split(os.pathsep) if p != "/opt/bin")
             os.environ["PATH"] = cleaned_path
 
             try:
-                download_and_convert(
-                    "https://youtube.com/watch?v=pathtest", video_id, tmp_dir
-                )
+                download_and_convert("https://youtube.com/watch?v=pathtest", video_id, tmp_dir)
                 assert "/opt/bin" in os.environ["PATH"]
             finally:
                 os.environ["PATH"] = original_path

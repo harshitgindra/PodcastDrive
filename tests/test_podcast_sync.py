@@ -24,6 +24,7 @@ from podcast_sync import (
 # _podcast_slug
 # ---------------------------------------------------------------------------
 
+
 class TestPodcastSlug:
     def test_basic(self):
         assert _podcast_slug("My Podcast") == "my-podcast"
@@ -49,6 +50,7 @@ class TestPodcastSlug:
 # _format_duration
 # ---------------------------------------------------------------------------
 
+
 class TestFormatDuration:
     def test_zero(self):
         assert _format_duration(0) == "0:00"
@@ -66,6 +68,7 @@ class TestFormatDuration:
 # ---------------------------------------------------------------------------
 # _build_podcast_feed_xml
 # ---------------------------------------------------------------------------
+
 
 class TestBuildPodcastFeedXml:
     def _make_episode(self, title="Ep 1", guid="guid-1", duration=300, thumbnail=""):
@@ -105,7 +108,11 @@ class TestBuildPodcastFeedXml:
         eps = [self._make_episode()]
         ids = ["ep-001"]
         xml = _build_podcast_feed_xml(
-            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            podcast,
+            eps,
+            ids,
+            "https://cdn.example.com",
+            "art-pod",
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         assert "https://example.com/channel-art.jpg" in xml
@@ -117,7 +124,11 @@ class TestBuildPodcastFeedXml:
         eps = [self._make_episode()]
         ids = ["ep-001"]
         xml = _build_podcast_feed_xml(
-            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            podcast,
+            eps,
+            ids,
+            "https://cdn.example.com",
+            "art-pod",
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         assert "<image>" in xml
@@ -143,7 +154,11 @@ class TestBuildPodcastFeedXml:
         eps = [self._make_episode(thumbnail="")]
         ids = ["ep-001"]
         xml = _build_podcast_feed_xml(
-            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            podcast,
+            eps,
+            ids,
+            "https://cdn.example.com",
+            "art-pod",
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         # channel thumbnail should appear in the item (episode fallback)
@@ -155,7 +170,11 @@ class TestBuildPodcastFeedXml:
         eps = [self._make_episode(thumbnail="https://example.com/ep-specific.jpg")]
         ids = ["ep-001"]
         xml = _build_podcast_feed_xml(
-            podcast, eps, ids, "https://cdn.example.com", "art-pod",
+            podcast,
+            eps,
+            ids,
+            "https://cdn.example.com",
+            "art-pod",
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         assert "https://example.com/ep-specific.jpg" in xml
@@ -167,7 +186,11 @@ class TestBuildPodcastFeedXml:
         eps = [self._make_episode(title="My Episode", guid="guid-1")]
         ids = ["ep-001"]
         xml = _build_podcast_feed_xml(
-            podcast, eps, ids, "https://cdn.example.com", "test-pod",
+            podcast,
+            eps,
+            ids,
+            "https://cdn.example.com",
+            "test-pod",
             manifest={"ep-001": {"ads_removed": True}},
         )
         assert "My Episode [Ad-Free]" in xml
@@ -178,7 +201,11 @@ class TestBuildPodcastFeedXml:
         eps = [self._make_episode(title="My Episode", guid="guid-1")]
         ids = ["ep-001"]
         xml = _build_podcast_feed_xml(
-            podcast, eps, ids, "https://cdn.example.com", "test-pod",
+            podcast,
+            eps,
+            ids,
+            "https://cdn.example.com",
+            "test-pod",
             manifest={"ep-001": {"ads_removed": False}},
         )
         assert "My Episode ✂️" not in xml
@@ -188,6 +215,7 @@ class TestBuildPodcastFeedXml:
 # ---------------------------------------------------------------------------
 # process_podcast_feed
 # ---------------------------------------------------------------------------
+
 
 def _make_podcast(
     name="Test Podcast",
@@ -781,6 +809,7 @@ class TestProcessPodcastFeedManifest:
 # process_podcast_feed — splice retry cap
 # ---------------------------------------------------------------------------
 
+
 class TestSpliceRetryCount:
     """Verify the MAX_SPLICE_RETRIES cap prevents infinite reprocessing."""
 
@@ -900,6 +929,7 @@ class TestSpliceRetryCount:
 # ---------------------------------------------------------------------------
 # process_podcast_feed — episode_title/duration_secs forwarded to remove_ads
 # ---------------------------------------------------------------------------
+
 
 class TestProcessPodcastFeedSummaryIntegration:
     """Verify remove_ads is called with episode metadata and summary is persisted."""

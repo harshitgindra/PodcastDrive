@@ -87,13 +87,24 @@ class TestFix2Language:
         from rss_generator import generate_rss
 
         meta = PlaylistMeta(
-            title="T", description="D", uploader="U",
-            channel_url="http://c", webpage_url="http://w", playlist_id="PL1",
+            title="T",
+            description="D",
+            uploader="U",
+            channel_url="http://c",
+            webpage_url="http://w",
+            playlist_id="PL1",
         )
         ep = EpisodeMeta(
-            video_id="v1", title="Ep1", description="desc", duration=60,
-            upload_date="20250601", thumbnail="", webpage_url="http://v",
-            playlist_index=1, s3_key="k", file_size=100,
+            video_id="v1",
+            title="Ep1",
+            description="desc",
+            duration=60,
+            upload_date="20250601",
+            thumbnail="",
+            webpage_url="http://v",
+            playlist_index=1,
+            s3_key="k",
+            file_size=100,
             cloudfront_url="https://cdn.example.com/PL1/episodes/v1.mp3",
         )
         xml_str = generate_rss(meta, [ep], "https://cdn.example.com", "PL1", language="hi")
@@ -106,13 +117,24 @@ class TestFix2Language:
         from rss_generator import generate_rss
 
         meta = PlaylistMeta(
-            title="T", description="D", uploader="U",
-            channel_url="http://c", webpage_url="http://w", playlist_id="PL1",
+            title="T",
+            description="D",
+            uploader="U",
+            channel_url="http://c",
+            webpage_url="http://w",
+            playlist_id="PL1",
         )
         ep = EpisodeMeta(
-            video_id="v1", title="Ep1", description="desc", duration=60,
-            upload_date="20250601", thumbnail="", webpage_url="http://v",
-            playlist_index=1, s3_key="k", file_size=100,
+            video_id="v1",
+            title="Ep1",
+            description="desc",
+            duration=60,
+            upload_date="20250601",
+            thumbnail="",
+            webpage_url="http://v",
+            playlist_index=1,
+            s3_key="k",
+            file_size=100,
             cloudfront_url="https://cdn.example.com/PL1/episodes/v1.mp3",
         )
         xml_str = generate_rss(meta, [ep], "https://cdn.example.com", "PL1")
@@ -125,9 +147,7 @@ class TestFix2Language:
         from podcast_sync import _build_podcast_feed_xml
 
         podcast = PodcastConfig(name="P", url="http://x", language="ja")
-        xml_str = _build_podcast_feed_xml(
-            podcast, [], [], "https://cdn.example.com", "slug", language="ja"
-        )
+        xml_str = _build_podcast_feed_xml(podcast, [], [], "https://cdn.example.com", "slug", language="ja")
         root = ET.fromstring(xml_str)
         assert root.find(".//channel/language").text == "ja"
 
@@ -158,6 +178,7 @@ podcasts:
         yaml_file.write_text(yaml_content)
 
         from config_provider import YamlPodcastConfigProvider
+
         provider = YamlPodcastConfigProvider(path=str(yaml_file))
         podcasts = provider.get_podcasts()
         assert len(podcasts) == 1
@@ -170,6 +191,7 @@ podcasts:
         yaml_file.write_text("podcasts: []")
 
         from config_provider import PodcastConfig, YamlPodcastConfigProvider
+
         provider = YamlPodcastConfigProvider(path=str(yaml_file))
         podcast = PodcastConfig(name="Test", url="http://old")
         provider.update_url(podcast, "http://new")
@@ -205,6 +227,7 @@ class TestFix6TranscriptText:
     def test_custom_prefix(self, monkeypatch):
         """Respects TRANSCRIBE_CACHE_PREFIX env var."""
         import ad_remover
+
         monkeypatch.setenv("TRANSCRIBE_CACHE_PREFIX", "custom-prefix")
 
         s3 = MagicMock()
@@ -229,6 +252,7 @@ class TestFix7Summary:
         }
         with patch("summary_generator.boto3.client", return_value=mock_client):
             from summary_generator import generate_episode_summary
+
             result = generate_episode_summary(
                 [{"start": 0, "end": 10, "text": "some content"}],
                 "Episode Title",
@@ -245,9 +269,8 @@ class TestFix7Summary:
 
         with patch("summary_generator.boto3.client", side_effect=Exception("boom")):
             from summary_generator import generate_episode_summary
-            result = generate_episode_summary(
-                [{"start": 0, "end": 10, "text": "x"}], "Ep"
-            )
+
+            result = generate_episode_summary([{"start": 0, "end": 10, "text": "x"}], "Ep")
         assert result == ""
 
     def test_generate_episode_summary_truncates_long_transcript(self, monkeypatch):
@@ -255,13 +278,12 @@ class TestFix7Summary:
         monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
 
         mock_client = MagicMock()
-        mock_client.converse.return_value = {
-            "output": {"message": {"content": [{"text": "Summary."}]}}
-        }
+        mock_client.converse.return_value = {"output": {"message": {"content": [{"text": "Summary."}]}}}
         long_segments = [{"start": 0, "end": 1, "text": "a" * 50000}]
 
         with patch("summary_generator.boto3.client", return_value=mock_client):
             from summary_generator import generate_episode_summary
+
             generate_episode_summary(long_segments, "Ep")
 
         prompt = mock_client.converse.call_args[1]["messages"][0]["content"][0]["text"]
@@ -291,13 +313,23 @@ class TestFix8Chapters:
         from rss_generator import generate_rss
 
         meta = PlaylistMeta(
-            title="T", description="D", uploader="U",
-            channel_url="http://c", webpage_url="http://w", playlist_id="PL1",
+            title="T",
+            description="D",
+            uploader="U",
+            channel_url="http://c",
+            webpage_url="http://w",
+            playlist_id="PL1",
         )
         ep = EpisodeMeta(
-            video_id="v1", title="Ep1", description="Episode text.",
-            duration=3600, upload_date="20250601", thumbnail="",
-            webpage_url="http://v", playlist_index=1, s3_key="k",
+            video_id="v1",
+            title="Ep1",
+            description="Episode text.",
+            duration=3600,
+            upload_date="20250601",
+            thumbnail="",
+            webpage_url="http://v",
+            playlist_index=1,
+            s3_key="k",
             file_size=100,
             cloudfront_url="https://cdn.example.com/PL1/episodes/v1.mp3",
             chapters=[
@@ -320,13 +352,23 @@ class TestFix8Chapters:
         from rss_generator import generate_rss
 
         meta = PlaylistMeta(
-            title="T", description="D", uploader="U",
-            channel_url="http://c", webpage_url="http://w", playlist_id="PL1",
+            title="T",
+            description="D",
+            uploader="U",
+            channel_url="http://c",
+            webpage_url="http://w",
+            playlist_id="PL1",
         )
         ep = EpisodeMeta(
-            video_id="v1", title="Ep1", description="Episode text.",
-            duration=60, upload_date="20250601", thumbnail="",
-            webpage_url="http://v", playlist_index=1, s3_key="k",
+            video_id="v1",
+            title="Ep1",
+            description="Episode text.",
+            duration=60,
+            upload_date="20250601",
+            thumbnail="",
+            webpage_url="http://v",
+            playlist_index=1,
+            s3_key="k",
             file_size=100,
             cloudfront_url="https://cdn.example.com/PL1/episodes/v1.mp3",
             chapters=[],
@@ -373,6 +415,7 @@ class TestFeedDifferentiation:
 
     def _make_playlist_meta(self):
         from models import PlaylistMeta
+
         return PlaylistMeta(
             title="My Podcast",
             description="Desc",
@@ -384,15 +427,24 @@ class TestFeedDifferentiation:
 
     def _make_episode(self):
         from models import EpisodeMeta
+
         return EpisodeMeta(
-            video_id="v1", title="Ep1", description="desc", duration=60,
-            upload_date="20250601", thumbnail="", webpage_url="http://v",
-            playlist_index=1, s3_key="k", file_size=100,
+            video_id="v1",
+            title="Ep1",
+            description="desc",
+            duration=60,
+            upload_date="20250601",
+            thumbnail="",
+            webpage_url="http://v",
+            playlist_index=1,
+            s3_key="k",
+            file_size=100,
             cloudfront_url="https://cdn.example.com/PL1/episodes/v1.mp3",
         )
 
     def _make_podcast_config(self):
         from config_provider import PodcastConfig
+
         return PodcastConfig(name="My Podcast", url="http://x")
 
     def test_default_suffix_youtube(self, monkeypatch):
@@ -400,6 +452,7 @@ class TestFeedDifferentiation:
         monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
         monkeypatch.delenv("FEED_SUBTITLE", raising=False)
         from rss_generator import generate_rss
+
         meta = self._make_playlist_meta()
         xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
         root = ET.fromstring(xml_str)
@@ -410,6 +463,7 @@ class TestFeedDifferentiation:
         monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
         monkeypatch.delenv("FEED_SUBTITLE", raising=False)
         from podcast_sync import _build_podcast_feed_xml
+
         podcast = self._make_podcast_config()
         xml_str = _build_podcast_feed_xml(podcast, [], [], "https://cdn.example.com", "slug")
         root = ET.fromstring(xml_str)
@@ -419,6 +473,7 @@ class TestFeedDifferentiation:
         """Custom suffix applied when FEED_TITLE_SUFFIX is set."""
         monkeypatch.setenv("FEED_TITLE_SUFFIX", " [Clean]")
         from rss_generator import generate_rss
+
         meta = self._make_playlist_meta()
         xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
         root = ET.fromstring(xml_str)
@@ -428,6 +483,7 @@ class TestFeedDifferentiation:
         """Empty FEED_TITLE_SUFFIX means no suffix."""
         monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
         from rss_generator import generate_rss
+
         meta = self._make_playlist_meta()
         xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
         root = ET.fromstring(xml_str)
@@ -438,6 +494,7 @@ class TestFeedDifferentiation:
         monkeypatch.delenv("FEED_SUBTITLE", raising=False)
         monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
         from rss_generator import generate_rss
+
         meta = self._make_playlist_meta()
         xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
         # Parse with namespace
@@ -452,6 +509,7 @@ class TestFeedDifferentiation:
         monkeypatch.setenv("FEED_SUBTITLE", "")
         monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
         from rss_generator import generate_rss
+
         meta = self._make_playlist_meta()
         xml_str = generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
         ns = {"itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"}
@@ -463,6 +521,7 @@ class TestFeedDifferentiation:
         """PlaylistMeta.title is unchanged after generate_rss."""
         monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
         from rss_generator import generate_rss
+
         meta = self._make_playlist_meta()
         generate_rss(meta, [self._make_episode()], "https://cdn.example.com", "PL1")
         assert meta.title == "My Podcast"
@@ -471,6 +530,7 @@ class TestFeedDifferentiation:
         """PodcastConfig.name is unchanged after _build_podcast_feed_xml."""
         monkeypatch.delenv("FEED_TITLE_SUFFIX", raising=False)
         from podcast_sync import _build_podcast_feed_xml
+
         podcast = self._make_podcast_config()
         _build_podcast_feed_xml(podcast, [], [], "https://cdn.example.com", "slug")
         assert podcast.name == "My Podcast"
@@ -487,13 +547,20 @@ class TestAdRemovalParity:
     def test_remove_ads_is_the_entrypoint(self):
         """test_ad_cleaner.py must not import internal ad_remover functions directly."""
         import ast
+
         source_path = os.path.join(os.path.dirname(__file__), "..", "test_ad_cleaner.py")
         with open(source_path) as f:
             tree = ast.parse(f.read())
 
         # Collect all names imported from ad_remover
-        forbidden = {"transcribe_audio", "detect_ads", "splice_audio",
-                     "_merge_overlapping_ads", "snap_ad_boundaries", "detect_silence"}
+        forbidden = {
+            "transcribe_audio",
+            "detect_ads",
+            "splice_audio",
+            "_merge_overlapping_ads",
+            "snap_ad_boundaries",
+            "detect_silence",
+        }
         imported_names: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "ad_remover":
@@ -531,9 +598,12 @@ class TestAdRemovalParity:
     def test_sync_podcast_py_exits_nonzero(self):
         """sync_podcast.py is retired and must exit non-zero with deprecation message."""
         import subprocess
+
         result = subprocess.run(
             [sys.executable, os.path.join(os.path.dirname(__file__), "..", "sync_podcast.py")],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         assert result.returncode != 0
         assert "DEPRECATED" in result.stderr

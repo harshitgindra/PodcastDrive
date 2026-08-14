@@ -41,9 +41,7 @@ pytestmark = pytest.mark.skipif(
 
 # A short public YouTube playlist safe to use as a test fixture.
 # Override via env var to avoid brittle hard-coded IDs.
-_DEFAULT_TEST_PLAYLIST = (
-    "https://www.youtube.com/playlist?list=PLbpi6ZahtOH6Ar_3GPy3workd3uG4"
-)
+_DEFAULT_TEST_PLAYLIST = "https://www.youtube.com/playlist?list=PLbpi6ZahtOH6Ar_3GPy3workd3uG4"
 TEST_PLAYLIST_URL = os.environ.get("INTEGRATION_PLAYLIST_URL", _DEFAULT_TEST_PLAYLIST)
 
 # ---------------------------------------------------------------------------
@@ -73,6 +71,7 @@ def cloudfront_base():
 def s3_manager(s3_bucket):
     """Return an S3Manager wired to the test bucket + a fixed test playlist ID."""
     import sys
+
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
     from s3_manager import S3Manager
 
@@ -120,9 +119,7 @@ class TestS3ManagerIntegration:
         )
         s3_manager.upload_feed(sample_rss)
         # Verify feed is readable by fetching its size
-        size = s3_manager.get_object_size(
-            "integration-test-playlist/feed.xml"
-        )
+        size = s3_manager.get_object_size("integration-test-playlist/feed.xml")
         assert size is not None and size > 0
 
     def test_manifest_round_trip(self, s3_manager):
@@ -144,6 +141,7 @@ class TestExtractorIntegration:
     def test_extract_playlist_returns_entries(self):
         """extract_playlist should return a PlaylistMeta and at least one VideoEntry."""
         import sys
+
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from extractor import extract_playlist
 
@@ -155,6 +153,7 @@ class TestExtractorIntegration:
     def test_extract_video_metadata_returns_dict(self):
         """extract_video_metadata should return a dict with expected keys for a valid video."""
         import sys
+
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from extractor import extract_playlist, extract_video_metadata
 
@@ -178,6 +177,7 @@ class TestRssGeneratorIntegration:
     def test_generate_rss_from_s3_episodes(self, s3_manager, cloudfront_base):
         """generate_rss should produce parseable XML from real S3 episode keys."""
         import sys
+
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from extractor import extract_playlist
         from rss_generator import build_episode_metadata, generate_rss
@@ -185,12 +185,8 @@ class TestRssGeneratorIntegration:
         playlist_meta, entries = extract_playlist(TEST_PLAYLIST_URL)
         final_keys = s3_manager.list_existing_episodes()
 
-        episodes = build_episode_metadata(
-            entries, final_keys, cloudfront_base, "integration-test-playlist", s3_manager
-        )
-        xml_str = generate_rss(
-            playlist_meta, episodes, cloudfront_base, "integration-test-playlist"
-        )
+        episodes = build_episode_metadata(entries, final_keys, cloudfront_base, "integration-test-playlist", s3_manager)
+        xml_str = generate_rss(playlist_meta, episodes, cloudfront_base, "integration-test-playlist")
 
         # Must be parseable XML
         root = ET.fromstring(xml_str)
@@ -216,6 +212,7 @@ class TestProcessPlaylistIntegration:
     def test_dry_run_returns_expected_keys(self, s3_bucket, cloudfront_base):
         """process_playlist(dry_run=True) should return a dict with all expected keys."""
         import sys
+
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from sync import process_playlist
 
@@ -238,15 +235,14 @@ class TestProcessPlaylistIntegration:
             "total_episodes",
             "elapsed_seconds",
         }
-        assert expected_keys.issubset(result.keys()), (
-            f"Missing keys in result: {expected_keys - result.keys()}"
-        )
+        assert expected_keys.issubset(result.keys()), f"Missing keys in result: {expected_keys - result.keys()}"
         assert result["failed"] == 0, "No episodes should fail in a dry-run"
         assert result["elapsed_seconds"] >= 0
 
     def test_dry_run_does_not_modify_s3(self, s3_manager, s3_bucket, cloudfront_base):
         """process_playlist(dry_run=True) must leave S3 state unchanged."""
         import sys
+
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from sync import process_playlist
 

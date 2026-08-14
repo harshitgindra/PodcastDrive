@@ -115,16 +115,15 @@ class S3Manager:
         try:
             # Fetch existing rules so we don't overwrite other playlists' rules
             try:
-                existing = self.s3_client.get_bucket_lifecycle_configuration(
-                    Bucket=self.bucket
-                )
+                existing = self.s3_client.get_bucket_lifecycle_configuration(Bucket=self.bucket)
                 all_rules = existing.get("Rules", [])
                 # Check if our rule already exists with the correct expiration
                 for r in all_rules:
                     if r.get("ID") == rule_id and r.get("Expiration", {}).get("Days") == max_age_days:
                         logger.debug(
                             "Lifecycle rule '%s' already set to %d days — skipping PUT",
-                            rule_id, max_age_days,
+                            rule_id,
+                            max_age_days,
                         )
                         return
                 rules = [r for r in all_rules if r.get("ID") != rule_id]
@@ -134,12 +133,14 @@ class S3Manager:
                 else:
                     raise
 
-            rules.append({
-                "ID": rule_id,
-                "Status": "Enabled",
-                "Filter": {"Prefix": prefix},
-                "Expiration": {"Days": max_age_days},
-            })
+            rules.append(
+                {
+                    "ID": rule_id,
+                    "Status": "Enabled",
+                    "Filter": {"Prefix": prefix},
+                    "Expiration": {"Days": max_age_days},
+                }
+            )
 
             self.s3_client.put_bucket_lifecycle_configuration(
                 Bucket=self.bucket,
@@ -147,12 +148,12 @@ class S3Manager:
             )
             logger.info(
                 "Lifecycle rule '%s' set: expire after %d days (prefix=%s)",
-                rule_id, max_age_days, prefix,
+                rule_id,
+                max_age_days,
+                prefix,
             )
         except Exception as exc:
-            logger.warning(
-                "Failed to set lifecycle rule for %s: %s", self.playlist_id, exc
-            )
+            logger.warning("Failed to set lifecycle rule for %s: %s", self.playlist_id, exc)
 
     def delete_episode(self, video_id: str) -> None:
         """Delete an MP3 episode from S3.
@@ -344,7 +345,8 @@ class S3Manager:
             episodes_deleted += len(delete_keys)
             logger.info(
                 "[S3Manager] Deleted %d episode(s) from %s",
-                len(delete_keys), episodes_prefix,
+                len(delete_keys),
+                episodes_prefix,
             )
 
         # --- Delete feed.xml ---
@@ -373,7 +375,10 @@ class S3Manager:
 
         logger.info(
             "[S3Manager] Reset complete for '%s': %d episodes, feed=%s, manifest=%s",
-            self.playlist_id, episodes_deleted, feed_deleted, manifest_deleted,
+            self.playlist_id,
+            episodes_deleted,
+            feed_deleted,
+            manifest_deleted,
         )
         return {
             "episodes_deleted": episodes_deleted,

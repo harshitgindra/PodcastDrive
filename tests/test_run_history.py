@@ -28,6 +28,7 @@ def s3(monkeypatch):
 # record_run_start
 # ---------------------------------------------------------------------------
 
+
 class TestRecordRunStart:
     def test_returns_dict(self):
         record = record_run_start()
@@ -90,6 +91,7 @@ class TestRecordRunStart:
 # record_run_end
 # ---------------------------------------------------------------------------
 
+
 class TestRecordRunEnd:
     def test_sets_finished_at(self):
         record = record_run_start()
@@ -146,6 +148,7 @@ class TestRecordRunEnd:
 # ---------------------------------------------------------------------------
 # save_run_history
 # ---------------------------------------------------------------------------
+
 
 class TestSaveRunHistory:
     def test_creates_history_file_in_s3(self, s3):

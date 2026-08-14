@@ -73,6 +73,7 @@ def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -
     Raises:
         DownloadError: After all retries are exhausted.
     """
+
     @retry(
         retry=retry_if_exception_type(Exception),
         stop=stop_after_attempt(_MAX_RETRIES),
@@ -88,14 +89,10 @@ def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -
     except RetryError as exc:
         last = exc.last_attempt.exception()
         _cleanup_intermediate_files(tmp_dir, video_id)
-        raise DownloadError(
-            f"Failed to download/convert {video_id} after {_MAX_RETRIES} attempts: {last}"
-        ) from last
+        raise DownloadError(f"Failed to download/convert {video_id} after {_MAX_RETRIES} attempts: {last}") from last
     except Exception as exc:
         _cleanup_intermediate_files(tmp_dir, video_id)
-        raise DownloadError(
-            f"Failed to download/convert {video_id}: {exc}"
-        ) from exc
+        raise DownloadError(f"Failed to download/convert {video_id}: {exc}") from exc
 
 
 def download_and_convert(
@@ -152,16 +149,12 @@ def download_and_convert(
 
     # Verify the MP3 exists and has content
     if not os.path.exists(mp3_path):
-        raise DownloadError(
-            f"MP3 file not found after conversion: {mp3_path}"
-        )
+        raise DownloadError(f"MP3 file not found after conversion: {mp3_path}")
 
     if os.path.getsize(mp3_path) == 0:
         with contextlib.suppress(OSError):
             os.remove(mp3_path)
-        raise DownloadError(
-            f"MP3 file is empty after conversion: {mp3_path}"
-        )
+        raise DownloadError(f"MP3 file is empty after conversion: {mp3_path}")
 
     logger.info("Downloaded and converted %s → %s", video_id, mp3_path)
     return mp3_path

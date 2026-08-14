@@ -24,6 +24,7 @@ from ad_evaluator import (
 # _classify_residual
 # ---------------------------------------------------------------------------
 
+
 class TestClassifyResidual:
     def _seg(self, start, end):
         return {"start": start, "end": end}
@@ -36,7 +37,7 @@ class TestClassifyResidual:
 
     def test_within_boundary_tolerance_is_partial(self):
         """Residual within 10 s of an original boundary → PARTIAL."""
-        residual = self._seg(90, 100)   # starts 5 s after original ends at 85
+        residual = self._seg(90, 100)  # starts 5 s after original ends at 85
         originals = [self._seg(55, 85)]
         assert _classify_residual(residual, originals) == RESULT_PARTIAL
 
@@ -58,7 +59,7 @@ class TestClassifyResidual:
 
     def test_custom_tolerance(self):
         """Custom tolerance of 2 s — residual 5 s away → MISSED."""
-        residual = self._seg(90, 100)   # 5 s after original ends at 85
+        residual = self._seg(90, 100)  # 5 s after original ends at 85
         originals = [self._seg(55, 85)]
         assert _classify_residual(residual, originals, boundary_tolerance=2.0) == RESULT_MISSED
 
@@ -66,6 +67,7 @@ class TestClassifyResidual:
 # ---------------------------------------------------------------------------
 # _build_proposals
 # ---------------------------------------------------------------------------
+
 
 class TestBuildProposals:
     def _seg(self, start, end):
@@ -98,7 +100,7 @@ class TestBuildProposals:
 
     def test_multiple_residuals_produce_multiple_proposals(self):
         residuals = [
-            {"start": 88.0, "end": 95.0, "text": "near boundary"},   # PARTIAL
+            {"start": 88.0, "end": 95.0, "text": "near boundary"},  # PARTIAL
             {"start": 500.0, "end": 530.0, "text": "far from any"},  # MISSED
         ]
         originals = [self._seg(55, 85)]
@@ -120,6 +122,7 @@ class TestBuildProposals:
 # evaluate_ad_removal — env-var gate
 # ---------------------------------------------------------------------------
 
+
 class TestEvaluateAdRemovalGate:
     def test_skipped_when_env_not_set(self, monkeypatch):
         monkeypatch.delenv("EVALUATE_AD_REMOVAL", raising=False)
@@ -140,10 +143,14 @@ class TestEvaluateAdRemovalGate:
         """When EVALUATE_AD_REMOVAL=true, the function should NOT return {"skipped": True}."""
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]) as mock_t, \
-             patch("ad_remover.detect_ads", return_value=[]) as mock_d:
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]) as mock_t,
+            patch("ad_remover.detect_ads", return_value=[]) as mock_d,
+        ):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
 
@@ -155,10 +162,11 @@ class TestEvaluateAdRemovalGate:
     def test_runs_when_env_is_one(self, monkeypatch, tmp_path):
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "1")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
         assert result.get("skipped") is not True
@@ -166,10 +174,11 @@ class TestEvaluateAdRemovalGate:
     def test_runs_when_env_is_yes(self, monkeypatch, tmp_path):
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "yes")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
         assert result.get("skipped") is not True
@@ -179,16 +188,21 @@ class TestEvaluateAdRemovalGate:
 # evaluate_ad_removal — clean result
 # ---------------------------------------------------------------------------
 
+
 class TestEvaluateAdRemovalClean:
     def test_clean_result_when_no_residuals(self, monkeypatch, tmp_path):
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
         segments = [{"start": 0.0, "end": 5.0, "text": "Hello world"}]
 
-        with patch("ad_remover.transcribe_audio", return_value=segments), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=segments),
+            patch("ad_remover.detect_ads", return_value=[]),
+        ):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 original_ad_segments=[{"start": 60.0, "end": 90.0}],
                 reports_dir=str(tmp_path),
             )
@@ -202,10 +216,11 @@ class TestEvaluateAdRemovalClean:
     def test_report_file_written_to_correct_path(self, monkeypatch, tmp_path):
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
 
@@ -218,17 +233,24 @@ class TestEvaluateAdRemovalClean:
     def test_report_contains_all_required_keys(self, monkeypatch, tmp_path):
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep-xyz", "test-slug",
+                "fake.mp3",
+                "ep-xyz",
+                "test-slug",
                 reports_dir=str(tmp_path),
             )
 
         required_keys = {
-            "episode_id", "podcast_slug", "evaluated_at", "result",
-            "original_ad_segments", "residual_ad_segments",
-            "total_removed_seconds", "residual_seconds", "proposals",
+            "episode_id",
+            "podcast_slug",
+            "evaluated_at",
+            "result",
+            "original_ad_segments",
+            "residual_ad_segments",
+            "total_removed_seconds",
+            "residual_seconds",
+            "proposals",
         }
         assert required_keys.issubset(result.keys())
 
@@ -236,10 +258,11 @@ class TestEvaluateAdRemovalClean:
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
         original_segs = [{"start": 60.0, "end": 90.0}, {"start": 200.0, "end": 220.0}]
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 original_ad_segments=original_segs,
                 reports_dir=str(tmp_path),
             )
@@ -251,6 +274,7 @@ class TestEvaluateAdRemovalClean:
 # ---------------------------------------------------------------------------
 # evaluate_ad_removal — partial/missed residuals
 # ---------------------------------------------------------------------------
+
 
 class TestEvaluateAdRemovalResiduals:
     def test_partial_result_when_residual_near_original(self, monkeypatch, tmp_path):
@@ -269,10 +293,14 @@ class TestEvaluateAdRemovalResiduals:
 
         segments = [{"start": 58.0, "end": 65.0, "text": "sponsor message"}]
 
-        with patch("ad_remover.transcribe_audio", return_value=segments), \
-             patch("ad_remover.detect_ads", return_value=[residual]):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=segments),
+            patch("ad_remover.detect_ads", return_value=[residual]),
+        ):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 original_ad_segments=original_segs,
                 reports_dir=str(tmp_path),
             )
@@ -290,10 +318,14 @@ class TestEvaluateAdRemovalResiduals:
         residual = {"start": 300.0, "end": 330.0}
         segments = [{"start": 300.0, "end": 330.0, "text": "use promo code XYZ"}]
 
-        with patch("ad_remover.transcribe_audio", return_value=segments), \
-             patch("ad_remover.detect_ads", return_value=[residual]):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=segments),
+            patch("ad_remover.detect_ads", return_value=[residual]),
+        ):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 original_ad_segments=original_segs,
                 reports_dir=str(tmp_path),
             )
@@ -307,7 +339,7 @@ class TestEvaluateAdRemovalResiduals:
 
         original_segs = [{"start": 55.0, "end": 85.0}]
         residuals = [
-            {"start": 88.0, "end": 95.0},   # PARTIAL (near boundary)
+            {"start": 88.0, "end": 95.0},  # PARTIAL (near boundary)
             {"start": 400.0, "end": 430.0},  # MISSED (far away)
         ]
         segments = [
@@ -315,10 +347,14 @@ class TestEvaluateAdRemovalResiduals:
             {"start": 400.0, "end": 430.0, "text": "far away ad"},
         ]
 
-        with patch("ad_remover.transcribe_audio", return_value=segments), \
-             patch("ad_remover.detect_ads", return_value=residuals):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=segments),
+            patch("ad_remover.detect_ads", return_value=residuals),
+        ):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 original_ad_segments=original_segs,
                 reports_dir=str(tmp_path),
             )
@@ -330,10 +366,11 @@ class TestEvaluateAdRemovalResiduals:
         """Passing original_ad_segments=None should not crash — treated as []."""
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 original_ad_segments=None,
                 reports_dir=str(tmp_path),
             )
@@ -351,10 +388,14 @@ class TestEvaluateAdRemovalResiduals:
         ]
         residual = {"start": 300.0, "end": 308.0}
 
-        with patch("ad_remover.transcribe_audio", return_value=segments), \
-             patch("ad_remover.detect_ads", return_value=[residual]):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=segments),
+            patch("ad_remover.detect_ads", return_value=[residual]),
+        ):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 original_ad_segments=[],
                 reports_dir=str(tmp_path),
             )
@@ -367,6 +408,7 @@ class TestEvaluateAdRemovalResiduals:
 # evaluate_ad_removal — non-blocking error handling
 # ---------------------------------------------------------------------------
 
+
 class TestEvaluateAdRemovalErrorHandling:
     def test_transcription_failure_returns_skipped_with_error(self, monkeypatch, tmp_path):
         """If transcribe_audio raises, should return {"skipped": True, "error": ...}."""
@@ -374,7 +416,9 @@ class TestEvaluateAdRemovalErrorHandling:
 
         with patch("ad_remover.transcribe_audio", side_effect=RuntimeError("AWS error")):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
 
@@ -386,10 +430,14 @@ class TestEvaluateAdRemovalErrorHandling:
         """If detect_ads raises, should return {"skipped": True, "error": ...}."""
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", side_effect=RuntimeError("Bedrock error")):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]),
+            patch("ad_remover.detect_ads", side_effect=RuntimeError("Bedrock error")),
+        ):
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
 
@@ -400,12 +448,16 @@ class TestEvaluateAdRemovalErrorHandling:
         """If the report file cannot be written, the function should still return the report dict."""
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]), \
-             patch("ad_evaluator.os.makedirs", side_effect=OSError("permission denied")):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]),
+            patch("ad_remover.detect_ads", return_value=[]),
+            patch("ad_evaluator.os.makedirs", side_effect=OSError("permission denied")),
+        ):
             # Should NOT raise
             result = evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
 
@@ -416,10 +468,14 @@ class TestEvaluateAdRemovalErrorHandling:
         """transcribe_audio job name should be prefixed with 'eval-' to avoid collision."""
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
-        with patch("ad_remover.transcribe_audio", return_value=[]) as mock_t, \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]) as mock_t,
+            patch("ad_remover.detect_ads", return_value=[]),
+        ):
             evaluate_ad_removal(
-                "fake.mp3", "ep-abc123", "my-podcast",
+                "fake.mp3",
+                "ep-abc123",
+                "my-podcast",
                 reports_dir=str(tmp_path),
             )
 
@@ -434,16 +490,19 @@ class TestEvaluateAdRemovalErrorHandling:
 # evaluate_ad_removal — reports_dir resolution
 # ---------------------------------------------------------------------------
 
+
 class TestEvaluateAdRemovalReportsDir:
     def test_reports_dir_defaults_to_reports(self, monkeypatch, tmp_path):
         """When reports_dir is None and EVAL_REPORTS_DIR is unset, defaults to 'reports'."""
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
         monkeypatch.delenv("EVAL_REPORTS_DIR", raising=False)
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]), \
-             patch("ad_evaluator.os.makedirs") as mock_makedirs, \
-             patch("builtins.open", side_effect=OSError("skip write")):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]),
+            patch("ad_remover.detect_ads", return_value=[]),
+            patch("ad_evaluator.os.makedirs") as mock_makedirs,
+            patch("builtins.open", side_effect=OSError("skip write")),
+        ):
             evaluate_ad_removal("fake.mp3", "ep001", "my-podcast")
 
         # First call to makedirs should use "reports/my-podcast"
@@ -455,8 +514,7 @@ class TestEvaluateAdRemovalReportsDir:
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
         monkeypatch.setenv("EVAL_REPORTS_DIR", str(tmp_path / "custom_reports"))
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             evaluate_ad_removal("fake.mp3", "ep001", "my-podcast")
 
         expected_dir = tmp_path / "custom_reports" / "my-podcast"
@@ -468,10 +526,11 @@ class TestEvaluateAdRemovalReportsDir:
         monkeypatch.setenv("EVAL_REPORTS_DIR", str(tmp_path / "env_reports"))
         explicit_dir = tmp_path / "explicit_reports"
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[]):
+        with patch("ad_remover.transcribe_audio", return_value=[]), patch("ad_remover.detect_ads", return_value=[]):
             evaluate_ad_removal(
-                "fake.mp3", "ep001", "my-podcast",
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
                 reports_dir=str(explicit_dir),
             )
 

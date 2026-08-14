@@ -30,9 +30,7 @@ def generate_episode_summary(
         return ""
 
     if model_id is None:
-        model_id = os.environ.get(
-            "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
-        )
+        model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
     full_text = " ".join(s["text"] for s in segments)
     # Truncate to 40,000 chars to stay within context limits
@@ -61,13 +59,9 @@ def generate_episode_summary(
         )
 
         text = response["output"]["message"]["content"][0]["text"].strip()
-        logger.info(
-            "[Summary] Generated summary for '%s' (%d chars)", episode_title, len(text)
-        )
+        logger.info("[Summary] Generated summary for '%s' (%d chars)", episode_title, len(text))
         return text
 
     except Exception as exc:
-        logger.warning(
-            "[Summary] Failed to generate summary for '%s': %s", episode_title, exc
-        )
+        logger.warning("[Summary] Failed to generate summary for '%s': %s", episode_title, exc)
         return ""

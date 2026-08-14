@@ -4,6 +4,7 @@ These tests cover score_against_ground_truth(), ci_check_scores(),
 check_phrases_absent(), check_phrases_present(), and check_duration_reduction()
 without any AWS calls, ffmpeg, or real file I/O.
 """
+
 from __future__ import annotations
 
 import os
@@ -34,15 +35,18 @@ def _patch_imports(monkeypatch):
 def _get_module():
     """Import run_eval (re-import to pick up patches)."""
     import importlib
+
     if "run_eval" in sys.modules:
         return importlib.reload(sys.modules["run_eval"])
     import run_eval
+
     return run_eval
 
 
 # ---------------------------------------------------------------------------
 # score_against_ground_truth
 # ---------------------------------------------------------------------------
+
 
 class TestScoreAgainstGroundTruth:
     def test_perfect_detection(self):
@@ -88,10 +92,10 @@ class TestScoreAgainstGroundTruth:
 # ci_check_scores
 # ---------------------------------------------------------------------------
 
+
 class TestCiCheckScores:
     def _scores(self, f1, recall, precision=1.0, ep="ep.mp3"):
-        return {ep: {"f1": f1, "recall": recall, "precision": precision,
-                     "missed": 0, "false_positives": 0}}
+        return {ep: {"f1": f1, "recall": recall, "precision": precision, "missed": 0, "false_positives": 0}}
 
     def test_passes_when_both_thresholds_met(self):
         m = _get_module()
@@ -107,8 +111,7 @@ class TestCiCheckScores:
 
     def test_fails_on_low_recall_even_if_f1_ok(self):
         m = _get_module()
-        ok, msgs = m.ci_check_scores(
-            self._scores(0.80, 0.60), f1_threshold=0.75, recall_threshold=0.70)
+        ok, msgs = m.ci_check_scores(self._scores(0.80, 0.60), f1_threshold=0.75, recall_threshold=0.70)
         assert ok is False
         assert "recall=" in msgs[0]
 
@@ -126,6 +129,7 @@ class TestCiCheckScores:
 # ---------------------------------------------------------------------------
 # check_phrases_absent
 # ---------------------------------------------------------------------------
+
 
 class TestCheckPhrasesAbsent:
     def _segs(self, *texts):
@@ -162,6 +166,7 @@ class TestCheckPhrasesAbsent:
 # check_phrases_present
 # ---------------------------------------------------------------------------
 
+
 class TestCheckPhrasesPresent:
     def _segs(self, *texts):
         return [_transcript_seg(i * 10.0, (i + 1) * 10.0, t) for i, t in enumerate(texts)]
@@ -191,6 +196,7 @@ class TestCheckPhrasesPresent:
 # ---------------------------------------------------------------------------
 # check_duration_reduction
 # ---------------------------------------------------------------------------
+
 
 class TestCheckDurationReduction:
     def test_within_tolerance_passes(self):

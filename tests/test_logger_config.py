@@ -172,10 +172,7 @@ class TestSetupLogging:
             try:
                 with patch.dict(os.environ, {"LOG_RETENTION_DAYS": "5"}):
                     setup_logging(log_dir=log_dir)
-                    file_handlers = [
-                        h for h in root.handlers
-                        if type(h).__name__ == "TimedRotatingFileHandler"
-                    ]
+                    file_handlers = [h for h in root.handlers if type(h).__name__ == "TimedRotatingFileHandler"]
                     assert len(file_handlers) == 1
                     assert file_handlers[0].backupCount == 5
             finally:
@@ -208,13 +205,16 @@ class TestSetupLogging:
 # _JsonFormatter
 # ---------------------------------------------------------------------------
 
+
 class TestJsonFormatter:
     def _get_formatter(self):
         from logger_config import _JsonFormatter
+
         return _JsonFormatter()
 
     def test_format_returns_valid_json(self):
         import json
+
         formatter = self._get_formatter()
         record = logging.LogRecord(
             name="test.logger",
@@ -234,11 +234,13 @@ class TestJsonFormatter:
 
     def test_format_includes_exc_info(self):
         import json
+
         formatter = self._get_formatter()
         try:
             raise ValueError("test error")
         except ValueError:
             import sys
+
             exc = sys.exc_info()
 
         record = logging.LogRecord(
@@ -257,6 +259,7 @@ class TestJsonFormatter:
 
     def test_format_merges_extra_fields(self):
         import json
+
         formatter = self._get_formatter()
         record = logging.LogRecord(
             name="test.logger",

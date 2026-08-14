@@ -91,11 +91,13 @@ def _scan_logs_for_failures(s3, bucket: str, days: int = 3) -> dict:
                                     error_type = "ad_detection"
                                 elif "download" in msg.lower():
                                     error_type = "download"
-                                failures[vid].append({
-                                    "error": msg[:200],
-                                    "type": error_type,
-                                    "date": parts[2],
-                                })
+                                failures[vid].append(
+                                    {
+                                        "error": msg[:200],
+                                        "type": error_type,
+                                        "date": parts[2],
+                                    }
+                                )
                     except Exception:
                         continue
     except Exception as exc:
@@ -233,10 +235,7 @@ def heal_manifest_backfill(s3, bucket: str, dry_run: bool = False) -> dict:
                 continue
 
             # Find entries missing upload_date
-            missing = [
-                vid for vid, data in manifest.items()
-                if isinstance(data, dict) and not data.get("upload_date")
-            ]
+            missing = [vid for vid, data in manifest.items() if isinstance(data, dict) and not data.get("upload_date")]
 
             if not missing:
                 continue
@@ -247,6 +246,7 @@ def heal_manifest_backfill(s3, bucket: str, dry_run: bool = False) -> dict:
             for vid in missing[:5]:  # Limit to 5 per playlist per run
                 try:
                     import yt_dlp
+
                     url = f"https://www.youtube.com/watch?v={vid}"
                     with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
                         info = ydl.extract_info(url, download=False)

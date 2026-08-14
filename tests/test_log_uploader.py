@@ -40,6 +40,7 @@ def _write_log(log_dir, content: str):
 # _parse_text_log_line
 # ---------------------------------------------------------------------------
 
+
 class TestParseTextLogLine:
     def test_parses_valid_line(self):
         result = _parse_text_log_line(VALID_TEXT_LINE)
@@ -82,6 +83,7 @@ class TestParseTextLogLine:
 # ---------------------------------------------------------------------------
 # upload_run_log
 # ---------------------------------------------------------------------------
+
 
 class TestUploadRunLogTextFormat:
     def test_returns_s3_key_on_success(self, s3, log_dir, monkeypatch):

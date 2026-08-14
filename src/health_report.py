@@ -239,35 +239,45 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
     # --- Recommendations ---
     recommendations = []
     if error_categories["splice_failure"]:
-        recommendations.append({
-            "priority": "HIGH",
-            "issue": f"Splice failures: {len(error_categories['splice_failure'])} in this period",
-            "action": "Check ffmpeg version/compatibility. Review affected episodes in logs.",
-        })
+        recommendations.append(
+            {
+                "priority": "HIGH",
+                "issue": f"Splice failures: {len(error_categories['splice_failure'])} in this period",
+                "action": "Check ffmpeg version/compatibility. Review affected episodes in logs.",
+            }
+        )
     if error_categories["transcribe_failure"]:
-        recommendations.append({
-            "priority": "MEDIUM",
-            "issue": f"Transcription failures: {len(error_categories['transcribe_failure'])}",
-            "action": "Check AWS Transcribe quotas/limits. May need retry queue.",
-        })
+        recommendations.append(
+            {
+                "priority": "MEDIUM",
+                "issue": f"Transcription failures: {len(error_categories['transcribe_failure'])}",
+                "action": "Check AWS Transcribe quotas/limits. May need retry queue.",
+            }
+        )
     if stale_running:
-        recommendations.append({
-            "priority": "MEDIUM",
-            "issue": f"{len(stale_running)} run(s) stuck in 'running' state (>2 hours)",
-            "action": "Possible orphaned lock. Check _meta/run.lock and runs.jsonl.",
-        })
+        recommendations.append(
+            {
+                "priority": "MEDIUM",
+                "issue": f"{len(stale_running)} run(s) stuck in 'running' state (>2 hours)",
+                "action": "Possible orphaned lock. Check _meta/run.lock and runs.jsonl.",
+            }
+        )
     if chronic_warnings:
-        recommendations.append({
-            "priority": "LOW",
-            "issue": f"{len(chronic_warnings)} warning(s) repeated 3+ times",
-            "action": "Review chronic warnings — may indicate configuration issue.",
-        })
+        recommendations.append(
+            {
+                "priority": "LOW",
+                "issue": f"{len(chronic_warnings)} warning(s) repeated 3+ times",
+                "action": "Review chronic warnings — may indicate configuration issue.",
+            }
+        )
     if total_runs == 0:
-        recommendations.append({
-            "priority": "HIGH",
-            "issue": "No runs recorded in this period",
-            "action": "Check cron/scheduler is active. Verify EC2 instance is running.",
-        })
+        recommendations.append(
+            {
+                "priority": "HIGH",
+                "issue": "No runs recorded in this period",
+                "action": "Check cron/scheduler is active. Verify EC2 instance is running.",
+            }
+        )
 
     # Detect long silence: no run started in the last 8 hours
     if runs:
@@ -283,11 +293,13 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
         if latest_start is not None:
             hours_since = (now - latest_start).total_seconds() / 3600
             if hours_since > 8:
-                recommendations.append({
-                    "priority": "HIGH",
-                    "issue": f"No runs in the last {hours_since:.1f} hours (last run: {latest_start.isoformat()})",
-                    "action": "Check cron schedule, EC2 uptime, and run.lock for stale entries.",
-                })
+                recommendations.append(
+                    {
+                        "priority": "HIGH",
+                        "issue": f"No runs in the last {hours_since:.1f} hours (last run: {latest_start.isoformat()})",
+                        "action": "Check cron schedule, EC2 uptime, and run.lock for stale entries.",
+                    }
+                )
 
     report["recommendations"] = recommendations
     return report
@@ -371,10 +383,7 @@ def _maybe_send_alert(report: dict) -> None:
     if not alert_url:
         return
 
-    high_issues = [
-        r for r in report.get("recommendations", [])
-        if r.get("priority") == "HIGH"
-    ]
+    high_issues = [r for r in report.get("recommendations", []) if r.get("priority") == "HIGH"]
     if not high_issues:
         return
 
@@ -382,10 +391,7 @@ def _maybe_send_alert(report: dict) -> None:
         "title": "PodcastDrive health alert",
         "priority": "HIGH",
         "generated_at": report.get("generated_at", ""),
-        "issues": [
-            {"issue": r["issue"], "action": r["action"]}
-            for r in high_issues
-        ],
+        "issues": [{"issue": r["issue"], "action": r["action"]} for r in high_issues],
     }
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

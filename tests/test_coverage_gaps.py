@@ -180,9 +180,7 @@ class TestExtractorBotDetection:
             mock_ydl = MagicMock()
             mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
             mock_ydl.__exit__ = MagicMock(return_value=False)
-            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
-                "Sign in to confirm you're not a bot"
-            )
+            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("Sign in to confirm you're not a bot")
             mock_ydl_cls.return_value = mock_ydl
 
             import pytest
@@ -200,9 +198,7 @@ class TestExtractorBotDetection:
             mock_ydl = MagicMock()
             mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
             mock_ydl.__exit__ = MagicMock(return_value=False)
-            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
-                "Video unavailable. This video is private."
-            )
+            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("Video unavailable. This video is private.")
             mock_ydl_cls.return_value = mock_ydl
 
             result = extract_video_metadata("https://www.youtube.com/watch?v=private123")
@@ -215,9 +211,9 @@ class TestExtractorBotDetection:
 class TestSyncBotDetection:
     def test_bot_detection_breaks_loop_and_sets_flag(self):
         """When BotDetectedError is raised during sync, break early and return bot_detected=True."""
-        from sync import process_playlist
         from extractor import BotDetectedError
         from models import PlaylistMeta, VideoEntry
+        from sync import process_playlist
 
         playlist_meta = PlaylistMeta(
             title="Test",
@@ -230,14 +226,26 @@ class TestSyncBotDetection:
         )
         videos = [
             VideoEntry(
-                video_id="vid1", title="V1", description="", duration=300,
-                upload_date="", thumbnail="", webpage_url="https://youtube.com/watch?v=vid1",
-                playlist_index=1, live_status=None,
+                video_id="vid1",
+                title="V1",
+                description="",
+                duration=300,
+                upload_date="",
+                thumbnail="",
+                webpage_url="https://youtube.com/watch?v=vid1",
+                playlist_index=1,
+                live_status=None,
             ),
             VideoEntry(
-                video_id="vid2", title="V2", description="", duration=300,
-                upload_date="", thumbnail="", webpage_url="https://youtube.com/watch?v=vid2",
-                playlist_index=2, live_status=None,
+                video_id="vid2",
+                title="V2",
+                description="",
+                duration=300,
+                upload_date="",
+                thumbnail="",
+                webpage_url="https://youtube.com/watch?v=vid2",
+                playlist_index=2,
+                live_status=None,
             ),
         ]
 
@@ -249,17 +257,18 @@ class TestSyncBotDetection:
             "SLEEP_BETWEEN_DOWNLOADS": "0",
         }
 
-        with patch.dict(os.environ, env, clear=True), \
-             patch("sync.S3Manager") as mock_s3_cls, \
-             patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
-             patch("sync.extract_video_metadata", side_effect=BotDetectedError("Bot detected")), \
-             patch("sync.download_and_convert"), \
-             patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.shutil.rmtree"), \
-             patch("os.makedirs"), \
-             patch("os.remove"):
-
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, videos)),
+            patch("sync.extract_video_metadata", side_effect=BotDetectedError("Bot detected")),
+            patch("sync.download_and_convert"),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = MagicMock()
             s3.list_existing_episodes.return_value = set()
             s3.load_manifest.return_value = {}
@@ -288,9 +297,7 @@ class TestPreflightYouTubeAccess:
             mock_ydl = MagicMock()
             mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
             mock_ydl.__exit__ = MagicMock(return_value=False)
-            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
-                "Sign in to confirm you're not a bot"
-            )
+            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("Sign in to confirm you're not a bot")
             mock_ydl_cls.return_value = mock_ydl
 
             with pytest.raises(SystemExit):
@@ -321,9 +328,7 @@ class TestPreflightYouTubeAccess:
             mock_ydl = MagicMock()
             mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
             mock_ydl.__exit__ = MagicMock(return_value=False)
-            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
-                "Video unavailable"
-            )
+            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("Video unavailable")
             mock_ydl_cls.return_value = mock_ydl
 
             _check_youtube_access()

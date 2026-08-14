@@ -102,6 +102,7 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
 
 class BotDetectedError(Exception):
     """Raised when YouTube returns a bot-detection challenge."""
+
     pass
 
 

@@ -22,9 +22,7 @@ from utils import extract_playlist_id, parse_upload_date
 
 # Playlist IDs: alphanumeric + hyphen + underscore, non-empty
 playlist_id_chars = string.ascii_letters + string.digits + "-_"
-playlist_id_strategy = st.text(
-    alphabet=playlist_id_chars, min_size=1, max_size=50
-)
+playlist_id_strategy = st.text(alphabet=playlist_id_chars, min_size=1, max_size=50)
 
 # XML-safe text: printable characters that won't break XML serialization.
 # XML 1.0 forbids most control characters (U+0000-U+001F except tab/newline/cr).
@@ -161,10 +159,8 @@ class TestProperty2InvalidDateFallback:
             pass
 
         result = parse_upload_date(date_str)
-        today = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        assert result == today
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        assert result == epoch
         assert result.tzinfo == UTC
 
 
@@ -190,9 +186,7 @@ class TestProperty6RssWellFormedXml:
         episodes=st.lists(episode_meta_strategy(), min_size=0, max_size=10),
     )
     @settings(max_examples=100)
-    def test_valid_xml_with_itunes_namespace(
-        self, meta: PlaylistMeta, episodes: list[EpisodeMeta]
-    ):
+    def test_valid_xml_with_itunes_namespace(self, meta: PlaylistMeta, episodes: list[EpisodeMeta]):
         """**Validates: Requirements 6.1**"""
         xml_str = generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
 
@@ -263,9 +257,7 @@ class TestProperty8RssItemCorrectness:
         episodes=st.lists(episode_meta_strategy(), min_size=0, max_size=10),
     )
     @settings(max_examples=100)
-    def test_item_count_and_structure(
-        self, meta: PlaylistMeta, episodes: list[EpisodeMeta]
-    ):
+    def test_item_count_and_structure(self, meta: PlaylistMeta, episodes: list[EpisodeMeta]):
         """**Validates: Requirements 6.3, 6.4, 6.5, 6.6**"""
         xml_str = generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
@@ -322,9 +314,7 @@ class TestProperty9RssDateDurationFormatting:
         ),
     )
     @settings(max_examples=100)
-    def test_date_and_duration_formatting(
-        self, meta: PlaylistMeta, episodes: list[EpisodeMeta]
-    ):
+    def test_date_and_duration_formatting(self, meta: PlaylistMeta, episodes: list[EpisodeMeta]):
         """**Validates: Requirements 6.7, 6.8**"""
         xml_str = generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
@@ -337,6 +327,7 @@ class TestProperty9RssDateDurationFormatting:
             # pubDate should be parseable as RFC 2822
             pub_date_text = item.find("pubDate").text
             from email.utils import parsedate_to_datetime
+
             parsed = parsedate_to_datetime(pub_date_text)
             assert parsed is not None
 
@@ -370,9 +361,7 @@ class TestProperty10RssSortOrder:
         ),
     )
     @settings(max_examples=100)
-    def test_items_sorted_newest_first(
-        self, meta: PlaylistMeta, episodes: list[EpisodeMeta]
-    ):
+    def test_items_sorted_newest_first(self, meta: PlaylistMeta, episodes: list[EpisodeMeta]):
         """**Validates: Requirements 6.10**"""
         # Make upload_dates distinct
         seen_dates = set()
@@ -385,9 +374,7 @@ class TestProperty10RssSortOrder:
         assume(len(unique_episodes) >= 2)
 
         # Sort episodes newest-first (as the generator expects)
-        sorted_episodes = sorted(
-            unique_episodes, key=lambda e: e.upload_date, reverse=True
-        )
+        sorted_episodes = sorted(unique_episodes, key=lambda e: e.upload_date, reverse=True)
 
         xml_str = generate_rss(meta, sorted_episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
@@ -398,6 +385,7 @@ class TestProperty10RssSortOrder:
         for item in items:
             pub_text = item.find("pubDate").text
             from email.utils import parsedate_to_datetime
+
             dates.append(parsedate_to_datetime(pub_text))
 
         for i in range(len(dates) - 1):
@@ -423,9 +411,7 @@ class TestProperty11S3KeyScoping:
         video_ids=st.lists(video_id_strategy, min_size=1, max_size=10),
     )
     @settings(max_examples=200)
-    def test_all_keys_scoped_to_playlist_prefix(
-        self, playlist_id: str, video_ids: list[str]
-    ):
+    def test_all_keys_scoped_to_playlist_prefix(self, playlist_id: str, video_ids: list[str]):
         """**Validates: Requirements 5.1, 5.7, 9.1, 9.2, 9.3**"""
         # Verify the key construction patterns used by S3Manager
         # Episode key pattern

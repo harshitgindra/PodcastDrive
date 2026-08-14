@@ -17,6 +17,7 @@ _RECENT_DATE = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y%m%d")
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_playlist_meta(title="Test Playlist"):
     return PlaylistMeta(
         title=title,
@@ -65,6 +66,7 @@ BASE_ENV = {
 # process_playlist — configuration / validation
 # ---------------------------------------------------------------------------
 
+
 class TestProcessPlaylistConfig:
     def test_raises_if_s3_bucket_not_set(self):
         with patch.dict(os.environ, {"CLOUDFRONT_BASE": "https://cdn.example.com"}, clear=True):
@@ -82,13 +84,24 @@ class TestProcessPlaylistConfig:
         video_entries = [_make_video(f"vid{i:03d}") for i in range(5)]
 
         with patch.dict(os.environ, env, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)), \
-                 patch("sync.extract_video_metadata", return_value={"upload_date": "20240101", "description": "", "thumbnail": "", "duration": 300, "title": ""}), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.shutil.rmtree"):
+            with (
+                patch("sync.S3Manager") as mock_s3_cls,
+                patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)),
+                patch(
+                    "sync.extract_video_metadata",
+                    return_value={
+                        "upload_date": "20240101",
+                        "description": "",
+                        "thumbnail": "",
+                        "duration": 300,
+                        "title": "",
+                    },
+                ),
+                patch("sync.download_and_convert") as mock_dl,
+                patch("sync.build_episode_metadata", return_value=[]),
+                patch("sync.generate_rss", return_value="<rss/>"),
+                patch("sync.shutil.rmtree"),
+            ):
                 s3 = _make_s3_manager()
                 mock_s3_cls.return_value = s3
 
@@ -109,6 +122,7 @@ class TestProcessPlaylistConfig:
 # process_playlist — happy path
 # ---------------------------------------------------------------------------
 
+
 class TestProcessPlaylistHappyPath:
     def _run(self, video_entries, existing=None, meta_override=None, env_override=None):
         playlist_meta = _make_playlist_meta()
@@ -121,16 +135,18 @@ class TestProcessPlaylistHappyPath:
             "title": "Video Title",
         }
 
-        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)), \
-                 patch("sync.extract_video_metadata", return_value=meta), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
-
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager(existing=existing)
             mock_s3_cls.return_value = s3
 
@@ -145,8 +161,13 @@ class TestProcessPlaylistHappyPath:
         videos = [_make_video("vid001")]
         result, _, _ = self._run(videos)
         assert set(result.keys()) == {
-            "playlist_id", "new_episodes", "skipped_old", "failed", "bot_detected",
-            "total_episodes", "elapsed_seconds",
+            "playlist_id",
+            "new_episodes",
+            "skipped_old",
+            "failed",
+            "bot_detected",
+            "total_episodes",
+            "elapsed_seconds",
         }
 
     def test_downloads_new_episode(self):
@@ -186,15 +207,26 @@ class TestProcessPlaylistHappyPath:
         playlist_meta = _make_playlist_meta()
 
         with patch.dict(os.environ, BASE_ENV, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
-                 patch("sync.extract_video_metadata", return_value={"upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": ""}), \
-                 patch("sync.download_and_convert", side_effect=Exception("Network error")), \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
+            with (
+                patch("sync.S3Manager") as mock_s3_cls,
+                patch("sync.extract_playlist", return_value=(playlist_meta, videos)),
+                patch(
+                    "sync.extract_video_metadata",
+                    return_value={
+                        "upload_date": _RECENT_DATE,
+                        "description": "",
+                        "thumbnail": "",
+                        "duration": 300,
+                        "title": "",
+                    },
+                ),
+                patch("sync.download_and_convert", side_effect=Exception("Network error")),
+                patch("sync.build_episode_metadata", return_value=[]),
+                patch("sync.generate_rss", return_value="<rss/>"),
+                patch("sync.shutil.rmtree"),
+                patch("os.makedirs"),
+                patch("os.remove"),
+            ):
                 s3 = _make_s3_manager()
                 mock_s3_cls.return_value = s3
                 result = process_playlist("https://youtube.com/playlist?list=PLtest")
@@ -212,6 +244,7 @@ class TestProcessPlaylistHappyPath:
 # process_playlist — age filtering
 # ---------------------------------------------------------------------------
 
+
 class TestProcessPlaylistAgeFiltering:
     def test_skips_old_episode(self):
         """Episodes older than max_age_days should be skipped."""
@@ -220,21 +253,27 @@ class TestProcessPlaylistAgeFiltering:
         playlist_meta = _make_playlist_meta()
         env = {**BASE_ENV, "MAX_AGE_DAYS": "30"}
 
-        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
-                 patch("sync.extract_video_metadata", return_value={
-                 "upload_date": old_date,
-                 "description": "",
-                 "thumbnail": "",
-                 "duration": 300,
-                 "title": "Old Video",
-             }), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, videos)),
+            patch(
+                "sync.extract_video_metadata",
+                return_value={
+                    "upload_date": old_date,
+                    "description": "",
+                    "thumbnail": "",
+                    "duration": 300,
+                    "title": "Old Video",
+                },
+            ),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager()
             mock_s3_cls.return_value = s3
             result = process_playlist("https://youtube.com/playlist?list=PLtest")
@@ -248,21 +287,27 @@ class TestProcessPlaylistAgeFiltering:
         playlist_meta = _make_playlist_meta()
         env = {**BASE_ENV, "MAX_AGE_DAYS": "30"}
 
-        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
-                 patch("sync.extract_video_metadata", return_value={
-                 "upload_date": recent_date,
-                 "description": "",
-                 "thumbnail": "",
-                 "duration": 300,
-                 "title": "Recent Video",
-             }), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, videos)),
+            patch(
+                "sync.extract_video_metadata",
+                return_value={
+                    "upload_date": recent_date,
+                    "description": "",
+                    "thumbnail": "",
+                    "duration": 300,
+                    "title": "Recent Video",
+                },
+            ),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager()
             mock_s3_cls.return_value = s3
 
@@ -282,21 +327,27 @@ class TestProcessPlaylistAgeFiltering:
         playlist_meta = _make_playlist_meta()
         env = {**BASE_ENV, "MAX_AGE_DAYS": "30"}
 
-        with patch.dict(os.environ, env, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
-                 patch("sync.extract_video_metadata", return_value={
-                 "upload_date": old_date,
-                 "description": "",
-                 "thumbnail": "",
-                 "duration": 300,
-                 "title": "Mid-age video",
-             }), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, videos)),
+            patch(
+                "sync.extract_video_metadata",
+                return_value={
+                    "upload_date": old_date,
+                    "description": "",
+                    "thumbnail": "",
+                    "duration": 300,
+                    "title": "Mid-age video",
+                },
+            ),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager()
             mock_s3_cls.return_value = s3
             result = process_playlist(
@@ -310,6 +361,7 @@ class TestProcessPlaylistAgeFiltering:
 # ---------------------------------------------------------------------------
 # process_playlist — sleep between downloads
 # ---------------------------------------------------------------------------
+
 
 class TestProcessPlaylistSleep:
     def test_raises_on_negative_sleep_between(self):
@@ -326,17 +378,28 @@ class TestProcessPlaylistSleep:
         env = {**BASE_ENV, "SLEEP_BETWEEN_DOWNLOADS": "1"}
 
         with patch.dict(os.environ, env, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
-                 patch("sync.extract_video_metadata", return_value={"upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": ""}), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.remove_ads", side_effect=lambda p, *a, **kw: (p, [], "")), \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.time.sleep") as mock_sleep, \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
+            with (
+                patch("sync.S3Manager") as mock_s3_cls,
+                patch("sync.extract_playlist", return_value=(playlist_meta, videos)),
+                patch(
+                    "sync.extract_video_metadata",
+                    return_value={
+                        "upload_date": _RECENT_DATE,
+                        "description": "",
+                        "thumbnail": "",
+                        "duration": 300,
+                        "title": "",
+                    },
+                ),
+                patch("sync.download_and_convert") as mock_dl,
+                patch("sync.remove_ads", side_effect=lambda p, *a, **kw: (p, [], "")),
+                patch("sync.build_episode_metadata", return_value=[]),
+                patch("sync.generate_rss", return_value="<rss/>"),
+                patch("sync.time.sleep") as mock_sleep,
+                patch("sync.shutil.rmtree"),
+                patch("os.makedirs"),
+                patch("os.remove"),
+            ):
                 s3 = _make_s3_manager()
                 mock_s3_cls.return_value = s3
 
@@ -354,17 +417,28 @@ class TestProcessPlaylistSleep:
         env = {**BASE_ENV, "SLEEP_BETWEEN_DOWNLOADS": "0"}
 
         with patch.dict(os.environ, env, clear=True):
-            with patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, videos)), \
-                 patch("sync.extract_video_metadata", return_value={"upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": ""}), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.remove_ads", side_effect=lambda p, *a, **kw: (p, [], "")), \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.time.sleep") as mock_sleep, \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
+            with (
+                patch("sync.S3Manager") as mock_s3_cls,
+                patch("sync.extract_playlist", return_value=(playlist_meta, videos)),
+                patch(
+                    "sync.extract_video_metadata",
+                    return_value={
+                        "upload_date": _RECENT_DATE,
+                        "description": "",
+                        "thumbnail": "",
+                        "duration": 300,
+                        "title": "",
+                    },
+                ),
+                patch("sync.download_and_convert") as mock_dl,
+                patch("sync.remove_ads", side_effect=lambda p, *a, **kw: (p, [], "")),
+                patch("sync.build_episode_metadata", return_value=[]),
+                patch("sync.generate_rss", return_value="<rss/>"),
+                patch("sync.time.sleep") as mock_sleep,
+                patch("sync.shutil.rmtree"),
+                patch("os.makedirs"),
+                patch("os.remove"),
+            ):
                 s3 = _make_s3_manager()
                 mock_s3_cls.return_value = s3
 
@@ -380,6 +454,7 @@ class TestProcessPlaylistSleep:
 # process_playlist — dry-run mode
 # ---------------------------------------------------------------------------
 
+
 class TestProcessPlaylistDryRun:
     def _run_dry(self, video_entries, existing=None, meta_override=None):
         playlist_meta = _make_playlist_meta()
@@ -391,16 +466,18 @@ class TestProcessPlaylistDryRun:
             "title": "Video Title",
         }
 
-        with patch.dict(os.environ, BASE_ENV, clear=True), patch("sync.S3Manager") as mock_s3_cls, \
-                 patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)), \
-                 patch("sync.extract_video_metadata", return_value=meta), \
-                 patch("sync.download_and_convert") as mock_dl, \
-                 patch("sync.build_episode_metadata", return_value=[]), \
-                 patch("sync.generate_rss", return_value="<rss/>"), \
-                 patch("sync.shutil.rmtree"), \
-                 patch("os.makedirs"), \
-                 patch("os.remove"):
-
+        with (
+            patch.dict(os.environ, BASE_ENV, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager(existing=existing)
             mock_s3_cls.return_value = s3
             result = process_playlist(
@@ -441,14 +518,17 @@ class TestProcessPlaylistDryRun:
 # _rebuild_feed
 # ---------------------------------------------------------------------------
 
+
 class TestRebuildFeed:
     def test_lists_s3_builds_and_uploads_feed(self):
         s3 = _make_s3_manager(existing=["vid001", "vid002"])
         videos = [_make_video("vid001"), _make_video("vid002")]
         playlist_meta = _make_playlist_meta()
 
-        with patch("sync.build_episode_metadata", return_value=[]) as mock_build, \
-             patch("sync.generate_rss", return_value="<rss/>") as mock_gen:
+        with (
+            patch("sync.build_episode_metadata", return_value=[]) as mock_build,
+            patch("sync.generate_rss", return_value="<rss/>") as mock_gen,
+        ):
             count = _rebuild_feed(s3, videos, "https://cdn.example.com", "PLtest", playlist_meta)
             mock_build.assert_called_once()
             mock_gen.assert_called_once()
@@ -461,8 +541,10 @@ class TestRebuildFeed:
         playlist_meta = _make_playlist_meta()
         fake_episode = MagicMock()
 
-        with patch("sync.build_episode_metadata", return_value=[fake_episode, fake_episode]), \
-             patch("sync.generate_rss", return_value="<rss/>"):
+        with (
+            patch("sync.build_episode_metadata", return_value=[fake_episode, fake_episode]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+        ):
             count = _rebuild_feed(s3, videos, "https://cdn.example.com", "PLtest", playlist_meta)
             assert count == 2
 
@@ -470,6 +552,7 @@ class TestRebuildFeed:
 # ---------------------------------------------------------------------------
 # _reconcile
 # ---------------------------------------------------------------------------
+
 
 class TestReconcile:
     def test_does_not_delete_old_episodes_by_age(self):
@@ -479,10 +562,8 @@ class TestReconcile:
         s3 = _make_s3_manager(existing=["vid001"])
         s3.list_existing_episodes.return_value = {"vid001"}
 
-        with patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"):
-            _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta())
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [video], "https://cdn.example.com", "PLtest", _make_playlist_meta())
             # vid001 is still in the playlist — must NOT be deleted even if old
             s3.delete_episode.assert_not_called()
 
@@ -491,26 +572,25 @@ class TestReconcile:
         # S3 has vid_orphan, playlist only has vid001
         s3 = _make_s3_manager(existing=["vid_orphan"])
         s3.list_existing_episodes.side_effect = [
-            {"vid_orphan"},   # initial list
-            {"vid_orphan"},   # orphan check
-            set(),            # after orphan deletion
+            {"vid_orphan"},  # initial list
+            {"vid_orphan"},  # orphan check
+            set(),  # after orphan deletion
         ]
         video = _make_video("vid001")
 
-        with patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"):
-            _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta())
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [video], "https://cdn.example.com", "PLtest", _make_playlist_meta())
             s3.delete_episode.assert_called_with("vid_orphan")
 
     def test_rebuilds_feed_after_reconcile(self):
         s3 = _make_s3_manager(existing=[])
         s3.list_existing_episodes.return_value = set()
 
-        with patch("sync.build_episode_metadata", return_value=[]) as mock_build, \
-             patch("sync.generate_rss", return_value="<rss/>"):
-            _reconcile(s3, [], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta())
+        with (
+            patch("sync.build_episode_metadata", return_value=[]) as mock_build,
+            patch("sync.generate_rss", return_value="<rss/>"),
+        ):
+            _reconcile(s3, [], "https://cdn.example.com", "PLtest", _make_playlist_meta())
             mock_build.assert_called_once()
             s3.upload_feed.assert_called_once()
 
@@ -526,11 +606,9 @@ class TestReconcile:
         ]
         video = _make_video("vid001")  # different video — vid_orphan is orphan
 
-        with patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"):
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
             # Should not raise
-            _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta())
+            _reconcile(s3, [video], "https://cdn.example.com", "PLtest", _make_playlist_meta())
 
     def test_no_deletions_when_no_orphans(self):
         """No deletions should happen when all S3 files are still in the playlist."""
@@ -539,16 +617,15 @@ class TestReconcile:
         s3 = _make_s3_manager(existing=["vid001"])
         s3.list_existing_episodes.return_value = {"vid001"}
 
-        with patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"):
-            _reconcile(s3, [video], "https://cdn.example.com", "PLtest",
-                       _make_playlist_meta())
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [video], "https://cdn.example.com", "PLtest", _make_playlist_meta())
             s3.delete_episode.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
 # process_playlist — live_status filtering (Step 3 & Step 4)
 # ---------------------------------------------------------------------------
+
 
 class TestLiveStatusFiltering:
     """Tests for upcoming/live video filtering and unavailable video handling."""
@@ -579,12 +656,14 @@ class TestLiveStatusFiltering:
         """Video with live_status='is_upcoming' should be filtered in Step 3 (no metadata call)."""
         upcoming = self._make_video_with_live_status("vid001", live_status="is_upcoming")
 
-        with patch.dict("os.environ", self._base_env()), \
-             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [upcoming])), \
-             patch("sync.extract_video_metadata") as mock_meta, \
-             patch("sync.S3Manager", return_value=_make_s3_manager()), \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.build_episode_metadata", return_value=[]):
+        with (
+            patch.dict("os.environ", self._base_env()),
+            patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [upcoming])),
+            patch("sync.extract_video_metadata") as mock_meta,
+            patch("sync.S3Manager", return_value=_make_s3_manager()),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.build_episode_metadata", return_value=[]),
+        ):
             process_playlist("https://youtube.com/playlist?list=PLtest")
             # If filtered in Step 3, extract_video_metadata should NOT be called for this video
             mock_meta.assert_not_called()
@@ -593,12 +672,14 @@ class TestLiveStatusFiltering:
         """Video with live_status='is_live' should be filtered in Step 3 (no metadata call)."""
         live = self._make_video_with_live_status("vid002", live_status="is_live")
 
-        with patch.dict("os.environ", self._base_env()), \
-             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [live])), \
-             patch("sync.extract_video_metadata") as mock_meta, \
-             patch("sync.S3Manager", return_value=_make_s3_manager()), \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.build_episode_metadata", return_value=[]):
+        with (
+            patch.dict("os.environ", self._base_env()),
+            patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [live])),
+            patch("sync.extract_video_metadata") as mock_meta,
+            patch("sync.S3Manager", return_value=_make_s3_manager()),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.build_episode_metadata", return_value=[]),
+        ):
             process_playlist("https://youtube.com/playlist?list=PLtest")
             mock_meta.assert_not_called()
 
@@ -619,13 +700,15 @@ class TestLiveStatusFiltering:
 
         s3 = _make_s3_manager()
 
-        with patch.dict("os.environ", self._base_env()), \
-             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [video])), \
-             patch("sync.extract_video_metadata", return_value=meta), \
-             patch("sync.S3Manager", return_value=s3), \
-             patch("sync.download_and_convert") as mock_dl, \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.build_episode_metadata", return_value=[]):
+        with (
+            patch.dict("os.environ", self._base_env()),
+            patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.S3Manager", return_value=s3),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.build_episode_metadata", return_value=[]),
+        ):
             process_playlist("https://youtube.com/playlist?list=PLtest")
             # Download should NOT be called since video is still upcoming
             mock_dl.assert_not_called()
@@ -636,13 +719,15 @@ class TestLiveStatusFiltering:
 
         s3 = _make_s3_manager()
 
-        with patch.dict("os.environ", self._base_env()), \
-             patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [video])), \
-             patch("sync.extract_video_metadata", return_value=None), \
-             patch("sync.S3Manager", return_value=s3), \
-             patch("sync.download_and_convert") as mock_dl, \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.build_episode_metadata", return_value=[]):
+        with (
+            patch.dict("os.environ", self._base_env()),
+            patch("sync.extract_playlist", return_value=(_make_playlist_meta(), [video])),
+            patch("sync.extract_video_metadata", return_value=None),
+            patch("sync.S3Manager", return_value=s3),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.build_episode_metadata", return_value=[]),
+        ):
             # Should not raise
             process_playlist("https://youtube.com/playlist?list=PLtest")
             # No download attempted for unavailable video
@@ -652,6 +737,7 @@ class TestLiveStatusFiltering:
 # ---------------------------------------------------------------------------
 # process_playlist — episode_title/duration_secs forwarded to remove_ads
 # ---------------------------------------------------------------------------
+
 
 class TestProcessPlaylistSummaryIntegration:
     """Verify remove_ads is called with episode metadata and summary is persisted."""
@@ -677,17 +763,19 @@ class TestProcessPlaylistSummaryIntegration:
             captured_kwargs.update(kwargs)
             return (mp3, [], "")
 
-        with patch.dict(os.environ, self._base_env(), clear=True), \
-             patch("sync.S3Manager") as mock_s3_cls, \
-             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
-             patch("sync.extract_video_metadata", return_value=meta), \
-             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
-             patch("sync.remove_ads", side_effect=fake_remove_ads), \
-             patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.shutil.rmtree"), \
-             patch("os.makedirs"), \
-             patch("os.remove"):
+        with (
+            patch.dict(os.environ, self._base_env(), clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.remove_ads", side_effect=fake_remove_ads),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager()
             mock_s3_cls.return_value = s3
             process_playlist("https://youtube.com/playlist?list=PLtest")
@@ -707,17 +795,19 @@ class TestProcessPlaylistSummaryIntegration:
             "title": "Summarised Episode",
         }
 
-        with patch.dict(os.environ, self._base_env(), clear=True), \
-             patch("sync.S3Manager") as mock_s3_cls, \
-             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
-             patch("sync.extract_video_metadata", return_value=meta), \
-             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
-             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "Great episode summary")), \
-             patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.shutil.rmtree"), \
-             patch("os.makedirs"), \
-             patch("os.remove"):
+        with (
+            patch.dict(os.environ, self._base_env(), clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "Great episode summary")),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager()
             s3.load_manifest.return_value = {}  # real dict so setdefault() works
             mock_s3_cls.return_value = s3
@@ -740,17 +830,19 @@ class TestProcessPlaylistSummaryIntegration:
             "title": "Unsummarised Episode",
         }
 
-        with patch.dict(os.environ, self._base_env(), clear=True), \
-             patch("sync.S3Manager") as mock_s3_cls, \
-             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
-             patch("sync.extract_video_metadata", return_value=meta), \
-             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
-             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")), \
-             patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.shutil.rmtree"), \
-             patch("os.makedirs"), \
-             patch("os.remove"):
+        with (
+            patch.dict(os.environ, self._base_env(), clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager()
             s3.load_manifest.return_value = {}  # real dict so setdefault() works
             mock_s3_cls.return_value = s3
@@ -774,17 +866,19 @@ class TestProcessPlaylistSummaryIntegration:
             "title": "Failed Episode",
         }
 
-        with patch.dict(os.environ, self._base_env(), clear=True), \
-             patch("sync.S3Manager") as mock_s3_cls, \
-             patch("sync.extract_playlist", return_value=(playlist_meta, [video])), \
-             patch("sync.extract_video_metadata", return_value=meta), \
-             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"), \
-             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], error_code)), \
-             patch("sync.build_episode_metadata", return_value=[]), \
-             patch("sync.generate_rss", return_value="<rss/>"), \
-             patch("sync.shutil.rmtree"), \
-             patch("os.makedirs"), \
-             patch("os.remove"):
+        with (
+            patch.dict(os.environ, self._base_env(), clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], error_code)),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
             s3 = _make_s3_manager()
             s3.load_manifest.return_value = {}
             mock_s3_cls.return_value = s3

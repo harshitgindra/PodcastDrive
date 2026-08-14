@@ -194,9 +194,7 @@ class TestGenerateRssChannelMetadata:
         assert root.find(".//channel/title").text == "My Podcast"
 
     def test_channel_link(self):
-        meta = _make_playlist_meta(
-            webpage_url="https://youtube.com/playlist?list=PLtest123"
-        )
+        meta = _make_playlist_meta(webpage_url="https://youtube.com/playlist?list=PLtest123")
         xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
         assert root.find(".//channel/link").text == "https://youtube.com/playlist?list=PLtest123"
@@ -217,7 +215,7 @@ class TestGenerateRssChannelMetadata:
         meta = _make_playlist_meta()
         xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
-        assert root.find(".//channel/generator").text == "yt-podcast-lambda"
+        assert root.find(".//channel/generator").text == "PodcastDrive"
 
     def test_channel_last_build_date(self):
         meta = _make_playlist_meta()
@@ -492,9 +490,7 @@ class TestBuildEpisodeMetadata:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 5_000_000
 
-        result = build_episode_metadata(
-            entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert len(result) == 2
         ids = {e.video_id for e in result}
@@ -505,9 +501,7 @@ class TestBuildEpisodeMetadata:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 5_000_000
 
-        result = build_episode_metadata(
-            entries, {"v1", "v_unknown"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"v1", "v_unknown"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert len(result) == 1
         assert result[0].video_id == "v1"
@@ -521,9 +515,7 @@ class TestBuildEpisodeMetadata:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 5_000_000
 
-        result = build_episode_metadata(
-            entries, {"old", "new", "mid"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"old", "new", "mid"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert [e.video_id for e in result] == ["new", "mid", "old"]
 
@@ -532,9 +524,7 @@ class TestBuildEpisodeMetadata:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1234
 
-        result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert result[0].cloudfront_url == f"{CLOUDFRONT_BASE}/{PLAYLIST_ID}/episodes/v1.mp3"
         assert result[0].s3_key == f"{PLAYLIST_ID}/episodes/v1.mp3"
@@ -544,9 +534,7 @@ class TestBuildEpisodeMetadata:
         entries = [self._make_video_entry("v1")]
         mock_s3 = MagicMock()
 
-        result = build_episode_metadata(
-            entries, set(), CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, set(), CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert result == []
 
@@ -554,20 +542,30 @@ class TestBuildEpisodeMetadata:
         """Episodes with identical titles (different video_ids) are deduplicated."""
         entries = [
             VideoEntry(
-                video_id="v1", title="My Episode", description="", duration=100,
-                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=1,
+                video_id="v1",
+                title="My Episode",
+                description="",
+                duration=100,
+                upload_date="20250101",
+                thumbnail="",
+                webpage_url="",
+                playlist_index=1,
             ),
             VideoEntry(
-                video_id="v2", title="My Episode", description="", duration=100,
-                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=2,
+                video_id="v2",
+                title="My Episode",
+                description="",
+                duration=100,
+                upload_date="20250101",
+                thumbnail="",
+                webpage_url="",
+                playlist_index=2,
             ),
         ]
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1000
 
-        result = build_episode_metadata(
-            entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert len(result) == 1
 
@@ -575,20 +573,30 @@ class TestBuildEpisodeMetadata:
         """Title deduplication normalises case before comparing."""
         entries = [
             VideoEntry(
-                video_id="v1", title="My Episode", description="", duration=100,
-                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=1,
+                video_id="v1",
+                title="My Episode",
+                description="",
+                duration=100,
+                upload_date="20250101",
+                thumbnail="",
+                webpage_url="",
+                playlist_index=1,
             ),
             VideoEntry(
-                video_id="v2", title="MY EPISODE", description="", duration=100,
-                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=2,
+                video_id="v2",
+                title="MY EPISODE",
+                description="",
+                duration=100,
+                upload_date="20250101",
+                thumbnail="",
+                webpage_url="",
+                playlist_index=2,
             ),
         ]
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1000
 
-        result = build_episode_metadata(
-            entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert len(result) == 1
 
@@ -596,17 +604,21 @@ class TestBuildEpisodeMetadata:
         """Episodes with distinct titles are all included."""
         entries = [
             VideoEntry(
-                video_id=f"v{i}", title=f"Episode {i}", description="", duration=100,
-                upload_date="20250101", thumbnail="", webpage_url="", playlist_index=i,
+                video_id=f"v{i}",
+                title=f"Episode {i}",
+                description="",
+                duration=100,
+                upload_date="20250101",
+                thumbnail="",
+                webpage_url="",
+                playlist_index=i,
             )
             for i in range(3)
         ]
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1000
 
-        result = build_episode_metadata(
-            entries, {"v0", "v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"v0", "v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert len(result) == 3
 
@@ -614,9 +626,14 @@ class TestBuildEpisodeMetadata:
         """When an entry has an empty upload_date, the manifest date is used."""
         entries = [
             VideoEntry(
-                video_id="v1", title="No Date Episode", description="", duration=100,
+                video_id="v1",
+                title="No Date Episode",
+                description="",
+                duration=100,
                 upload_date="",  # empty — flat extraction
-                thumbnail="", webpage_url="", playlist_index=1,
+                thumbnail="",
+                webpage_url="",
+                playlist_index=1,
             )
         ]
         mock_s3 = MagicMock()
@@ -624,7 +641,11 @@ class TestBuildEpisodeMetadata:
         manifest = {"v1": {"upload_date": "20240315"}}
 
         result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            entries,
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
             manifest=manifest,
         )
 
@@ -635,9 +656,14 @@ class TestBuildEpisodeMetadata:
         """When the entry already has a date, the manifest date is ignored."""
         entries = [
             VideoEntry(
-                video_id="v1", title="Has Date Episode", description="", duration=100,
+                video_id="v1",
+                title="Has Date Episode",
+                description="",
+                duration=100,
                 upload_date="20230101",
-                thumbnail="", webpage_url="", playlist_index=1,
+                thumbnail="",
+                webpage_url="",
+                playlist_index=1,
             )
         ]
         mock_s3 = MagicMock()
@@ -645,7 +671,11 @@ class TestBuildEpisodeMetadata:
         manifest = {"v1": {"upload_date": "20240315"}}
 
         result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            entries,
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
             manifest=manifest,
         )
 
@@ -657,9 +687,7 @@ class TestBuildEpisodeMetadata:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.side_effect = Exception("S3 error")
 
-        result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert len(result) == 1
         assert result[0].file_size == 0
@@ -672,7 +700,11 @@ class TestBuildEpisodeMetadata:
         manifest = {"v1": {"summary": "A great AI-generated summary."}}
 
         result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            entries,
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
             manifest=manifest,
         )
 
@@ -686,7 +718,11 @@ class TestBuildEpisodeMetadata:
         manifest = {"v1": {"upload_date": "20240101"}}  # no summary key
 
         result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            entries,
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
             manifest=manifest,
         )
 
@@ -699,7 +735,11 @@ class TestBuildEpisodeMetadata:
         mock_s3.get_object_size.return_value = 1000
 
         result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3,
+            entries,
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
         )
 
         assert result[0].summary == ""
@@ -761,18 +801,17 @@ class TestFirstParagraphProperty:
 
 class TestGenerateRssProperty:
     @given(
-        title=st.text(min_size=1, max_size=80, alphabet=st.characters(
-            blacklist_categories=("Cs", "Cc"), blacklist_characters="<>&\x00"
-        )),
+        title=st.text(
+            min_size=1,
+            max_size=80,
+            alphabet=st.characters(blacklist_categories=("Cs", "Cc"), blacklist_characters="<>&\x00"),
+        ),
         n_episodes=st.integers(min_value=0, max_value=10),
     )
     @settings(max_examples=30)
     def test_output_is_valid_xml(self, title, n_episodes):
         meta = _make_playlist_meta(title=title)
-        episodes = [
-            _make_episode(video_id=f"v{i}", upload_date="20250601")
-            for i in range(n_episodes)
-        ]
+        episodes = [_make_episode(video_id=f"v{i}", upload_date="20250601") for i in range(n_episodes)]
         xml_str = generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
         # Should parse without error
         root = ET.fromstring(xml_str)
@@ -782,10 +821,7 @@ class TestGenerateRssProperty:
     @settings(max_examples=20)
     def test_episode_count_matches_items(self, n_episodes):
         meta = _make_playlist_meta()
-        episodes = [
-            _make_episode(video_id=f"v{i}", upload_date="20250601")
-            for i in range(n_episodes)
-        ]
+        episodes = [_make_episode(video_id=f"v{i}", upload_date="20250601") for i in range(n_episodes)]
         xml_str = generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
         channel = root.find("channel")

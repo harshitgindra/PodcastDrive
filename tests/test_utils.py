@@ -158,34 +158,29 @@ class TestParseUploadDate:
         result = parse_upload_date("20240601")
         assert result.tzinfo == UTC
 
-    def test_invalid_string_falls_back_to_today(self):
+    def test_invalid_string_falls_back_to_epoch(self):
         result = parse_upload_date("not-a-date")
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        assert result == today
+        assert result == datetime(1970, 1, 1, tzinfo=UTC)
 
-    def test_empty_string_falls_back_to_today(self):
+    def test_empty_string_falls_back_to_epoch(self):
         result = parse_upload_date("")
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        assert result == today
+        assert result == datetime(1970, 1, 1, tzinfo=UTC)
 
-    def test_partial_date_falls_back_to_today(self):
+    def test_partial_date_falls_back_to_epoch(self):
         result = parse_upload_date("202501")
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        assert result == today
+        assert result == datetime(1970, 1, 1, tzinfo=UTC)
 
-    def test_wrong_format_falls_back_to_today(self):
+    def test_wrong_format_falls_back_to_epoch(self):
         result = parse_upload_date("2025-01-15")
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        assert result == today
+        assert result == datetime(1970, 1, 1, tzinfo=UTC)
 
     def test_leap_year_date(self):
         result = parse_upload_date("20240229")
         assert result == datetime(2024, 2, 29, tzinfo=UTC)
 
-    def test_invalid_day_falls_back_to_today(self):
+    def test_invalid_day_falls_back_to_epoch(self):
         result = parse_upload_date("20250230")  # Feb 30 doesn't exist
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        assert result == today
+        assert result == datetime(1970, 1, 1, tzinfo=UTC)
 
 
 # ── _validate_playlist_id edge cases ─────────────────────────────────────────

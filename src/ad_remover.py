@@ -97,16 +97,19 @@ AdSegment = dict  # {"start": float, "end": float}
 #: a pipeline stage fails.  Callers **must** exclude these before writing the
 #: value to the episode manifest or an RSS feed — they are error signals, not
 #: human-readable content.
-REMOVE_ADS_ERROR_CODES: frozenset[str] = frozenset({
-    "TRANSCRIBE_FAILED",
-    "DETECT_FAILED",
-    "SPLICE_FAILED",
-})
+REMOVE_ADS_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "TRANSCRIBE_FAILED",
+        "DETECT_FAILED",
+        "SPLICE_FAILED",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # Fix #5 – Silence detection + boundary snapping
 # ---------------------------------------------------------------------------
+
 
 def detect_silence(
     mp3_path: str,
@@ -126,9 +129,14 @@ def detect_silence(
         or the file contains no qualifying silences.
     """
     cmd = [
-        "ffmpeg", "-i", mp3_path,
-        "-af", f"silencedetect=noise={noise_threshold}:d={min_duration}",
-        "-f", "null", "-",
+        "ffmpeg",
+        "-i",
+        mp3_path,
+        "-af",
+        f"silencedetect=noise={noise_threshold}:d={min_duration}",
+        "-f",
+        "null",
+        "-",
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -149,15 +157,15 @@ def detect_silence(
                 parts = line.split("silence_end:")[1].strip().split("|")
                 end = float(parts[0].strip().split()[0])
                 duration = (
-                    float(parts[1].split("silence_duration:")[1].strip())
-                    if len(parts) > 1
-                    else end - current_start
+                    float(parts[1].split("silence_duration:")[1].strip()) if len(parts) > 1 else end - current_start
                 )
-                silences.append({
-                    "start": round(current_start, 2),
-                    "end": round(end, 2),
-                    "duration": round(duration, 2),
-                })
+                silences.append(
+                    {
+                        "start": round(current_start, 2),
+                        "end": round(end, 2),
+                        "duration": round(duration, 2),
+                    }
+                )
                 current_start = None
             except (ValueError, IndexError):
                 current_start = None
@@ -200,9 +208,7 @@ def _snap_to_silence_boundary(
                 best_dist = dist
                 best_time = candidate
             elif dist == best_dist:
-                if (prefer_earlier and candidate < best_time) or (
-                    not prefer_earlier and candidate > best_time
-                ):
+                if (prefer_earlier and candidate < best_time) or (not prefer_earlier and candidate > best_time):
                     best_time = candidate
     return best_time
 
@@ -253,14 +259,19 @@ def snap_ad_boundaries(
         if new_end - new_start < _MIN_AD:
             logger.warning(
                 "[AdRemover] Silence snap would shrink [%.1f–%.1f] to %.1fs — keeping original",
-                seg["start"], seg["end"], new_end - new_start,
+                seg["start"],
+                seg["end"],
+                new_end - new_start,
             )
             snapped.append(seg)
         else:
             if new_start != seg["start"] or new_end != seg["end"]:
                 logger.info(
                     "[AdRemover] Snapped [%.1f–%.1f] → [%.1f–%.1f]",
-                    seg["start"], seg["end"], new_start, new_end,
+                    seg["start"],
+                    seg["end"],
+                    new_start,
+                    new_end,
                 )
             snapped.append({"start": new_start, "end": new_end})
 
@@ -319,9 +330,7 @@ def detect_music_bookends(
 
     # Intro
     if first_speech >= min_intro_secs and _region_has_audio(0.0, first_speech):
-        logger.info(
-            "[AdRemover] Music intro detected: [0.0, %.2fs] (%.1fs)", first_speech, first_speech
-        )
+        logger.info("[AdRemover] Music intro detected: [0.0, %.2fs] (%.1fs)", first_speech, first_speech)
         results.append({"start": 0.0, "end": round(first_speech, 2), "label": "music_intro"})
 
     # Outro
@@ -329,7 +338,9 @@ def detect_music_bookends(
     if outro_dur >= min_outro_secs and _region_has_audio(last_speech, duration):
         logger.info(
             "[AdRemover] Music outro detected: [%.2fs, %.2fs] (%.1fs)",
-            last_speech, duration, outro_dur,
+            last_speech,
+            duration,
+            outro_dur,
         )
         results.append({"start": round(last_speech, 2), "end": round(duration, 2), "label": "music_outro"})
 
@@ -339,6 +350,7 @@ def detect_music_bookends(
 # ---------------------------------------------------------------------------
 # Step 1 – Transcription (AWS Transcribe)
 # ---------------------------------------------------------------------------
+
 
 def _transcript_cache_key(video_id: str) -> str:
     """Return the S3 key used for caching a transcript."""
@@ -366,7 +378,8 @@ def _load_transcript_cache(s3_client, bucket: str, video_id: str) -> list[dict] 
         if isinstance(data, list):
             logger.info(
                 "[AdRemover] Transcript cache HIT for %s (%d segments) — skipping Transcribe job",
-                video_id, len(data),
+                video_id,
+                len(data),
             )
             return data
         logger.warning("[AdRemover] Cached transcript for %s is not a list — ignoring", video_id)
@@ -393,9 +406,7 @@ def _save_transcript_cache(s3_client, bucket: str, video_id: str, segments: list
     key = _transcript_cache_key(video_id)
     try:
         body = json.dumps(segments).encode("utf-8")
-        s3_client.put_object(
-            Bucket=bucket, Key=key, Body=body, ContentType="application/json"
-        )
+        s3_client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
         logger.debug("[AdRemover] Transcript cache saved for %s → s3://%s/%s", video_id, bucket, key)
     except Exception as exc:
         logger.warning("[AdRemover] Could not save transcript cache for %s: %s", video_id, exc)
@@ -428,7 +439,9 @@ def _save_summary_cache(s3_client, bucket: str, video_id: str, summary: str) -> 
     key = f"{prefix}/{video_id}_summary.txt"
     try:
         s3_client.put_object(
-            Bucket=bucket, Key=key, Body=summary.encode("utf-8"),
+            Bucket=bucket,
+            Key=key,
+            Body=summary.encode("utf-8"),
             ContentType="text/plain",
         )
         logger.debug("[AdRemover] Summary cache saved for %s", video_id)
@@ -440,12 +453,12 @@ def _save_transcript_text(s3_client, bucket: str, video_id: str, segments: list[
     """Persist the full transcript as plain text to S3 alongside the segment cache."""
     prefix = os.environ.get("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache")
     key = f"{prefix}/{video_id}.txt"
-    text = "\n".join(
-        f"[{s['start']:.1f}s]  {s['text']}" for s in segments
-    )
+    text = "\n".join(f"[{s['start']:.1f}s]  {s['text']}" for s in segments)
     try:
         s3_client.put_object(
-            Bucket=bucket, Key=key, Body=text.encode("utf-8"),
+            Bucket=bucket,
+            Key=key,
+            Body=text.encode("utf-8"),
             ContentType="text/plain",
         )
         logger.info("[AdRemover] Transcript text saved to s3://%s/%s", bucket, key)
@@ -468,7 +481,8 @@ def _load_ad_segments_cache(s3_client, bucket: str, video_id: str) -> list[AdSeg
         if isinstance(data, list):
             logger.info(
                 "[AdRemover] Ad-segments cache HIT for %s (%d segments) — skipping Bedrock detection",
-                video_id, len(data),
+                video_id,
+                len(data),
             )
             return data
     except ClientError as exc:
@@ -497,18 +511,16 @@ def _save_ad_segments_cache(s3_client, bucket: str, video_id: str, ad_segments: 
     key = _transcript_cache_key(video_id).replace(".json", "_ads.json")
     try:
         body = json.dumps(ad_segments).encode("utf-8")
-        s3_client.put_object(
-            Bucket=bucket, Key=key, Body=body, ContentType="application/json"
-        )
+        s3_client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
         logger.debug("[AdRemover] Ad-segments cache saved for %s", video_id)
     except Exception as exc:
         logger.warning("[AdRemover] Could not save ad-segments cache for %s: %s", video_id, exc)
 
 
-
 # ---------------------------------------------------------------------------
 # Fix #5 – Selective transcription windows (AD_TRANSCRIBE_WINDOWS)
 # ---------------------------------------------------------------------------
+
 
 def _get_audio_duration(mp3_path: str) -> float:
     """Return the duration of *mp3_path* in seconds using ffprobe.
@@ -518,10 +530,18 @@ def _get_audio_duration(mp3_path: str) -> float:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", mp3_path,
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                mp3_path,
             ],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         return float(result.stdout.strip())
     except Exception as exc:
@@ -562,6 +582,7 @@ def _parse_transcribe_windows(raw: str, duration: float) -> list[tuple[float, fl
             continue
         start_raw, end_raw = part.split(":", 1)
         try:
+
             def _resolve(token: str, total: float) -> float:
                 token = token.strip().lower()
                 if token == "end":
@@ -577,7 +598,9 @@ def _parse_transcribe_windows(raw: str, duration: float) -> list[tuple[float, fl
             if end <= start:
                 logger.warning(
                     "[AdRemover] Skipping degenerate window %r (start=%.1f >= end=%.1f)",
-                    part, start, end,
+                    part,
+                    start,
+                    end,
                 )
                 continue
             windows.append((start, end))
@@ -603,18 +626,21 @@ def _extract_audio_window(mp3_path: str, start: float, end: float, out_path: str
         RuntimeError: If ffmpeg exits with a non-zero return code.
     """
     cmd = [
-        "ffmpeg", "-y",
-        "-ss", str(start),
-        "-to", str(end),
-        "-i", mp3_path,
-        "-c", "copy",
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(start),
+        "-to",
+        str(end),
+        "-i",
+        mp3_path,
+        "-c",
+        "copy",
         out_path,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg window extract failed (rc={result.returncode}): {result.stderr[-500:]}"
-        )
+        raise RuntimeError(f"ffmpeg window extract failed (rc={result.returncode}): {result.stderr[-500:]}")
 
 
 def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
@@ -667,6 +693,7 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
         windows = _parse_transcribe_windows(windows_raw, duration)
         if windows:
             import tempfile as _tempfile
+
             all_segments: list[dict] = []
             for w_idx, (w_start, w_end) in enumerate(windows):
                 with _tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as w_tmp:
@@ -677,7 +704,10 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
                     w_key = f"transcribe-tmp/{w_id}.mp3"
                     logger.info(
                         "[AdRemover] Window %d/%d: uploading %.1f-%.1fs sub-clip for transcription",
-                        w_idx + 1, len(windows), w_start, w_end,
+                        w_idx + 1,
+                        len(windows),
+                        w_start,
+                        w_end,
                     )
                     retry_aws_call(
                         lambda k=w_key, p=w_tmp_path: s3_client.upload_file(p, bucket, k),
@@ -716,6 +746,7 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
 
                     w_uri_result = w_status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
                     import urllib.request as _req
+
                     with _req.urlopen(w_uri_result, context=_SSL_CTX) as r:
                         w_data = json.loads(r.read())
                     w_items = w_data.get("results", {}).get("items", [])
@@ -727,7 +758,10 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
                     all_segments.extend(w_segs)
                     logger.info(
                         "[AdRemover] Window %d/%d complete: %d segments (offset +%.1fs)",
-                        w_idx + 1, len(windows), len(w_segs), w_start,
+                        w_idx + 1,
+                        len(windows),
+                        len(w_segs),
+                        w_start,
                     )
                 finally:
                     with contextlib.suppress(OSError):
@@ -741,7 +775,8 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
             all_segments.sort(key=lambda s: s["start"])
             logger.info(
                 "[AdRemover] Windowed transcription complete: %d total segments from %d window(s)",
-                len(all_segments), len(windows),
+                len(all_segments),
+                len(windows),
             )
             if use_cache:
                 _save_transcript_cache(s3_client, bucket, video_id, all_segments)
@@ -783,9 +818,7 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
             time.sleep(poll_interval)
             elapsed += poll_interval
             try:
-                status_resp = transcribe_client.get_transcription_job(
-                    TranscriptionJobName=job_name
-                )
+                status_resp = transcribe_client.get_transcription_job(TranscriptionJobName=job_name)
                 consecutive_poll_errors = 0
             except (ClientError, ConnectionError, OSError) as exc:
                 consecutive_poll_errors += 1
@@ -795,7 +828,9 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
                     ) from exc
                 logger.warning(
                     "[AdRemover] Transcribe poll error (attempt %d/%d): %s — retrying",
-                    consecutive_poll_errors, _MAX_POLL_ERRORS, exc,
+                    consecutive_poll_errors,
+                    _MAX_POLL_ERRORS,
+                    exc,
                 )
                 continue
             status = status_resp["TranscriptionJob"]["TranscriptionJobStatus"]
@@ -815,6 +850,7 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
         logger.info("[AdRemover] Downloading transcript from %s", transcript_uri)
 
         import urllib.request
+
         with urllib.request.urlopen(transcript_uri, context=_SSL_CTX) as resp:
             transcript_data = json.loads(resp.read())
 
@@ -883,11 +919,13 @@ def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[di
             current_words = [word]
         elif start - current_end > gap_threshold:
             # Flush the current segment
-            segments.append({
-                "start": current_start,
-                "end": current_end,
-                "text": " ".join(current_words),
-            })
+            segments.append(
+                {
+                    "start": current_start,
+                    "end": current_end,
+                    "text": " ".join(current_words),
+                }
+            )
             current_start = start
             current_end = end
             current_words = [word]
@@ -896,11 +934,13 @@ def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[di
             current_end = end
 
     if current_words and current_start is not None:
-        segments.append({
-            "start": current_start,
-            "end": current_end,
-            "text": " ".join(current_words),
-        })
+        segments.append(
+            {
+                "start": current_start,
+                "end": current_end,
+                "text": " ".join(current_words),
+            }
+        )
 
     return segments
 
@@ -1028,7 +1068,8 @@ def _verify_ad_segment(
         # No transcript coverage — keep the detection rather than risk missing an ad
         logger.warning(
             "[AdRemover] No transcript text for verification of [%.1f–%.1f] — keeping segment",
-            segment["start"], segment["end"],
+            segment["start"],
+            segment["end"],
         )
         return True
 
@@ -1042,7 +1083,11 @@ def _verify_ad_segment(
         response = retry_aws_call(
             lambda p=prompt: bedrock_client.converse(
                 modelId=model_id,
-                system=[{"text": "You are an expert podcast editor reviewing transcript segments. Output ONLY a single valid JSON object. No prose, no markdown, no explanation outside the JSON."}],
+                system=[
+                    {
+                        "text": "You are an expert podcast editor reviewing transcript segments. Output ONLY a single valid JSON object. No prose, no markdown, no explanation outside the JSON."
+                    }
+                ],
                 messages=[
                     {"role": "user", "content": [{"text": p}]},
                     {"role": "assistant", "content": [{"text": "{"}]},
@@ -1066,19 +1111,25 @@ def _verify_ad_segment(
         if is_ad:
             logger.info(
                 "[AdRemover] Verification CONFIRMED ad [%.1f–%.1f]: %s",
-                segment["start"], segment["end"], reason,
+                segment["start"],
+                segment["end"],
+                reason,
             )
         else:
             logger.info(
                 "[AdRemover] Verification REJECTED [%.1f–%.1f] (not an ad): %s",
-                segment["start"], segment["end"], reason,
+                segment["start"],
+                segment["end"],
+                reason,
             )
         return is_ad
 
     except Exception as exc:
         logger.warning(
             "[AdRemover] Verification call failed for [%.1f–%.1f]: %s — keeping segment",
-            segment["start"], segment["end"], exc,
+            segment["start"],
+            segment["end"],
+            exc,
         )
         return True
 
@@ -1118,7 +1169,8 @@ def _narrow_oversized_segment(
     if not text.strip():
         logger.warning(
             "[AdRemover] No transcript text for narrowing [%.1f–%.1f] — cannot narrow",
-            segment["start"], segment["end"],
+            segment["start"],
+            segment["end"],
         )
         return []
 
@@ -1134,7 +1186,11 @@ def _narrow_oversized_segment(
         response = retry_aws_call(
             lambda p=prompt: bedrock_client.converse(
                 modelId=model_id,
-                system=[{"text": "You are an expert podcast editor. Output ONLY valid JSON. No prose, no markdown, no commentary outside the JSON structure."}],
+                system=[
+                    {
+                        "text": "You are an expert podcast editor. Output ONLY valid JSON. No prose, no markdown, no commentary outside the JSON structure."
+                    }
+                ],
                 messages=[
                     {"role": "user", "content": [{"text": p}]},
                     {"role": "assistant", "content": [{"text": "["}]},
@@ -1149,19 +1205,26 @@ def _narrow_oversized_segment(
         if narrowed:
             logger.info(
                 "[AdRemover] Narrowed oversized segment [%.1f–%.1f] (%.0fs) → %d sub-segment(s): %s",
-                segment["start"], segment["end"], duration, len(narrowed), narrowed,
+                segment["start"],
+                segment["end"],
+                duration,
+                len(narrowed),
+                narrowed,
             )
         else:
             logger.info(
                 "[AdRemover] Narrowing found no ads within [%.1f–%.1f] — discarding",
-                segment["start"], segment["end"],
+                segment["start"],
+                segment["end"],
             )
         return narrowed
 
     except Exception as exc:
         logger.warning(
             "[AdRemover] Narrowing call failed for [%.1f–%.1f]: %s — discarding segment",
-            segment["start"], segment["end"], exc,
+            segment["start"],
+            segment["end"],
+            exc,
         )
         return []
 
@@ -1213,7 +1276,9 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
     chunks = _split_segments_into_chunks(segments, max_chars, overlap_secs)
     logger.info(
         "[AdRemover] Transcript split into %d chunk(s) (max_chars=%d, overlap=%.0fs)",
-        len(chunks), max_chars, overlap_secs,
+        len(chunks),
+        max_chars,
+        overlap_secs,
     )
 
     bedrock = boto3.client("bedrock-runtime", region_name=region)
@@ -1221,12 +1286,8 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
     episode_duration = segments[-1]["end"] if segments else 0.0
 
     for i, chunk in enumerate(chunks):
-        transcript_lines = "\n".join(
-            f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in chunk
-        )
-        hints_section = (
-            _AD_HINTS_SECTION.format(hints=ad_hints.strip()) if ad_hints and ad_hints.strip() else ""
-        )
+        transcript_lines = "\n".join(f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}" for s in chunk)
+        hints_section = _AD_HINTS_SECTION.format(hints=ad_hints.strip()) if ad_hints and ad_hints.strip() else ""
         chunk_start = chunk[0]["start"]
         chunk_end = chunk[-1]["end"]
         context_header = (
@@ -1239,20 +1300,28 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
 
         logger.info(
             "[AdRemover] Sending chunk %d/%d to Bedrock (model=%s, segments=%d, chars=%d)",
-            i + 1, len(chunks), model_id, len(chunk), len(transcript_lines),
+            i + 1,
+            len(chunks),
+            model_id,
+            len(chunk),
+            len(transcript_lines),
         )
 
         response = retry_aws_call(
             lambda p=prompt: bedrock.converse(
                 modelId=model_id,
-                system=[{"text": "You are an expert podcast editor. Output ONLY valid JSON. No prose, no markdown, no commentary outside the JSON structure."}],
+                system=[
+                    {
+                        "text": "You are an expert podcast editor. Output ONLY valid JSON. No prose, no markdown, no commentary outside the JSON structure."
+                    }
+                ],
                 messages=[
                     {"role": "user", "content": [{"text": p}]},
                     {"role": "assistant", "content": [{"text": "["}]},
                 ],
                 inferenceConfig={"temperature": 0.0},
             ),
-            label=f"bedrock.converse[chunk-{i+1}]",
+            label=f"bedrock.converse[chunk-{i + 1}]",
         )
 
         raw = "[" + response["output"]["message"]["content"][0]["text"]
@@ -1273,9 +1342,11 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
         duration = seg["end"] - seg["start"]
         if duration < _MIN_AD_SECONDS:
             logger.warning(
-                "[AdRemover] Skipping suspiciously short ad segment "
-                "(%.1fs < %.1fs minimum): start=%.1f end=%.1f",
-                duration, _MIN_AD_SECONDS, seg["start"], seg["end"],
+                "[AdRemover] Skipping suspiciously short ad segment (%.1fs < %.1fs minimum): start=%.1f end=%.1f",
+                duration,
+                _MIN_AD_SECONDS,
+                seg["start"],
+                seg["end"],
             )
             continue
         if duration > max_ad_secs:
@@ -1288,15 +1359,19 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
                         valid.append(ns)
                     else:
                         logger.warning(
-                            "[AdRemover] Narrowed sub-segment still out of bounds "
-                            "(%.1fs): [%.1f–%.1f] — skipping",
-                            ns_dur, ns["start"], ns["end"],
+                            "[AdRemover] Narrowed sub-segment still out of bounds (%.1fs): [%.1f–%.1f] — skipping",
+                            ns_dur,
+                            ns["start"],
+                            ns["end"],
                         )
             else:
                 logger.warning(
                     "[AdRemover] Skipping oversized ad segment "
                     "(%.1fs > %.1fs maximum): start=%.1f end=%.1f — narrowing failed",
-                    duration, max_ad_secs, seg["start"], seg["end"],
+                    duration,
+                    max_ad_secs,
+                    seg["start"],
+                    seg["end"],
                 )
             continue
         valid.append(seg)
@@ -1310,7 +1385,10 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
                 logger.info(
                     "[AdRemover] Segment [%.1f–%.1f] (%.0fs) exceeds verify threshold "
                     "(%.0fs) — running second-pass verification",
-                    seg["start"], seg["end"], duration, verify_threshold,
+                    seg["start"],
+                    seg["end"],
+                    duration,
+                    verify_threshold,
                 )
                 if _verify_ad_segment(seg, segments, bedrock, _default_model):
                     confirmed.append(seg)
@@ -1321,31 +1399,26 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
 
     if valid and segments:
         for ad in valid:
-            covered = [
-                s["text"] for s in segments
-                if s["start"] >= ad["start"] - 5 and s["end"] <= ad["end"] + 5
-            ]
+            covered = [s["text"] for s in segments if s["start"] >= ad["start"] - 5 and s["end"] <= ad["end"] + 5]
             snippet = " ".join(covered)[:300]
             logger.info(
                 "[AdRemover] Ad segment [%.1f–%.1f]: %s…",
-                ad["start"], ad["end"], snippet,
+                ad["start"],
+                ad["end"],
+                snippet,
             )
 
     logger.info("[AdRemover] Detected %d ad segment(s): %s", len(valid), valid)
     return valid
 
 
-def _split_segments_into_chunks(
-    segments: list[dict], max_chars: int, overlap_secs: float
-) -> list[list[dict]]:
+def _split_segments_into_chunks(segments: list[dict], max_chars: int, overlap_secs: float) -> list[list[dict]]:
     """Split transcript segments into chunks that fit within max_chars.
 
     Each chunk overlaps with the next by at least *overlap_secs* worth of
     segments so ads at chunk boundaries are seen by both chunks.
     """
-    all_lines = [
-        (s, f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}") for s in segments
-    ]
+    all_lines = [(s, f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}") for s in segments]
 
     total_chars = sum(len(line) + 1 for _, line in all_lines)
     if total_chars <= max_chars:
@@ -1436,6 +1509,7 @@ def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
 # Step 3 – Audio splicing (ffmpeg)
 # ---------------------------------------------------------------------------
 
+
 def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) -> None:
     """Remove *ad_segments* from *mp3_path* and write result to *output_path*.
 
@@ -1458,9 +1532,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     try:
         file_size = os.path.getsize(mp3_path)
     except OSError as exc:
-        raise RuntimeError(
-            f"ffprobe aborted: cannot stat input file '{mp3_path}': {exc}"
-        ) from exc
+        raise RuntimeError(f"ffprobe aborted: cannot stat input file '{mp3_path}': {exc}") from exc
 
     logger.debug("[AdRemover] ffprobe input '%s' — size %d bytes", mp3_path, file_size)
     if file_size < 1024:
@@ -1476,8 +1548,10 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
         if force_format:
             cmd += ["-f", force_format]
         cmd += [
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
             path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -1489,6 +1563,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
         """Use mutagen to read MP3 duration — pure Python, crash-proof fallback."""
         try:
             from mutagen.mp3 import MP3  # noqa: PLC0415
+
             return MP3(path).info.length
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"mutagen could not read duration: {exc}") from exc
@@ -1501,9 +1576,11 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
         stdout = (exc.stdout or "").strip()
         stderr = (exc.stderr or "").strip()
         logger.warning(
-            "[AdRemover] ffprobe auto-detect failed (exit %s) for %s — retrying with -f mp3.\n"
-            "  stdout: %r  stderr: %r",
-            exc.returncode, mp3_path, stdout, stderr,
+            "[AdRemover] ffprobe auto-detect failed (exit %s) for %s — retrying with -f mp3.\n  stdout: %r  stderr: %r",
+            exc.returncode,
+            mp3_path,
+            stdout,
+            stderr,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[AdRemover] ffprobe error (%s): %s — retrying with -f mp3.", type(exc).__name__, exc)
@@ -1518,12 +1595,16 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
             logger.warning(
                 "[AdRemover] ffprobe -f mp3 also failed (exit %s) for %s — falling back to mutagen.\n"
                 "  stdout: %r  stderr: %r",
-                exc.returncode, mp3_path, stdout, stderr,
+                exc.returncode,
+                mp3_path,
+                stdout,
+                stderr,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[AdRemover] ffprobe -f mp3 error (%s): %s — falling back to mutagen.",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
 
     # Attempt 3 — mutagen (pure Python, immune to ffprobe crashes)
@@ -1532,9 +1613,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
             total_duration = _mutagen_duration(mp3_path)
             logger.info("[AdRemover] Used mutagen fallback for duration of %s: %.2fs", mp3_path, total_duration)
         except RuntimeError as exc:
-            raise RuntimeError(
-                f"All duration-detection methods failed for '{mp3_path}': {exc}"
-            ) from exc
+            raise RuntimeError(f"All duration-detection methods failed for '{mp3_path}': {exc}") from exc
 
     # Sort ad segments and merge overlaps
     sorted_ads = sorted(ad_segments, key=lambda s: s["start"])
@@ -1565,27 +1644,29 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     # volume discontinuities at cut points are inaudible.
     loudnorm = os.environ.get("SPLICE_LOUDNORM", "true").lower() not in ("false", "0", "no")
     filter_parts = [
-        f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{i}]"
-        for i, (start, end) in enumerate(keep)
+        f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{i}]" for i, (start, end) in enumerate(keep)
     ]
     inputs = "".join(f"[a{i}]" for i in range(len(keep)))
     concat_out = "concat_out"
-    filter_complex = (
-        ";".join(filter_parts)
-        + f";{inputs}concat=n={len(keep)}:v=0:a=1[{concat_out}]"
-    )
+    filter_complex = ";".join(filter_parts) + f";{inputs}concat=n={len(keep)}:v=0:a=1[{concat_out}]"
     if loudnorm:
         filter_complex += f";[{concat_out}]loudnorm=I=-16:TP=-1.5:LRA=11[out]"
     else:
         filter_complex = filter_complex.replace(f"[{concat_out}]", "[out]", 1)
 
     cmd = [
-        "ffmpeg", "-y",
-        "-i", mp3_path,
-        "-filter_complex", filter_complex,
-        "-map", "[out]",
-        "-codec:a", "libmp3lame",
-        "-q:a", "2",
+        "ffmpeg",
+        "-y",
+        "-i",
+        mp3_path,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[out]",
+        "-codec:a",
+        "libmp3lame",
+        "-q:a",
+        "2",
         output_path,
     ]
 
@@ -1600,15 +1681,12 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
             # ARM with long files).  Retry using the concat demuxer: extract
             # each keep interval as an independent segment file, then join them.
             logger.warning(
-                "[AdRemover] ffmpeg SIGSEGV (exit -11) — retrying with "
-                "concat-demuxer fallback for %s",
+                "[AdRemover] ffmpeg SIGSEGV (exit -11) — retrying with concat-demuxer fallback for %s",
                 mp3_path,
             )
             _splice_concat_demuxer(mp3_path, keep, output_path)
         else:
-            raise RuntimeError(
-                f"ffmpeg splice failed (exit {exc.returncode}):\n{exc.stderr}"
-            ) from exc
+            raise RuntimeError(f"ffmpeg splice failed (exit {exc.returncode}):\n{exc.stderr}") from exc
 
 
 def _splice_concat_demuxer(
@@ -1642,19 +1720,21 @@ def _splice_concat_demuxer(
             seg_path = os.path.join(work_dir, f"_seg_{i}_{os.getpid()}.mp3")
             segment_paths.append(seg_path)
             cmd = [
-                "ffmpeg", "-y",
-                "-ss", str(start),
-                "-to", str(end),
-                "-i", mp3_path,
-                "-c:a", "copy",
+                "ffmpeg",
+                "-y",
+                "-ss",
+                str(start),
+                "-to",
+                str(end),
+                "-i",
+                mp3_path,
+                "-c:a",
+                "copy",
                 seg_path,
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                raise RuntimeError(
-                    f"ffmpeg segment {i} extraction failed "
-                    f"(exit {result.returncode}):\n{result.stderr}"
-                )
+                raise RuntimeError(f"ffmpeg segment {i} extraction failed (exit {result.returncode}):\n{result.stderr}")
 
         # Step 2: write concat list file
         list_path = os.path.join(work_dir, f"_concat_{os.getpid()}.txt")
@@ -1664,24 +1744,25 @@ def _splice_concat_demuxer(
 
         # Step 3: join and re-encode
         cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", list_path,
-            "-codec:a", "libmp3lame",
-            "-q:a", "2",
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-codec:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
             output_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg concat-demuxer join failed "
-                f"(exit {result.returncode}):\n{result.stderr}"
-            )
+            raise RuntimeError(f"ffmpeg concat-demuxer join failed (exit {result.returncode}):\n{result.stderr}")
 
-        logger.info(
-            "[AdRemover] concat-demuxer fallback succeeded for %s", mp3_path
-        )
+        logger.info("[AdRemover] concat-demuxer fallback succeeded for %s", mp3_path)
 
     finally:
         # Clean up temp segment files
@@ -1741,16 +1822,16 @@ def _generate_summary(
         max_secs = float(_raw_max)
     except ValueError:
         logger.warning(
-            "[AdRemover] SUMMARY_MAX_DURATION_SECS=%r is not a valid number — "
-            "using default 1800 s",
+            "[AdRemover] SUMMARY_MAX_DURATION_SECS=%r is not a valid number — using default 1800 s",
             _raw_max,
         )
         max_secs = 1800.0
     if max_secs > 0 and duration_secs is not None and duration_secs > max_secs:
         logger.info(
-            "[AdRemover] Skipping summary for %s — duration %.0fs exceeds "
-            "SUMMARY_MAX_DURATION_SECS=%.0fs",
-            video_id, duration_secs, max_secs,
+            "[AdRemover] Skipping summary for %s — duration %.0fs exceeds SUMMARY_MAX_DURATION_SECS=%.0fs",
+            video_id,
+            duration_secs,
+            max_secs,
         )
         return ""
 
@@ -1766,6 +1847,7 @@ def _generate_summary(
 
     try:
         from summary_generator import generate_episode_summary
+
         title = episode_title or video_id  # use human-readable title in the Bedrock prompt
         summary = generate_episode_summary(segments, title)
         if summary:
@@ -1831,8 +1913,12 @@ def remove_ads(
     # Resolve music trimming flags (kwargs override env vars)
     _trim_intro = trim_music_intro or os.environ.get("TRIM_MUSIC_INTRO", "false").lower() in ("true", "1", "yes")
     _trim_outro = trim_music_outro or os.environ.get("TRIM_MUSIC_OUTRO", "false").lower() in ("true", "1", "yes")
-    _min_intro = min_music_intro_secs if min_music_intro_secs != 8.0 else float(os.environ.get("MUSIC_INTRO_MIN_SECS", "8.0"))
-    _min_outro = min_music_outro_secs if min_music_outro_secs != 5.0 else float(os.environ.get("MUSIC_OUTRO_MIN_SECS", "5.0"))
+    _min_intro = (
+        min_music_intro_secs if min_music_intro_secs != 8.0 else float(os.environ.get("MUSIC_INTRO_MIN_SECS", "8.0"))
+    )
+    _min_outro = (
+        min_music_outro_secs if min_music_outro_secs != 5.0 else float(os.environ.get("MUSIC_OUTRO_MIN_SECS", "5.0"))
+    )
 
     logger.info("[AdRemover] Starting ad removal for %s", video_id)
 
@@ -1859,24 +1945,23 @@ def remove_ads(
             # generation — a single S3 read serves both consumers.
             music_segments: list[AdSegment] = []
             _cached_transcript: list[dict] = []
-            _want_cached_transcript = (
-                (_trim_intro or _trim_outro)
-                or os.environ.get("GENERATE_SUMMARIES", "false").lower() in ("true", "1", "yes")
-            )
+            _want_cached_transcript = (_trim_intro or _trim_outro) or os.environ.get(
+                "GENERATE_SUMMARIES", "false"
+            ).lower() in ("true", "1", "yes")
             if _want_cached_transcript:
                 _loaded_transcript = _load_transcript_cache(_s3, _bucket, video_id)
                 if _loaded_transcript:
                     _cached_transcript = _loaded_transcript
-            if _trim_intro or _trim_outro:
-                if _cached_transcript:
-                    try:
-                        music_segments = detect_music_bookends(
-                            _cached_transcript, mp3_path,
-                            min_intro_secs=_min_intro if _trim_intro else 9999.0,
-                            min_outro_secs=_min_outro if _trim_outro else 9999.0,
-                        )
-                    except Exception as exc:
-                        logger.warning("[AdRemover] Music detection failed (cached path) for %s: %s", video_id, exc)
+            if (_trim_intro or _trim_outro) and _cached_transcript:
+                try:
+                    music_segments = detect_music_bookends(
+                        _cached_transcript,
+                        mp3_path,
+                        min_intro_secs=_min_intro if _trim_intro else 9999.0,
+                        min_outro_secs=_min_outro if _trim_outro else 9999.0,
+                    )
+                except Exception as exc:
+                    logger.warning("[AdRemover] Music detection failed (cached path) for %s: %s", video_id, exc)
 
             all_cached = _merge_overlapping_ads(ad_segments + music_segments)
             if not all_cached:
@@ -1888,7 +1973,9 @@ def remove_ads(
                 total_ad_secs = sum(s["end"] - s["start"] for s in all_cached)
                 logger.info(
                     "[AdRemover] DRY-RUN: would remove %d cached segment(s) totalling %.1fs from %s",
-                    len(all_cached), total_ad_secs, video_id,
+                    len(all_cached),
+                    total_ad_secs,
+                    video_id,
                 )
                 return mp3_path, all_cached, ""
             cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
@@ -1896,9 +1983,17 @@ def remove_ads(
                 splice_audio(mp3_path, all_cached, cleaned_path)
             except Exception as exc:
                 logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
-                return mp3_path, all_cached, _generate_summary(_cached_transcript, video_id, episode_title, duration_secs)
+                return (
+                    mp3_path,
+                    all_cached,
+                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs),
+                )
             logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
-            return cleaned_path, all_cached, _generate_summary(_cached_transcript, video_id, episode_title, duration_secs)
+            return (
+                cleaned_path,
+                all_cached,
+                _generate_summary(_cached_transcript, video_id, episode_title, duration_secs),
+            )
 
     try:
         segments = transcribe_audio(mp3_path, video_id)
@@ -1918,9 +2013,10 @@ def remove_ads(
 
     # Detect silence once for reuse in both music detection and boundary snapping
     _silences: list[dict] | None = None
-    _need_silence = (
-        (_trim_intro or _trim_outro)
-        or os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no")
+    _need_silence = (_trim_intro or _trim_outro) or os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in (
+        "false",
+        "0",
+        "no",
     )
     if _need_silence:
         try:
@@ -1934,13 +2030,16 @@ def remove_ads(
     if (_trim_intro or _trim_outro) and segments:
         try:
             music_segments = detect_music_bookends(
-                segments, mp3_path,
+                segments,
+                mp3_path,
                 min_intro_secs=_min_intro if _trim_intro else 9999.0,
                 min_outro_secs=_min_outro if _trim_outro else 9999.0,
                 silences=_silences,
             )
         except Exception as exc:
-            logger.warning("[AdRemover] Music bookend detection failed for %s: %s — proceeding with ads only", video_id, exc)
+            logger.warning(
+                "[AdRemover] Music bookend detection failed for %s: %s — proceeding with ads only", video_id, exc
+            )
 
     # Merge ad + music segments for a single splice pass
     all_segments = _merge_overlapping_ads(ad_segments + music_segments)
@@ -1958,7 +2057,9 @@ def remove_ads(
         total_secs = sum(s["end"] - s["start"] for s in all_segments)
         logger.info(
             "[AdRemover] DRY-RUN: would remove %d segment(s) totalling %.1fs from %s — skipping splice",
-            len(all_segments), total_secs, video_id,
+            len(all_segments),
+            total_secs,
+            video_id,
         )
         return mp3_path, all_segments, ""
 

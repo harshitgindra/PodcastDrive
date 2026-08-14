@@ -150,10 +150,7 @@ class NotionConfigProvider(ConfigProvider):
         self._cache: list[PodcastConfig] | None = None
 
         if not self.api_key or not self.database_id:
-            raise ValueError(
-                "NOTION_API_KEY and NOTION_DATABASE_ID must be set "
-                "when using Notion config provider"
-            )
+            raise ValueError("NOTION_API_KEY and NOTION_DATABASE_ID must be set when using Notion config provider")
 
     def get_podcasts(self) -> list[PodcastConfig]:
         """Query the Notion database and return enabled podcast configs.
@@ -270,7 +267,8 @@ class NotionConfigProvider(ConfigProvider):
             if source != "YouTube":
                 logger.debug(
                     "Skipping Notion entry '%s': source=%r (expected 'YouTube')",
-                    name, source,
+                    name,
+                    source,
                 )
                 return None
 
@@ -350,9 +348,7 @@ class NotionConfigProvider(ConfigProvider):
             with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
                 logger.info("Updated Notion status to '%s' for %s", status, podcast.name)
         except Exception as exc:
-            logger.warning(
-                "Failed to update Notion status for %s: %s", podcast.name, exc
-            )
+            logger.warning("Failed to update Notion status for %s: %s", podcast.name, exc)
 
     def find_page_by_url(self, url: str) -> PodcastConfig | None:
         """Look up a Notion page by its ``URL`` property value.
@@ -414,9 +410,7 @@ class NotionConfigProvider(ConfigProvider):
         }
 
         if runner:
-            properties["Runner"] = {
-                "rich_text": [{"text": {"content": runner}}]
-            }
+            properties["Runner"] = {"rich_text": [{"text": {"content": runner}}]}
 
         if feed_url:
             properties["Podcast URL"] = {
@@ -499,15 +493,14 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
             if source != "Podcast":
                 logger.debug(
                     "Skipping Notion entry '%s': source=%r (expected 'Podcast')",
-                    name, source,
+                    name,
+                    source,
                 )
                 return None
 
             # URL may be empty — process_podcast_feed will discover it via iTunes Search
             if not url:
-                logger.info(
-                    "Notion entry '%s' has no URL — will search iTunes by name", name
-                )
+                logger.info("Notion entry '%s' has no URL — will search iTunes by name", name)
 
             # Max Age Days (number type) — controls how far back to fetch episodes
             max_age_days = None
@@ -599,13 +592,9 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
 
         try:
             with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
-                logger.info(
-                    "Updated Notion URL for '%s' → %s", podcast.name, new_url
-                )
+                logger.info("Updated Notion URL for '%s' → %s", podcast.name, new_url)
         except Exception as exc:
-            logger.warning(
-                "Failed to update Notion URL for %s: %s", podcast.name, exc
-            )
+            logger.warning("Failed to update Notion URL for %s: %s", podcast.name, exc)
 
 
 class YamlPodcastConfigProvider(YamlConfigProvider):
@@ -625,7 +614,8 @@ class YamlPodcastConfigProvider(YamlConfigProvider):
         """No-op stub — YAML mode does not support write-back."""
         logger.warning(
             "URL write-back not supported in YAML mode (podcast=%r, url=%r)",
-            podcast.name, new_url,
+            podcast.name,
+            new_url,
         )
 
 

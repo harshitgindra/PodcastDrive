@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""PodcastDrive webhook server — triggers run.sh via HTTP."""
+"""PodcastDrive webhook server — triggers run.sh via HTTP.
 
-import hashlib
+Security:
+  - Authentication via Authorization: Bearer <token> header ONLY.
+  - Binds to 127.0.0.1 by default (use WEBHOOK_BIND for override).
+  - No query-string token support (tokens in URLs leak to logs/history).
+  - subprocess.Popen uses cwd= instead of shell interpolation.
+"""
+
 import hmac
 import json
 import os
 import subprocess
 import sys
-import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 PORT = int(os.environ.get("WEBHOOK_PORT", "9090"))
+BIND = os.environ.get("WEBHOOK_BIND", "127.0.0.1")
 TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", "/home/ec2-user/PodcastDrive"))
 LOG_FILE = PROJECT_DIR / "logs" / "cron.log"
@@ -28,7 +34,7 @@ def is_running() -> bool:
         return False
     try:
         pid = int(LOCK_FILE.read_text().strip())
-        os.kill(pid, 0)  # Check if process exists
+        os.kill(pid, 0)
         return True
     except (ValueError, ProcessLookupError, PermissionError):
         return False
@@ -41,7 +47,9 @@ def tail_log(lines: int = 20) -> str:
     try:
         result = subprocess.run(
             ["tail", f"-{lines}", str(LOG_FILE)],
-            capture_output=True, text=True, timeout=5
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         return result.stdout
     except Exception as e:
@@ -54,17 +62,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
         pass
 
     def _check_auth(self) -> bool:
-        """Validate Bearer token."""
+        """Validate Bearer token from Authorization header only.
+
+        Query-string tokens are intentionally NOT supported — they leak
+        into HTTP access logs, proxy logs, and browser history.
+        """
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             provided = auth[7:]
             return hmac.compare_digest(provided, TOKEN)
-        # Also accept ?token= query param (for simplicity from Shortcuts)
-        if "?" in self.path:
-            query = self.path.split("?", 1)[1]
-            params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
-            if "token" in params:
-                return hmac.compare_digest(params["token"], TOKEN)
         return False
 
     def _respond(self, code: int, data: dict):
@@ -85,42 +91,55 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/status":
-            self._respond(200, {
-                "running": is_running(),
-                "logs": tail_log(20)
-            })
+            self._respond(
+                200,
+                {
+                    "running": is_running(),
+                    "logs": tail_log(20),
+                },
+            )
 
         elif path == "/run":
             if is_running():
-                self._respond(409, {
-                    "error": "already running",
-                    "message": "A run is already in progress. Check /status for details."
-                })
-            else:
-                # Launch in background
-                subprocess.Popen(
-                    ["bash", "-c", f"cd {PROJECT_DIR} && TRIGGER=webhook ./run.sh >> logs/cron.log 2>&1"],
-                    start_new_session=True
+                self._respond(
+                    409,
+                    {
+                        "error": "already running",
+                        "message": "A run is already in progress. Check /status for details.",
+                    },
                 )
-                self._respond(200, {
-                    "status": "started",
-                    "message": "run.sh launched in background. Check /status for progress."
-                })
+            else:
+                log_file = LOG_FILE.open("a")
+                subprocess.Popen(
+                    ["./run.sh"],
+                    cwd=str(PROJECT_DIR),
+                    env={**os.environ, "TRIGGER": "webhook"},
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                self._respond(
+                    200,
+                    {
+                        "status": "started",
+                        "message": "run.sh launched in background. Check /status for progress.",
+                    },
+                )
 
         elif path == "/logs":
-            lines = 50
-            self._respond(200, {"logs": tail_log(lines)})
+            self._respond(200, {"logs": tail_log(50)})
 
         else:
             self._respond(404, {"error": "not found", "endpoints": ["/run", "/status", "/logs", "/health"]})
 
-    do_POST = do_GET  # Accept both GET and POST for /run
+    do_POST = do_GET
 
 
 def main():
-    server = HTTPServer(("0.0.0.0", PORT), WebhookHandler)
-    print(f"PodcastDrive webhook listening on port {PORT}")
-    print(f"Endpoints: /run, /status, /logs, /health")
+    server = HTTPServer((BIND, PORT), WebhookHandler)
+    print(f"PodcastDrive webhook listening on {BIND}:{PORT}")
+    print("Endpoints: /run, /status, /logs, /health")
+    print("Auth: Authorization: Bearer <WEBHOOK_TOKEN>")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

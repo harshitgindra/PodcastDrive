@@ -1,16 +1,14 @@
 """Tests for src/notifier.py — Herald-based run notifications."""
 
 import subprocess
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from notifier import (
-    send_run_notification,
     _format_message,
     _herald_available,
     _herald_supports_message_flag,
     _send_via_herald,
+    send_run_notification,
 )
 
 
@@ -221,9 +219,7 @@ class TestSendRunNotification:
     @patch("notifier._send_via_herald", return_value=True)
     @patch("notifier._herald_supports_message_flag", return_value=True)
     @patch("notifier._herald_available", return_value=True)
-    def test_sends_when_herald_available_and_supported(
-        self, mock_avail, mock_version, mock_send, monkeypatch
-    ):
+    def test_sends_when_herald_available_and_supported(self, mock_avail, mock_version, mock_send, monkeypatch):
         monkeypatch.setenv("RUNNER", "test")
         results = [{"name": "MKBHD", "new_episodes": 1, "failed": 0}]
         assert send_run_notification(results, elapsed_secs=60, status="success") is True
@@ -241,9 +237,7 @@ class TestSendRunNotification:
     @patch("notifier._send_via_herald")
     @patch("notifier._herald_supports_message_flag", return_value=False)
     @patch("notifier._herald_available", return_value=True)
-    def test_no_send_attempted_when_version_too_old(
-        self, mock_avail, mock_version, mock_send, monkeypatch
-    ):
+    def test_no_send_attempted_when_version_too_old(self, mock_avail, mock_version, mock_send, monkeypatch):
         """Verify no subprocess call to herald notify when version is too old."""
         monkeypatch.setenv("RUNNER", "test")
         send_run_notification([{"name": "X", "new_episodes": 1}], elapsed_secs=10)

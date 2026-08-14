@@ -26,14 +26,23 @@ sys.path.insert(0, "src")
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fake_transcript_json(items: list[dict] | None = None) -> bytes:
     """Return minimal AWS Transcribe JSON bytes."""
     if items is None:
         items = [
-            {"type": "pronunciation", "start_time": "0.5", "end_time": "1.0",
-             "alternatives": [{"content": "Hello", "confidence": "0.99"}]},
-            {"type": "pronunciation", "start_time": "1.1", "end_time": "1.8",
-             "alternatives": [{"content": "world", "confidence": "0.99"}]},
+            {
+                "type": "pronunciation",
+                "start_time": "0.5",
+                "end_time": "1.0",
+                "alternatives": [{"content": "Hello", "confidence": "0.99"}],
+            },
+            {
+                "type": "pronunciation",
+                "start_time": "1.1",
+                "end_time": "1.8",
+                "alternatives": [{"content": "world", "confidence": "0.99"}],
+            },
         ]
     return json.dumps({"results": {"items": items}}).encode()
 
@@ -65,21 +74,16 @@ def _make_bedrock_client(content: str = "[]", prefill: str = "["):
     expected JSON and the mock simulates the model returning everything after the prefill.
     """
     # Strip leading prefill character from mock content (code will re-add it)
-    mock_text = content[len(prefill):] if content.startswith(prefill) else content
+    mock_text = content[len(prefill) :] if content.startswith(prefill) else content
     client = MagicMock()
-    client.converse.return_value = {
-        "output": {
-            "message": {
-                "content": [{"text": mock_text}]
-            }
-        }
-    }
+    client.converse.return_value = {"output": {"message": {"content": [{"text": mock_text}]}}}
     return client
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _reload_ad_remover():
@@ -103,6 +107,7 @@ def mock_urlopen(monkeypatch):
     fake_resp.read.return_value = _fake_transcript_json()
 
     import urllib.request as ur
+
     monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=fake_resp))
     return fake_resp
 
@@ -111,15 +116,15 @@ def mock_urlopen(monkeypatch):
 # _items_to_segments
 # ---------------------------------------------------------------------------
 
+
 class TestItemsToSegments:
     def test_basic_grouping(self):
         """Words close together are grouped into one segment."""
         import ad_remover
+
         items = [
-            {"type": "pronunciation", "start_time": "0.0", "end_time": "0.5",
-             "alternatives": [{"content": "Hello"}]},
-            {"type": "pronunciation", "start_time": "0.6", "end_time": "1.0",
-             "alternatives": [{"content": "world"}]},
+            {"type": "pronunciation", "start_time": "0.0", "end_time": "0.5", "alternatives": [{"content": "Hello"}]},
+            {"type": "pronunciation", "start_time": "0.6", "end_time": "1.0", "alternatives": [{"content": "world"}]},
         ]
         segs = ad_remover._items_to_segments(items)
         assert len(segs) == 1
@@ -130,11 +135,10 @@ class TestItemsToSegments:
     def test_gap_splits_segments(self):
         """A gap larger than gap_threshold creates two separate segments."""
         import ad_remover
+
         items = [
-            {"type": "pronunciation", "start_time": "0.0", "end_time": "1.0",
-             "alternatives": [{"content": "Intro"}]},
-            {"type": "pronunciation", "start_time": "5.0", "end_time": "6.0",
-             "alternatives": [{"content": "Ad"}]},
+            {"type": "pronunciation", "start_time": "0.0", "end_time": "1.0", "alternatives": [{"content": "Intro"}]},
+            {"type": "pronunciation", "start_time": "5.0", "end_time": "6.0", "alternatives": [{"content": "Ad"}]},
         ]
         segs = ad_remover._items_to_segments(items, gap_threshold=1.5)
         assert len(segs) == 2
@@ -144,12 +148,11 @@ class TestItemsToSegments:
     def test_punctuation_items_appended(self):
         """Punctuation items (no timing) are appended to the current segment text."""
         import ad_remover
+
         items = [
-            {"type": "pronunciation", "start_time": "0.0", "end_time": "0.5",
-             "alternatives": [{"content": "Hello"}]},
+            {"type": "pronunciation", "start_time": "0.0", "end_time": "0.5", "alternatives": [{"content": "Hello"}]},
             {"type": "punctuation", "alternatives": [{"content": ","}]},
-            {"type": "pronunciation", "start_time": "0.6", "end_time": "1.0",
-             "alternatives": [{"content": "world"}]},
+            {"type": "pronunciation", "start_time": "0.6", "end_time": "1.0", "alternatives": [{"content": "world"}]},
         ]
         segs = ad_remover._items_to_segments(items)
         assert len(segs) == 1
@@ -157,14 +160,15 @@ class TestItemsToSegments:
 
     def test_empty_items_returns_empty(self):
         import ad_remover
+
         assert ad_remover._items_to_segments([]) == []
 
     def test_items_without_alternatives_skipped(self):
         """Items with no alternatives list are silently ignored."""
         import ad_remover
+
         items = [
-            {"type": "pronunciation", "start_time": "0.0", "end_time": "0.5",
-             "alternatives": []},
+            {"type": "pronunciation", "start_time": "0.0", "end_time": "0.5", "alternatives": []},
         ]
         assert ad_remover._items_to_segments(items) == []
 
@@ -172,6 +176,7 @@ class TestItemsToSegments:
 # ---------------------------------------------------------------------------
 # transcribe_audio
 # ---------------------------------------------------------------------------
+
 
 class TestTranscribeAudio:
     def _patch_boto3(self, monkeypatch, transcribe_client, s3_client=None):
@@ -187,6 +192,7 @@ class TestTranscribeAudio:
             return MagicMock()
 
         import boto3 as _boto3
+
         monkeypatch.setattr(_boto3, "client", fake_boto3_client)
         return s3_client
 
@@ -287,17 +293,20 @@ class TestTranscribeAudio:
 # detect_ads
 # ---------------------------------------------------------------------------
 
+
 class TestDetectAds:
     def _patch_bedrock(self, monkeypatch, content: str):
         bc = _make_bedrock_client(content=content)
 
         import boto3 as _boto3
+
         monkeypatch.setattr(_boto3, "client", lambda svc, **kw: bc)
         return bc
 
     def test_returns_empty_for_no_segments(self, monkeypatch):
         """detect_ads returns [] immediately when given no segments."""
         import ad_remover
+
         assert ad_remover.detect_ads([]) == []
 
     def test_parses_clean_json_response(self, monkeypatch):
@@ -371,6 +380,7 @@ class TestDetectAds:
         monkeypatch.setenv("BEDROCK_MODEL_ID", "amazon.titan-v2:0")
         bc = _make_bedrock_client(content="[]")
         import boto3 as _boto3
+
         monkeypatch.setattr(_boto3, "client", lambda svc, **kw: bc)
         import ad_remover
 
@@ -384,9 +394,11 @@ class TestDetectAds:
 # splice_audio
 # ---------------------------------------------------------------------------
 
+
 class TestSpliceAudio:
     def test_raises_value_error_on_empty_segments(self):
         import ad_remover
+
         with pytest.raises(ValueError, match="empty ad_segments"):
             ad_remover.splice_audio("/in.mp3", [], "/out.mp3")
 
@@ -447,10 +459,12 @@ class TestSpliceAudio:
         import mutagen.mp3 as _mut
 
         import ad_remover
+
         monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
         # Make every subprocess.run call raise CalledProcessError (covers both ffprobe attempts)
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             MagicMock(side_effect=subprocess.CalledProcessError(1, "ffprobe")),
         )
         # Make mutagen also fail so stage 3 is exhausted
@@ -495,41 +509,54 @@ class TestSpliceAudio:
 # remove_ads  (orchestrator)
 # ---------------------------------------------------------------------------
 
+
 class TestRemoveAds:
     def test_returns_original_when_disabled(self, monkeypatch):
         monkeypatch.setenv("REMOVE_ADS", "false")
         import ad_remover
+
         assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_when_disabled_zero(self, monkeypatch):
         monkeypatch.setenv("REMOVE_ADS", "0")
         import ad_remover
+
         assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_on_transcription_failure(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
+
         monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(side_effect=RuntimeError("boom")))
         assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_on_ad_detection_failure(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "x"}]))
+
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "x"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(side_effect=ConnectionError("no bedrock")))
         assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_when_no_ads(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "clean"}]))
+
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "clean"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
         assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
     def test_returns_original_on_splice_failure(self, monkeypatch):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "ad"}]))
+
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "ad"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 0.2, "end": 0.8}]))
         monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(side_effect=RuntimeError("ffmpeg gone")))
         assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
@@ -539,8 +566,11 @@ class TestRemoveAds:
         import os
 
         import ad_remover
+
         tmp_dir = str(tmp_path)
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "ad"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "ad"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 0.2, "end": 0.8}]))
         monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(return_value=None))
 
@@ -552,11 +582,14 @@ class TestRemoveAds:
         import os
 
         import ad_remover
+
         tmp_dir = str(tmp_path)
         ad_segs = [{"start": 10.0, "end": 30.0}]
         mock_splice = MagicMock(return_value=None)
 
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "x"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "x"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=ad_segs))
         monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
@@ -569,6 +602,7 @@ class TestRemoveAds:
         """remove_ads passes video_id to transcribe_audio."""
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import ad_remover
+
         mock_transcribe = MagicMock(return_value=[])
         monkeypatch.setattr(ad_remover, "transcribe_audio", mock_transcribe)
 
@@ -583,7 +617,9 @@ class TestRemoveAds:
         import ad_remover
 
         mock_splice = MagicMock()
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "ad copy"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "ad copy"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
         monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
@@ -599,7 +635,9 @@ class TestRemoveAds:
         import ad_remover
 
         mock_splice = MagicMock()
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "clean"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "clean"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
         monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
@@ -615,11 +653,14 @@ class TestRemoveAds:
             monkeypatch.setenv("REMOVE_ADS_DRY_RUN", val)
             # Reload module to pick up new env
             import sys
+
             sys.modules.pop("ad_remover", None)
             import ad_remover
 
             mock_splice = MagicMock()
-            monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "ad"}]))
+            monkeypatch.setattr(
+                ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "ad"}])
+            )
             monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 70.0}]))
             monkeypatch.setattr(ad_remover, "splice_audio", mock_splice)
 
@@ -632,10 +673,12 @@ class TestRemoveAds:
 # _split_segments_into_chunks
 # ---------------------------------------------------------------------------
 
+
 class TestSplitSegmentsIntoChunks:
     def test_single_chunk_when_under_limit(self):
         """Returns one chunk when total transcript fits within max_chars."""
         import ad_remover
+
         segments = [
             {"start": 0.0, "end": 10.0, "text": "Hello world"},
             {"start": 11.0, "end": 20.0, "text": "Second segment"},
@@ -647,10 +690,8 @@ class TestSplitSegmentsIntoChunks:
     def test_splits_into_multiple_chunks(self):
         """Segments exceeding max_chars are split into multiple chunks."""
         import ad_remover
-        segments = [
-            {"start": i * 10.0, "end": (i + 1) * 10.0, "text": "word " * 50}
-            for i in range(20)
-        ]
+
+        segments = [{"start": i * 10.0, "end": (i + 1) * 10.0, "text": "word " * 50} for i in range(20)]
         chunks = ad_remover._split_segments_into_chunks(segments, max_chars=2000, overlap_secs=30)
         assert len(chunks) > 1
         # All segments should be covered
@@ -661,10 +702,8 @@ class TestSplitSegmentsIntoChunks:
     def test_overlap_between_chunks(self):
         """Adjacent chunks overlap by at least overlap_secs."""
         import ad_remover
-        segments = [
-            {"start": i * 10.0, "end": (i + 1) * 10.0 - 1, "text": "x " * 30}
-            for i in range(50)
-        ]
+
+        segments = [{"start": i * 10.0, "end": (i + 1) * 10.0 - 1, "text": "x " * 30} for i in range(50)]
         chunks = ad_remover._split_segments_into_chunks(segments, max_chars=2000, overlap_secs=30)
         assert len(chunks) > 1
         for i in range(len(chunks) - 1):
@@ -672,18 +711,20 @@ class TestSplitSegmentsIntoChunks:
             start_of_next = chunks[i + 1][0]["start"]
             # Next chunk should start before or near where current ends
             assert start_of_next < end_of_current + 5, (
-                f"Chunk {i+1} ends at {end_of_current}, chunk {i+2} starts at {start_of_next}"
+                f"Chunk {i + 1} ends at {end_of_current}, chunk {i + 2} starts at {start_of_next}"
             )
 
     def test_empty_segments(self):
         """Empty input returns a single empty chunk."""
         import ad_remover
+
         chunks = ad_remover._split_segments_into_chunks([], max_chars=5000, overlap_secs=60)
         assert chunks == [[]]
 
     def test_single_large_segment(self):
         """A single segment larger than max_chars still produces one chunk."""
         import ad_remover
+
         segments = [{"start": 0.0, "end": 600.0, "text": "x" * 10000}]
         chunks = ad_remover._split_segments_into_chunks(segments, max_chars=5000, overlap_secs=60)
         assert len(chunks) == 1
@@ -692,11 +733,9 @@ class TestSplitSegmentsIntoChunks:
     def test_forward_progress_guaranteed(self):
         """Chunker doesn't loop infinitely even with adversarial inputs."""
         import ad_remover
+
         # All segments are large and close together in time
-        segments = [
-            {"start": i * 2.0, "end": (i + 1) * 2.0, "text": "y" * 500}
-            for i in range(20)
-        ]
+        segments = [{"start": i * 2.0, "end": (i + 1) * 2.0, "text": "y" * 500} for i in range(20)]
         chunks = ad_remover._split_segments_into_chunks(segments, max_chars=1000, overlap_secs=100)
         assert len(chunks) >= 1
         # Should terminate (this test mainly checks no infinite loop)
@@ -706,10 +745,12 @@ class TestSplitSegmentsIntoChunks:
 # _parse_ad_response
 # ---------------------------------------------------------------------------
 
+
 class TestParseAdResponse:
     def test_parses_clean_json(self):
         """Parses a response that is just a JSON array."""
         import ad_remover
+
         raw = '[{"start": 10.0, "end": 60.0}]'
         result = ad_remover._parse_ad_response(raw)
         assert result == [{"start": 10.0, "end": 60.0}]
@@ -717,13 +758,14 @@ class TestParseAdResponse:
     def test_parses_json_with_reasoning(self):
         """Parses response with reasoning text containing brackets before JSON."""
         import ad_remover
+
         raw = (
             "# Reasoning\n"
             "1. **[177.8 - 308.5]**: NetSuite ad\n"
             "2. **[786.8 - 843.4]**: Indeed ad\n\n"
-            '```json\n'
+            "```json\n"
             '[{"start": 175.8, "end": 310.5}, {"start": 784.8, "end": 845.4}]\n'
-            '```'
+            "```"
         )
         result = ad_remover._parse_ad_response(raw)
         assert len(result) == 2
@@ -733,18 +775,21 @@ class TestParseAdResponse:
     def test_returns_empty_on_no_brackets(self):
         """Returns empty list when response has no brackets."""
         import ad_remover
+
         result = ad_remover._parse_ad_response("No ads found in this episode.")
         assert result == []
 
     def test_returns_empty_on_all_invalid_json(self):
         """Returns empty list when all bracket pairs contain invalid JSON."""
         import ad_remover
+
         result = ad_remover._parse_ad_response("[not valid json] and [more bad]")
         assert result == []
 
     def test_filters_malformed_entries(self):
         """Entries missing start/end are filtered out."""
         import ad_remover
+
         raw = '[{"start": 10.0, "end": 20.0}, {"bad": true}, "string"]'
         result = ad_remover._parse_ad_response(raw)
         assert result == [{"start": 10.0, "end": 20.0}]
@@ -752,6 +797,7 @@ class TestParseAdResponse:
     def test_empty_array_response(self):
         """Model returning [] means no ads."""
         import ad_remover
+
         result = ad_remover._parse_ad_response("[]")
         assert result == []
 
@@ -760,10 +806,12 @@ class TestParseAdResponse:
 # _merge_overlapping_ads
 # ---------------------------------------------------------------------------
 
+
 class TestMergeOverlappingAds:
     def test_non_overlapping_preserved(self):
         """Non-overlapping segments remain separate."""
         import ad_remover
+
         ads = [{"start": 10.0, "end": 20.0}, {"start": 50.0, "end": 60.0}]
         result = ad_remover._merge_overlapping_ads(ads)
         assert result == [{"start": 10.0, "end": 20.0}, {"start": 50.0, "end": 60.0}]
@@ -771,6 +819,7 @@ class TestMergeOverlappingAds:
     def test_overlapping_merged(self):
         """Overlapping segments are merged into one."""
         import ad_remover
+
         ads = [{"start": 10.0, "end": 30.0}, {"start": 25.0, "end": 50.0}]
         result = ad_remover._merge_overlapping_ads(ads)
         assert result == [{"start": 10.0, "end": 50.0}]
@@ -778,6 +827,7 @@ class TestMergeOverlappingAds:
     def test_adjacent_within_2s_merged(self):
         """Segments within 2 seconds gap are merged (Fix #3: threshold reduced from 5s→2s)."""
         import ad_remover
+
         ads = [{"start": 10.0, "end": 20.0}, {"start": 22.0, "end": 40.0}]  # 2s gap
         result = ad_remover._merge_overlapping_ads(ads)
         assert result == [{"start": 10.0, "end": 40.0}]
@@ -785,6 +835,7 @@ class TestMergeOverlappingAds:
     def test_adjacent_within_5s_no_longer_merged(self):
         """4s gap was merged under old 5s rule but stays separate under new 2s rule (Fix #3)."""
         import ad_remover
+
         ads = [{"start": 10.0, "end": 20.0}, {"start": 24.0, "end": 40.0}]  # 4s gap
         result = ad_remover._merge_overlapping_ads(ads)
         assert len(result) == 2, "4s gap should NOT merge under the new 2s threshold"
@@ -792,6 +843,7 @@ class TestMergeOverlappingAds:
     def test_not_merged_when_gap_exceeds_2s(self):
         """Segments with > 2s gap remain separate."""
         import ad_remover
+
         ads = [{"start": 10.0, "end": 20.0}, {"start": 23.0, "end": 40.0}]  # 3s gap
         result = ad_remover._merge_overlapping_ads(ads)
         assert len(result) == 2
@@ -799,6 +851,7 @@ class TestMergeOverlappingAds:
     def test_unsorted_input(self):
         """Handles unsorted input correctly."""
         import ad_remover
+
         ads = [{"start": 50.0, "end": 60.0}, {"start": 10.0, "end": 20.0}]
         result = ad_remover._merge_overlapping_ads(ads)
         assert result[0]["start"] == 10.0
@@ -807,11 +860,13 @@ class TestMergeOverlappingAds:
     def test_empty_input(self):
         """Empty list returns empty list."""
         import ad_remover
+
         assert ad_remover._merge_overlapping_ads([]) == []
 
     def test_multiple_overlaps_chain(self):
         """Chain of overlapping segments merge into one."""
         import ad_remover
+
         ads = [
             {"start": 10.0, "end": 20.0},
             {"start": 18.0, "end": 30.0},
@@ -823,6 +878,7 @@ class TestMergeOverlappingAds:
     def test_duplicate_segments_from_chunk_overlap(self):
         """Duplicate segments (same ad detected by two chunks) are merged."""
         import ad_remover
+
         ads = [
             {"start": 175.8, "end": 310.5},
             {"start": 176.0, "end": 309.0},  # duplicate from overlap
@@ -838,6 +894,7 @@ class TestMergeOverlappingAds:
 # detect_ads chunking integration
 # ---------------------------------------------------------------------------
 
+
 class TestDetectAdsChunking:
     def _patch_bedrock(self, monkeypatch, responses: list[str]):
         """Patch bedrock to return different responses for each chunk call.
@@ -847,10 +904,10 @@ class TestDetectAdsChunking:
         """
         bc = MagicMock()
         bc.converse.side_effect = [
-            {"output": {"message": {"content": [{"text": r[1:] if r.startswith("[") else r}]}}}
-            for r in responses
+            {"output": {"message": {"content": [{"text": r[1:] if r.startswith("[") else r}]}}} for r in responses
         ]
         import boto3 as _boto3
+
         monkeypatch.setattr(_boto3, "client", lambda svc, **kw: bc)
         return bc
 
@@ -859,6 +916,7 @@ class TestDetectAdsChunking:
         self._patch_bedrock(monkeypatch, ['[{"start": 10.0, "end": 20.0}]'])
         monkeypatch.setenv("AD_DETECT_MAX_CHARS", "50000")
         import ad_remover
+
         segments = [{"start": 0.0, "end": 5.0, "text": "short transcript"}]
         result = ad_remover.detect_ads(segments)
         assert result == [{"start": 10.0, "end": 20.0}]
@@ -873,9 +931,10 @@ class TestDetectAdsChunking:
             {"start": 110.0, "end": 120.0, "text": "ad two " * 15},
         ]
         import ad_remover
+
         chunks = ad_remover._split_segments_into_chunks(segments, max_chars=250, overlap_secs=5)
         assert len(chunks) >= 2, f"Expected multiple chunks, got {len(chunks)}"
-        responses = ['[]'] * len(chunks)
+        responses = ["[]"] * len(chunks)
         responses[0] = '[{"start": 10.0, "end": 20.0}]'
         responses[-1] = '[{"start": 110.0, "end": 120.0}]'
         self._patch_bedrock(monkeypatch, responses)
@@ -898,6 +957,7 @@ class TestDetectAdsChunking:
             {"start": 80.0, "end": 90.0, "text": "outro content " * 10},
         ]
         import ad_remover
+
         chunks = ad_remover._split_segments_into_chunks(segments, max_chars=250, overlap_secs=50)
         assert len(chunks) >= 2, f"Expected multiple chunks, got {len(chunks)}"
         # Both chunks detect the same ad
@@ -917,6 +977,7 @@ class TestDetectAdsChunking:
 # Coverage gap tests — reach the remaining 20 uncovered lines
 # ---------------------------------------------------------------------------
 
+
 class TestDetectSilenceEdgeCases:
     """Cover malformed ffmpeg output branches in detect_silence (lines 102-103, 119-120)."""
 
@@ -924,6 +985,7 @@ class TestDetectSilenceEdgeCases:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         fake = MagicMock(stderr=stderr_text)
         with patch("subprocess.run", return_value=fake):
@@ -937,10 +999,7 @@ class TestDetectSilenceEdgeCases:
 
     def test_malformed_silence_end_does_not_crash(self):
         """ValueError on bad silence_end line resets current_start (lines 119-120)."""
-        stderr = (
-            "[silencedetect] silence_start: 10.0\n"
-            "[silencedetect] silence_end: BAD | silence_duration: also_bad\n"
-        )
+        stderr = "[silencedetect] silence_start: 10.0\n[silencedetect] silence_end: BAD | silence_duration: also_bad\n"
         result = self._run(stderr)
         assert result == []
 
@@ -963,6 +1022,7 @@ class TestSnapAdBoundariesEdgeCases:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         with patch("ad_remover.detect_silence") as mock_silence:
             result = ad_remover.snap_ad_boundaries([], "/fake.mp3")
@@ -974,6 +1034,7 @@ class TestSnapAdBoundariesEdgeCases:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         segments = [{"start": 10.0, "end": 50.0}]
         with patch("ad_remover.detect_silence", side_effect=RuntimeError("ffmpeg crashed")):
@@ -996,6 +1057,7 @@ class TestTranscribeCleanupErrors:
             return transcribe_client
 
         import boto3
+
         monkeypatch.setattr(boto3, "client", _client_factory)
 
     def _make_transcribe(self):
@@ -1017,6 +1079,7 @@ class TestTranscribeCleanupErrors:
         tc = self._make_transcribe()
         self._patch_boto3(monkeypatch, tc, s3_client=s3)
         import ad_remover
+
         # Should not raise despite S3 delete failure
         result = ad_remover.transcribe_audio("/tmp/ep.mp3", "vid123")
         assert isinstance(result, list)
@@ -1029,6 +1092,7 @@ class TestTranscribeCleanupErrors:
         tc.delete_transcription_job.side_effect = RuntimeError("delete failed")
         self._patch_boto3(monkeypatch, tc)
         import ad_remover
+
         # Should not raise despite job delete failure
         result = ad_remover.transcribe_audio("/tmp/ep.mp3", "vid123")
         assert isinstance(result, list)
@@ -1043,6 +1107,7 @@ class TestVerifyAdSegmentNoJson:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         mock_bedrock = MagicMock()
@@ -1064,6 +1129,7 @@ class TestSpliceAudioEdgeCases:
     def test_raises_runtime_error_when_getsize_fails(self, monkeypatch):
         """OSError from os.path.getsize is wrapped in RuntimeError (lines 782-783)."""
         import ad_remover
+
         monkeypatch.setattr(os.path, "getsize", MagicMock(side_effect=OSError("no such file")))
         with pytest.raises(RuntimeError, match="cannot stat input file"):
             ad_remover.splice_audio("/missing.mp3", [{"start": 0.0, "end": 10.0}], "/out.mp3")
@@ -1071,6 +1137,7 @@ class TestSpliceAudioEdgeCases:
     def test_raises_runtime_error_for_tiny_file(self, monkeypatch):
         """Files smaller than 1 KB are rejected as corrupt (line 789)."""
         import ad_remover
+
         monkeypatch.setattr(os.path, "getsize", lambda p: 512)  # 512 bytes < 1 KB
         with pytest.raises(RuntimeError, match="suspiciously small"):
             ad_remover.splice_audio("/tiny.mp3", [{"start": 0.0, "end": 10.0}], "/out.mp3")
@@ -1078,6 +1145,7 @@ class TestSpliceAudioEdgeCases:
     def test_ffprobe_stderr_is_logged_but_does_not_fail(self, monkeypatch):
         """Non-empty ffprobe stderr is logged at DEBUG and does not block execution (line 804)."""
         import ad_remover
+
         monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
 
         run_calls = []
@@ -1100,6 +1168,7 @@ class TestSpliceAudioEdgeCases:
         import mutagen.mp3 as _mut
 
         import ad_remover
+
         monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
 
         def fake_run(cmd, **kwargs):
@@ -1121,6 +1190,7 @@ class TestBedrockModelTiering:
     def test_detect_uses_detect_model_id_when_set(self, monkeypatch):
         """BEDROCK_DETECT_MODEL_ID is used by detect_ads when set."""
         import ad_remover
+
         monkeypatch.setenv("BEDROCK_DETECT_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251015-v1:0")
         monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
@@ -1143,6 +1213,7 @@ class TestBedrockModelTiering:
     def test_detect_falls_back_to_bedrock_model_id_when_detect_not_set(self, monkeypatch):
         """detect_ads uses BEDROCK_MODEL_ID when BEDROCK_DETECT_MODEL_ID is absent."""
         import ad_remover
+
         monkeypatch.delenv("BEDROCK_DETECT_MODEL_ID", raising=False)
         monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
@@ -1161,7 +1232,6 @@ class TestBedrockModelTiering:
 
         assert called_model_ids[0] == "us.anthropic.claude-sonnet-4-6"
 
-
     def test_verify_uses_bedrock_model_id_not_detect_model_id(self, monkeypatch):
         """Bug fix: verification (second-pass) must use BEDROCK_MODEL_ID, not BEDROCK_DETECT_MODEL_ID.
 
@@ -1172,6 +1242,7 @@ class TestBedrockModelTiering:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         monkeypatch.setenv("BEDROCK_DETECT_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251015-v1:0")
         monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
@@ -1197,10 +1268,12 @@ class TestBedrockModelTiering:
             result = ad_remover.detect_ads(segments)
 
         assert call_count[0] == 2, "Should have made detection + verification calls"
-        assert called_model_ids[0] == "us.anthropic.claude-haiku-4-5-20251015-v1:0", \
+        assert called_model_ids[0] == "us.anthropic.claude-haiku-4-5-20251015-v1:0", (
             "Detection call must use BEDROCK_DETECT_MODEL_ID (haiku)"
-        assert called_model_ids[1] == "us.anthropic.claude-sonnet-4-6", \
+        )
+        assert called_model_ids[1] == "us.anthropic.claude-sonnet-4-6", (
             "Verification call must use BEDROCK_MODEL_ID (sonnet-4-6), not the detect model"
+        )
         assert len(result) == 1, "Confirmed ad should be in results"
 
     def test_verify_threshold_zero_verifies_all_segments(self, monkeypatch):
@@ -1213,6 +1286,7 @@ class TestBedrockModelTiering:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         monkeypatch.setenv("AD_VERIFY_THRESHOLD_SECS", "0")
         monkeypatch.setenv("MAX_AD_SEGMENT_SECS", "9999")
@@ -1250,9 +1324,7 @@ class TestTranscriptCache:
         import ad_remover
 
         mock_s3 = MagicMock()
-        mock_s3.get_object.side_effect = ClientError(
-            {"Error": {"Code": "NoSuchKey", "Message": ""}}, "GetObject"
-        )
+        mock_s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey", "Message": ""}}, "GetObject")
         result = ad_remover._load_transcript_cache(mock_s3, "my-bucket", "ep123")
         assert result is None
 
@@ -1264,9 +1336,7 @@ class TestTranscriptCache:
 
         segments = [{"start": 0.0, "end": 5.0, "text": "hello"}]
         mock_s3 = MagicMock()
-        mock_s3.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps(segments).encode())
-        }
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(segments).encode())}
         result = ad_remover._load_transcript_cache(mock_s3, "my-bucket", "ep123")
         assert result == segments
 
@@ -1277,9 +1347,7 @@ class TestTranscriptCache:
         import ad_remover
 
         mock_s3 = MagicMock()
-        mock_s3.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps({"not": "a list"}).encode())
-        }
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps({"not": "a list"}).encode())}
         result = ad_remover._load_transcript_cache(mock_s3, "my-bucket", "ep123")
         assert result is None
 
@@ -1296,6 +1364,7 @@ class TestTranscriptCache:
         assert call_kwargs["Bucket"] == "my-bucket"
         assert "ep456" in call_kwargs["Key"]
         import json
+
         assert json.loads(call_kwargs["Body"].decode()) == segments
 
     def test_save_swallows_exceptions(self, monkeypatch):
@@ -1319,9 +1388,7 @@ class TestTranscriptCache:
         cached = [{"start": 5.0, "end": 10.0, "text": "sponsored by"}]
 
         mock_s3 = MagicMock()
-        mock_s3.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps(cached).encode())
-        }
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(cached).encode())}
         mock_transcribe = MagicMock()
 
         def fake_client(service, **kw):
@@ -1344,9 +1411,7 @@ class TestTranscriptCache:
 
         # S3 would return a hit if consulted — but it should NOT be consulted
         mock_s3 = MagicMock()
-        mock_s3.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps([]).encode())
-        }
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps([]).encode())}
 
         # Transcribe returns COMPLETED immediately with a valid transcript
         transcript = {"results": {"items": []}}
@@ -1424,6 +1489,7 @@ class TestDirectionalSnap:
 
     def _snap(self, time, silences, window=3.0, prefer_earlier=False):
         import ad_remover
+
         return ad_remover._snap_to_silence_boundary(time, silences, window, prefer_earlier)
 
     def test_prefer_earlier_breaks_tie_towards_earlier_candidate(self):
@@ -1431,7 +1497,7 @@ class TestDirectionalSnap:
         silence A: end=97 (dist 3 from 100); silence B: start=103 (dist 3 from 100).
         """
         silences = [
-            {"start": 94.0, "end": 97.0},   # end at 97.0 — 3s before target
+            {"start": 94.0, "end": 97.0},  # end at 97.0 — 3s before target
             {"start": 103.0, "end": 106.0},  # start at 103.0 — 3s after target
         ]
         result = self._snap(100.0, silences, window=3.0, prefer_earlier=True)
@@ -1453,14 +1519,12 @@ class TestDirectionalSnap:
         import ad_remover
 
         silences = [
-            {"start": 94.0, "end": 97.0},   # end=97.0 — 3s before start at 100
+            {"start": 94.0, "end": 97.0},  # end=97.0 — 3s before start at 100
             {"start": 103.0, "end": 106.0},  # start=103.0 — 3s after start at 100
         ]
         monkeypatch.setattr(ad_remover, "detect_silence", lambda *a, **kw: silences)
 
-        result = ad_remover.snap_ad_boundaries(
-            [{"start": 100.0, "end": 200.0}], "/fake.mp3"
-        )
+        result = ad_remover.snap_ad_boundaries([{"start": 100.0, "end": 200.0}], "/fake.mp3")
         # Start should snap to 97.0 (earlier) not 103.0 (later)
         assert result[0]["start"] == 97.0
 
@@ -1476,9 +1540,7 @@ class TestDirectionalSnap:
         ]
         monkeypatch.setattr(ad_remover, "detect_silence", lambda *a, **kw: silences)
 
-        result = ad_remover.snap_ad_boundaries(
-            [{"start": 10.0, "end": 200.0}], "/fake.mp3"
-        )
+        result = ad_remover.snap_ad_boundaries([{"start": 10.0, "end": 200.0}], "/fake.mp3")
         # End should snap to 203.0 (later) not 197.0 (earlier)
         assert result[0]["end"] == 203.0
 
@@ -1488,6 +1550,7 @@ class TestLoudnorm:
 
     def _splice(self, monkeypatch, loudnorm_env, capture_cmd):
         import ad_remover
+
         monkeypatch.setenv("SPLICE_LOUDNORM", loudnorm_env)
         monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
 
@@ -1525,9 +1588,7 @@ class TestAdSegmentsCache:
         import ad_remover
 
         mock_s3 = MagicMock()
-        mock_s3.get_object.side_effect = ClientError(
-            {"Error": {"Code": "NoSuchKey", "Message": ""}}, "GetObject"
-        )
+        mock_s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey", "Message": ""}}, "GetObject")
         result = ad_remover._load_ad_segments_cache(mock_s3, "bucket", "ep1")
         assert result is None
 
@@ -1539,9 +1600,7 @@ class TestAdSegmentsCache:
 
         expected = [{"start": 10.0, "end": 50.0}]
         mock_s3 = MagicMock()
-        mock_s3.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps(expected).encode())
-        }
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(expected).encode())}
         result = ad_remover._load_ad_segments_cache(mock_s3, "bucket", "ep1")
         assert result == expected
 
@@ -1589,14 +1648,18 @@ class TestAdSegmentsCache:
 
         # splice_audio is called with the cached segments
         spliced_calls = []
+
         def fake_splice(mp3_path, segs, out_path):
             spliced_calls.append(segs)
             # create the output file so the path exists
             import pathlib
+
             pathlib.Path(out_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
-        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a: (_ for _ in ()).throw(AssertionError("should not transcribe")))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", lambda *a: (_ for _ in ()).throw(AssertionError("should not transcribe"))
+        )
 
         result_path, result_segs, _summary = ad_remover.remove_ads(str(src), "ep_cached", str(tmp_path))
 
@@ -1610,6 +1673,7 @@ class TestAdSegmentsCache:
 #           _extract_audio_window, _get_audio_duration)
 # ---------------------------------------------------------------------------
 
+
 class TestParseTranscribeWindows:
     """Unit tests for _parse_transcribe_windows."""
 
@@ -1617,42 +1681,50 @@ class TestParseTranscribeWindows:
 
     def test_absolute_range(self):
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("0:300", 3600.0)
         assert windows == [(0.0, 300.0)]
 
     def test_end_keyword(self):
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("0:end", 600.0)
         assert windows == [(0.0, 600.0)]
 
     def test_end_minus_offset(self):
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("end-120:end", 600.0)
         assert windows == [(480.0, 600.0)]
 
     def test_multiple_windows(self):
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("0:300,end-600:end", 3600.0)
         assert windows == [(0.0, 300.0), (3000.0, 3600.0)]
 
     def test_empty_string_returns_empty(self):
         from ad_remover import _parse_transcribe_windows
+
         assert _parse_transcribe_windows("", 3600.0) == []
 
     def test_degenerate_window_skipped(self):
         from ad_remover import _parse_transcribe_windows
+
         # start >= end → skipped
         windows = _parse_transcribe_windows("300:100", 3600.0)
         assert windows == []
 
     def test_invalid_entry_skipped(self):
         from ad_remover import _parse_transcribe_windows
+
         # no colon → invalid; valid entry still parsed
         windows = _parse_transcribe_windows("bad,0:60", 600.0)
         assert windows == [(0.0, 60.0)]
 
     def test_clamped_to_duration(self):
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("0:9999", 600.0)
         assert windows == [(0.0, 600.0)]
 
@@ -1660,6 +1732,7 @@ class TestParseTranscribeWindows:
 class TestGetAudioDuration:
     def test_returns_float_from_ffprobe(self, tmp_path):
         from ad_remover import _get_audio_duration
+
         fake_mp3 = tmp_path / "ep.mp3"
         fake_mp3.write_bytes(b"\xff\xfb" * 100)
 
@@ -1671,6 +1744,7 @@ class TestGetAudioDuration:
 
     def test_returns_zero_on_failure(self, tmp_path):
         from ad_remover import _get_audio_duration
+
         with patch("ad_remover.subprocess.run", side_effect=OSError("ffprobe not found")):
             assert _get_audio_duration("nonexistent.mp3") == 0.0
 
@@ -1678,6 +1752,7 @@ class TestGetAudioDuration:
 class TestExtractAudioWindow:
     def test_calls_ffmpeg_with_correct_args(self, tmp_path):
         from ad_remover import _extract_audio_window
+
         with patch("ad_remover.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stderr="")
             _extract_audio_window("input.mp3", 30.0, 120.0, "output.mp3")
@@ -1689,6 +1764,7 @@ class TestExtractAudioWindow:
 
     def test_raises_on_nonzero_returncode(self, tmp_path):
         from ad_remover import _extract_audio_window
+
         with patch("ad_remover.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stderr="error message")
             with pytest.raises(RuntimeError, match="ffmpeg window extract failed"):
@@ -1699,6 +1775,7 @@ class TestExtractAudioWindow:
 # Fix #8 – Per-podcast ad_hints injected into detection prompt
 # ---------------------------------------------------------------------------
 
+
 class TestDetectAdsWithHints:
     """Tests for ad_hints parameter in detect_ads (fix #8)."""
 
@@ -1707,9 +1784,7 @@ class TestDetectAdsWithHints:
 
     def _make_bedrock_response(self, payload: str):
         resp = MagicMock()
-        resp.__getitem__ = lambda s, k: {
-            "output": {"message": {"content": [{"text": payload}]}}
-        }[k]
+        resp.__getitem__ = lambda s, k: {"output": {"message": {"content": [{"text": payload}]}}}[k]
         return resp
 
     def test_hints_section_included_in_prompt(self):
@@ -1755,16 +1830,19 @@ class TestDetectAdsWithHints:
 # Windowed transcription (AD_TRANSCRIBE_WINDOWS) — lines 511-593
 # ---------------------------------------------------------------------------
 
+
 class TestWindowedTranscription:
     """transcribe_audio with AD_TRANSCRIBE_WINDOWS set processes sub-clips."""
 
     @staticmethod
     def _patch_boto3(monkeypatch, s3_client, transcribe_client):
         import boto3 as _boto3
+
         def fake_client(service, **kw):
             if service == "s3":
                 return s3_client
             return transcribe_client
+
         monkeypatch.setattr(_boto3, "client", fake_client)
 
     @staticmethod
@@ -1772,12 +1850,17 @@ class TestWindowedTranscription:
         transcript_data = {
             "results": {
                 "items": [
-                    {"type": "pronunciation", "start_time": "1.0", "end_time": "2.0",
-                     "alternatives": [{"content": "Hello"}]},
+                    {
+                        "type": "pronunciation",
+                        "start_time": "1.0",
+                        "end_time": "2.0",
+                        "alternatives": [{"content": "Hello"}],
+                    },
                 ]
             }
         }
         import json
+
         fake_resp = MagicMock()
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
@@ -1840,14 +1923,23 @@ class TestWindowedTranscription:
 
         # First window returns word at 5s; second at 1s (offset 3540 → 3541)
         def make_transcript(word, start, end):
-            return json.dumps({
-                "results": {"items": [
-                    {"type": "pronunciation", "start_time": str(start), "end_time": str(end),
-                     "alternatives": [{"content": word}]},
-                ]}
-            }).encode()
+            return json.dumps(
+                {
+                    "results": {
+                        "items": [
+                            {
+                                "type": "pronunciation",
+                                "start_time": str(start),
+                                "end_time": str(end),
+                                "alternatives": [{"content": word}],
+                            },
+                        ]
+                    }
+                }
+            ).encode()
 
         call_count = [0]
+
         def fake_urlopen(url, context=None):
             call_count[0] += 1
             resp = MagicMock()
@@ -1958,6 +2050,7 @@ class TestDetectMusicBookends:
 
     def test_no_segments_returns_empty(self):
         from ad_remover import detect_music_bookends
+
         assert detect_music_bookends([], "/fake.mp3") == []
 
     def test_intro_detected_when_gap_exceeds_min_and_has_audio(self, monkeypatch):
@@ -2057,6 +2150,7 @@ class TestDetectMusicBookends:
 # Coverage gap tests – uncovered branches in ad_remover.py
 # ---------------------------------------------------------------------------
 
+
 class TestRegionHasAudioZeroDuration:
     """Line 296: _region_has_audio returns False when region_dur <= 0."""
 
@@ -2069,9 +2163,7 @@ class TestRegionHasAudioZeroDuration:
         monkeypatch.setattr(ad_remover, "detect_silence", lambda p: [])
 
         # With first_speech=0 the intro region [0,0] has duration 0 → no intro
-        result = ad_remover.detect_music_bookends(
-            segments, "/fake.mp3", min_intro_secs=0.0, min_outro_secs=9999.0
-        )
+        result = ad_remover.detect_music_bookends(segments, "/fake.mp3", min_intro_secs=0.0, min_outro_secs=9999.0)
         # The check `first_speech >= min_intro_secs` is True (0 >= 0), but
         # _region_has_audio(0, 0) returns False → no intro appended
         assert not any(s.get("label") == "music_intro" for s in result)
@@ -2172,12 +2264,14 @@ class TestParseTranscribeWindowsEdgeCases:
     def test_trailing_comma_produces_empty_part_skipped(self):
         """A trailing comma produces an empty part that is silently skipped (line 532)."""
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("0:300,", 3600.0)
         assert windows == [(0.0, 300.0)]
 
     def test_end_plus_token(self):
         """end+N is clamped to total duration (line 545)."""
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("0:end+100", 600.0)
         # end+100 → min(600, 600+100) = 600
         assert windows == [(0.0, 600.0)]
@@ -2185,6 +2279,7 @@ class TestParseTranscribeWindowsEdgeCases:
     def test_unparseable_value_raises_valueerror_skipped(self):
         """Non-numeric value raises ValueError which is caught (lines 557–558)."""
         from ad_remover import _parse_transcribe_windows
+
         windows = _parse_transcribe_windows("abc:xyz,0:60", 600.0)
         # abc:xyz raises ValueError → skipped; 0:60 is valid
         assert windows == [(0.0, 60.0)]
@@ -2219,6 +2314,7 @@ class TestWindowedTranscriptionTimeout:
 
         def fake_client(service, **kw):
             return s3 if service == "s3" else tc
+
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=fake_client))
         monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
         monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
@@ -2246,8 +2342,12 @@ class TestWindowedTranscriptionCacheSave:
         transcript_data = {
             "results": {
                 "items": [
-                    {"type": "pronunciation", "start_time": "1.0", "end_time": "2.0",
-                     "alternatives": [{"content": "Hello"}]},
+                    {
+                        "type": "pronunciation",
+                        "start_time": "1.0",
+                        "end_time": "2.0",
+                        "alternatives": [{"content": "Hello"}],
+                    },
                 ]
             }
         }
@@ -2266,12 +2366,12 @@ class TestWindowedTranscriptionCacheSave:
         s3 = MagicMock()
         # No cached transcript (cache miss)
         from botocore.exceptions import ClientError
-        s3.get_object.side_effect = ClientError(
-            {"Error": {"Code": "NoSuchKey", "Message": "not found"}}, "GetObject"
-        )
+
+        s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey", "Message": "not found"}}, "GetObject")
 
         def fake_client(service, **kw):
             return s3 if service == "s3" else tc
+
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=fake_client))
         monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
         monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
@@ -2289,14 +2389,13 @@ class TestNarrowOversizedSegmentEmptyAndException:
     def _make_bedrock_empty(self):
         """Bedrock responds with empty array (no ads in oversized segment)."""
         client = MagicMock()
-        client.converse.return_value = {
-            "output": {"message": {"content": [{"text": "[]"}]}}
-        }
+        client.converse.return_value = {"output": {"message": {"content": [{"text": "[]"}]}}}
         return client
 
     def test_empty_narrowed_result_logged(self):
         """When Bedrock returns [] for narrowing, the function returns [] (line 1094)."""
         import ad_remover
+
         bedrock = self._make_bedrock_empty()
         segments = [{"start": 0.0, "end": 400.0, "text": "lots of content here"}]
         segment = {"start": 0.0, "end": 400.0}
@@ -2306,6 +2405,7 @@ class TestNarrowOversizedSegmentEmptyAndException:
     def test_exception_during_narrowing_returns_empty(self):
         """When Bedrock raises an exception during narrowing, [] is returned (lines 1100–1105)."""
         import ad_remover
+
         client = MagicMock()
         client.converse.side_effect = RuntimeError("Bedrock unavailable")
         segments = [{"start": 0.0, "end": 400.0, "text": "lots of content"}]
@@ -2322,10 +2422,7 @@ class TestDetectAdsNarrowedValidSubsegment:
         import ad_remover
 
         # Create segments that will produce an oversized ad detection
-        segments = [
-            {"start": float(i * 5), "end": float(i * 5 + 4), "text": f"ad content {i}"}
-            for i in range(10)
-        ]
+        segments = [{"start": float(i * 5), "end": float(i * 5 + 4), "text": f"ad content {i}"} for i in range(10)]
 
         call_count = [0]
 
@@ -2378,6 +2475,7 @@ class TestSpliceAudioMutagenFallback:
 
         # Mock mutagen to return a duration
         import mutagen.mp3 as _mut
+
         mock_mp3 = MagicMock()
         mock_mp3.info.length = 300.0
         monkeypatch.setattr(_mut, "MP3", MagicMock(return_value=mock_mp3))
@@ -2435,7 +2533,9 @@ class TestRemoveAdsCachedPaths:
 
         s3.get_object.side_effect = fake_get
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a: (_ for _ in ()).throw(AssertionError("should not transcribe")))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", lambda *a: (_ for _ in ()).throw(AssertionError("should not transcribe"))
+        )
 
         path, segs, summary = ad_remover.remove_ads(str(src), "ep_empty_cached", str(tmp_path))
         assert path == str(src)
@@ -2526,9 +2626,11 @@ class TestRemoveAdsCachedPaths:
         s3.get_object.side_effect = fake_get
 
         spliced = []
+
         def fake_splice(mp3_path, segs, out_path):
             spliced.append(segs)
             import pathlib
+
             pathlib.Path(out_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
@@ -2568,10 +2670,13 @@ class TestRemoveAdsCachedPaths:
 
         def fake_splice(mp3_path, segs, out_path):
             import pathlib
+
             pathlib.Path(out_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
-        monkeypatch.setattr(ad_remover, "detect_music_bookends", MagicMock(side_effect=RuntimeError("detection failed")))
+        monkeypatch.setattr(
+            ad_remover, "detect_music_bookends", MagicMock(side_effect=RuntimeError("detection failed"))
+        )
         monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path, **kw: segs)
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
 
@@ -2595,17 +2700,21 @@ class TestRemoveAdsSaveAdSegmentsCache:
 
         s3 = MagicMock()
         from botocore.exceptions import ClientError
+
         # No cached ads
         s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
 
         detected_ads = [{"start": 10.0, "end": 40.0}]
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=detected_ads))
         monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path, **kw: segs)
 
         def fake_splice(mp3_path, segs, out_path):
             import pathlib
+
             pathlib.Path(out_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
@@ -2630,13 +2739,18 @@ class TestRemoveAdsMusicBookendOnFreshPath:
         src.write_bytes(b"\xff\xfb" * 100)
 
         detected_ads = [{"start": 10.0, "end": 40.0}]
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 5.0, "end": 10.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 5.0, "end": 10.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=detected_ads))
-        monkeypatch.setattr(ad_remover, "detect_music_bookends", MagicMock(side_effect=RuntimeError("music detect crash")))
+        monkeypatch.setattr(
+            ad_remover, "detect_music_bookends", MagicMock(side_effect=RuntimeError("music detect crash"))
+        )
         monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path, **kw: segs)
 
         def fake_splice(mp3_path, segs, out_path):
             import pathlib
+
             pathlib.Path(out_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
@@ -2651,6 +2765,7 @@ class TestRemoveAdsGenerateSummaryPaths:
 
     def _make_s3(self):
         from botocore.exceptions import ClientError
+
         s3 = MagicMock()
         # summary cache miss
         s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
@@ -2669,10 +2784,13 @@ class TestRemoveAdsGenerateSummaryPaths:
 
         s3 = self._make_s3()
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
 
         import sys
+
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.return_value = "Great episode!"
         monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
@@ -2693,10 +2811,13 @@ class TestRemoveAdsGenerateSummaryPaths:
 
         s3 = self._make_s3()
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
 
         import sys
+
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.side_effect = RuntimeError("summary failed")
         monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
@@ -2717,17 +2838,21 @@ class TestRemoveAdsGenerateSummaryPaths:
 
         s3 = self._make_s3()
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 40.0}]))
         monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path, **kw: segs)
 
         def fake_splice(mp3_path, segs, out_path):
             import pathlib
+
             pathlib.Path(out_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
 
         import sys
+
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.return_value = "Spliced episode summary!"
         monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
@@ -2747,17 +2872,21 @@ class TestRemoveAdsGenerateSummaryPaths:
 
         s3 = self._make_s3()
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=s3)))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 40.0}]))
         monkeypatch.setattr(ad_remover, "snap_ad_boundaries", lambda segs, path, **kw: segs)
 
         def fake_splice(mp3_path, segs, out_path):
             import pathlib
+
             pathlib.Path(out_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
 
         import sys
+
         fake_summary_mod = MagicMock()
         fake_summary_mod.generate_episode_summary.side_effect = RuntimeError("summariser crashed")
         monkeypatch.setitem(sys.modules, "summary_generator", fake_summary_mod)
@@ -2772,17 +2901,20 @@ class TestPromptImprovements:
     def test_no_boundary_padding_rule(self):
         """Change 2: Rule 2 about extending start/end times is removed."""
         import ad_remover
+
         assert "Extend each segment" not in ad_remover._AD_DETECTION_PROMPT
 
     def test_negative_examples_section_present(self):
         """Change 5: 'What is NOT an ad' section exists with subscribe example."""
         import ad_remover
+
         assert "What is NOT an ad" in ad_remover._AD_DETECTION_PROMPT
         assert "subscribe" in ad_remover._AD_DETECTION_PROMPT
 
     def test_hints_section_before_rules(self):
         """Change 8: {hints_section} appears before '## Rules' in the prompt."""
         import ad_remover
+
         hints_pos = ad_remover._AD_DETECTION_PROMPT.index("{hints_section}")
         rules_pos = ad_remover._AD_DETECTION_PROMPT.index("## Rules")
         assert hints_pos < rules_pos
@@ -2792,9 +2924,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": "]"}]}}}
@@ -2815,9 +2949,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": "]"}]}}}
@@ -2838,9 +2974,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": "]"}]}}}
@@ -2849,7 +2987,10 @@ class TestPromptImprovements:
         mock_client.converse.side_effect = fake_converse
 
         seg = {"start": 100.0, "end": 400.0}
-        segs = [{"start": 100.0, "end": 200.0, "text": "some text"}, {"start": 200.0, "end": 400.0, "text": "more text"}]
+        segs = [
+            {"start": 100.0, "end": 200.0, "text": "some text"},
+            {"start": 200.0, "end": 400.0, "text": "more text"},
+        ]
 
         with patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
             ad_remover._narrow_oversized_segment(seg, segs, mock_client, "test-model")
@@ -2863,9 +3004,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": "]"}]}}}
@@ -2887,9 +3030,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": '"is_ad": true, "reason": "test"}'}]}}}
@@ -2912,9 +3057,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": '"is_ad": true, "reason": "x"}'}]}}}
@@ -2936,9 +3083,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": "]"}]}}}
@@ -2961,9 +3110,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": '"is_ad": true, "reason": "x"}'}]}}}
@@ -2986,9 +3137,11 @@ class TestPromptImprovements:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         captured_kwargs = []
+
         def fake_converse(**kwargs):
             captured_kwargs.append(kwargs)
             return {"output": {"message": {"content": [{"text": "]"}]}}}
@@ -3016,6 +3169,7 @@ class TestAdSegmentsCacheSave:
     def test_save_ad_segments_cache_empty_list_not_saved(self):
         """_save_ad_segments_cache must NOT write to S3 when ad_segments is empty."""
         from ad_remover import _save_ad_segments_cache
+
         mock_s3 = MagicMock()
         _save_ad_segments_cache(mock_s3, "my-bucket", "vid123", [])
         mock_s3.put_object.assert_not_called()
@@ -3023,6 +3177,7 @@ class TestAdSegmentsCacheSave:
     def test_save_ad_segments_cache_non_empty_list_saved(self):
         """_save_ad_segments_cache must write to S3 when ad_segments is non-empty."""
         from ad_remover import _save_ad_segments_cache
+
         mock_s3 = MagicMock()
         _save_ad_segments_cache(mock_s3, "my-bucket", "vid123", [{"start": 10.0, "end": 45.0}])
         mock_s3.put_object.assert_called_once()
@@ -3035,11 +3190,13 @@ class TestAdSegmentsCacheSave:
 # _generate_summary — duration guard (SUMMARY_MAX_DURATION_SECS)
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateSummaryDurationGuard:
     """Tests for the SUMMARY_MAX_DURATION_SECS duration guard in _generate_summary."""
 
     def _make_s3_cache_miss(self):
         from botocore.exceptions import ClientError
+
         s3 = MagicMock()
         s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
         return s3
@@ -3053,6 +3210,7 @@ class TestGenerateSummaryDurationGuard:
     def test_skips_when_duration_exceeds_max(self, monkeypatch):
         """Summary is skipped when duration_secs > SUMMARY_MAX_DURATION_SECS."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
@@ -3070,6 +3228,7 @@ class TestGenerateSummaryDurationGuard:
     def test_runs_when_duration_at_max(self, monkeypatch):
         """Summary is generated when duration_secs == SUMMARY_MAX_DURATION_SECS."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
@@ -3085,6 +3244,7 @@ class TestGenerateSummaryDurationGuard:
     def test_runs_when_duration_is_none(self, monkeypatch):
         """Guard is bypassed when duration_secs is None."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "1800")
@@ -3100,6 +3260,7 @@ class TestGenerateSummaryDurationGuard:
     def test_guard_disabled_when_max_is_zero(self, monkeypatch):
         """SUMMARY_MAX_DURATION_SECS=0 disables the guard for any episode length."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "0")
@@ -3115,6 +3276,7 @@ class TestGenerateSummaryDurationGuard:
     def test_invalid_max_duration_uses_default_1800(self, monkeypatch):
         """Non-numeric SUMMARY_MAX_DURATION_SECS falls back to 1800s instead of crashing."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "30min")  # invalid — not a number
@@ -3132,6 +3294,7 @@ class TestGenerateSummaryDurationGuard:
     def test_invalid_max_duration_skips_long_episodes(self, monkeypatch):
         """With invalid SUMMARY_MAX_DURATION_SECS, the 1800 s default is enforced."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("SUMMARY_MAX_DURATION_SECS", "none")  # invalid
@@ -3150,6 +3313,7 @@ class TestGenerateSummaryDurationGuard:
     def test_episode_title_forwarded_to_generator(self, monkeypatch):
         """Human-readable title (not video_id) is passed to generate_episode_summary."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
@@ -3167,6 +3331,7 @@ class TestGenerateSummaryDurationGuard:
     def test_falls_back_to_video_id_when_title_empty(self, monkeypatch):
         """video_id is used as title fallback when episode_title is empty."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=self._make_s3_cache_miss())))
@@ -3184,12 +3349,14 @@ class TestGenerateSummaryDurationGuard:
 # remove_ads — episode_title and duration_secs forwarded to _generate_summary
 # ---------------------------------------------------------------------------
 
+
 class TestRemoveAdsSummaryParams:
     """Verify remove_ads passes episode_title and duration_secs to _generate_summary."""
 
     def test_params_forwarded_no_ads(self, monkeypatch, tmp_path):
         """episode_title and duration_secs reach _generate_summary (no-ads path)."""
         import ad_remover
+
         monkeypatch.delenv("TRANSCRIBE_CACHE_ENABLED", raising=False)
         src = tmp_path / "ep.mp3"
         src.write_bytes(b"\xff\xfb" * 100)
@@ -3202,12 +3369,16 @@ class TestRemoveAdsSummaryParams:
             return ""
 
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=MagicMock())))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[]))
         monkeypatch.setattr(ad_remover, "_generate_summary", fake_generate)
 
         ad_remover.remove_ads(
-            str(src), "ep-fwd", str(tmp_path),
+            str(src),
+            "ep-fwd",
+            str(tmp_path),
             episode_title="Forwarded Title",
             duration_secs=900.0,
         )
@@ -3217,6 +3388,7 @@ class TestRemoveAdsSummaryParams:
     def test_params_forwarded_after_splice(self, monkeypatch, tmp_path):
         """episode_title and duration_secs reach _generate_summary (post-splice path)."""
         import ad_remover
+
         monkeypatch.delenv("TRANSCRIBE_CACHE_ENABLED", raising=False)
         monkeypatch.setenv("AD_SNAP_TO_SILENCE", "false")
         src = tmp_path / "ep.mp3"
@@ -3231,16 +3403,21 @@ class TestRemoveAdsSummaryParams:
 
         def fake_splice(mp3, segs, out):
             import pathlib
+
             pathlib.Path(out).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=MagicMock(return_value=MagicMock())))
-        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}]))
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 5.0, "text": "hi"}])
+        )
         monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 10.0, "end": 40.0}]))
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
         monkeypatch.setattr(ad_remover, "_generate_summary", fake_generate)
 
         ad_remover.remove_ads(
-            str(src), "ep-fwd-splice", str(tmp_path),
+            str(src),
+            "ep-fwd-splice",
+            str(tmp_path),
             episode_title="Spliced Episode",
             duration_secs=1500.0,
         )
@@ -3252,12 +3429,14 @@ class TestRemoveAdsSummaryParams:
 # Cached path — summary generation
 # ---------------------------------------------------------------------------
 
+
 class TestCachedPathSummaryGeneration:
     """Tests that the cached ad-segment path generates summaries correctly."""
 
     def _s3_with_cached_data(self, ads: list, transcript: list | None = None):
         """S3 mock routing get_object by key suffix."""
         from botocore.exceptions import ClientError
+
         s3 = MagicMock()
         _transcript = transcript or []
 
@@ -3276,6 +3455,7 @@ class TestCachedPathSummaryGeneration:
     def test_cached_splice_success_generates_summary(self, monkeypatch, tmp_path):
         """After a successful cached-path splice, summary is generated from transcript."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
@@ -3292,6 +3472,7 @@ class TestCachedPathSummaryGeneration:
 
         def fake_splice(mp3, segs, out):
             import pathlib
+
             pathlib.Path(out).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
@@ -3300,7 +3481,9 @@ class TestCachedPathSummaryGeneration:
         mod.generate_episode_summary.return_value = "Cached splice summary"
         monkeypatch.setitem(sys.modules, "summary_generator", mod)
         _, _, summary = ad_remover.remove_ads(
-            str(src), "ep-cached-splice-sum", str(tmp_path),
+            str(src),
+            "ep-cached-splice-sum",
+            str(tmp_path),
             episode_title="Cached Episode",
             duration_secs=900.0,
         )
@@ -3309,6 +3492,7 @@ class TestCachedPathSummaryGeneration:
     def test_cached_splice_failure_generates_summary(self, monkeypatch, tmp_path):
         """After a cached-path splice failure, summary is still generated."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
@@ -3329,7 +3513,9 @@ class TestCachedPathSummaryGeneration:
         mod.generate_episode_summary.return_value = "Summary despite failure"
         monkeypatch.setitem(sys.modules, "summary_generator", mod)
         path, _, summary = ad_remover.remove_ads(
-            str(src), "ep-cached-fail-sum", str(tmp_path),
+            str(src),
+            "ep-cached-fail-sum",
+            str(tmp_path),
             episode_title="Failing Episode",
             duration_secs=900.0,
         )
@@ -3339,6 +3525,7 @@ class TestCachedPathSummaryGeneration:
     def test_cached_path_duration_guard_skips_summary(self, monkeypatch, tmp_path):
         """Duration guard prevents summary on cached path when episode is too long."""
         import ad_remover
+
         monkeypatch.setenv("GENERATE_SUMMARIES", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
@@ -3356,6 +3543,7 @@ class TestCachedPathSummaryGeneration:
 
         def fake_splice(mp3, segs, out):
             import pathlib
+
             pathlib.Path(out).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
@@ -3364,7 +3552,9 @@ class TestCachedPathSummaryGeneration:
         mod.generate_episode_summary.return_value = "Should not appear"
         monkeypatch.setitem(sys.modules, "summary_generator", mod)
         _, _, summary = ad_remover.remove_ads(
-            str(src), "ep-cached-long", str(tmp_path),
+            str(src),
+            "ep-cached-long",
+            str(tmp_path),
             episode_title="Long Episode",
             duration_secs=7200.0,  # 2 hours > 1800s guard
         )
@@ -3374,6 +3564,7 @@ class TestCachedPathSummaryGeneration:
     def test_cached_path_no_summary_when_disabled(self, monkeypatch, tmp_path):
         """When GENERATE_SUMMARIES=false (default), cached path returns '' for summary."""
         import ad_remover
+
         monkeypatch.delenv("GENERATE_SUMMARIES", raising=False)
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
         monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
@@ -3387,16 +3578,13 @@ class TestCachedPathSummaryGeneration:
 
         def fake_splice(mp3, segs, out):
             import pathlib
+
             pathlib.Path(out).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "splice_audio", fake_splice)
 
-        _, _, summary = ad_remover.remove_ads(
-            str(src), "ep-cached-no-gen", str(tmp_path)
-        )
+        _, _, summary = ad_remover.remove_ads(str(src), "ep-cached-no-gen", str(tmp_path))
         assert summary == ""
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -3410,6 +3598,7 @@ class TestSpliceConcatDemuxer:
     def test_fallback_called_on_sigsegv(self, monkeypatch, tmp_path):
         """splice_audio triggers _splice_concat_demuxer on ffmpeg exit -11."""
         import subprocess
+
         import ad_remover
 
         src = tmp_path / "ep.mp3"
@@ -3429,6 +3618,7 @@ class TestSpliceConcatDemuxer:
         def fake_fallback(mp3_path, keep, output_path):
             fallback_called.append((mp3_path, keep, output_path))
             import pathlib
+
             pathlib.Path(output_path).write_bytes(b"cleaned")
 
         monkeypatch.setattr(ad_remover, "_splice_concat_demuxer", fake_fallback)
@@ -3449,8 +3639,10 @@ class TestSpliceConcatDemuxer:
     def test_non_sigsegv_not_swallowed(self, monkeypatch, tmp_path):
         """splice_audio re-raises CalledProcessError for non-SIGSEGV exit codes."""
         import subprocess
-        import ad_remover
+
         import pytest
+
+        import ad_remover
 
         src = tmp_path / "ep.mp3"
         src.write_bytes(b"\xff\xfb" * 5000)
@@ -3474,10 +3666,12 @@ class TestSpliceConcatDemuxer:
 
     def test_concat_demuxer_cleans_up_on_error(self, monkeypatch, tmp_path):
         """_splice_concat_demuxer removes segment files even when join fails."""
-        import subprocess
-        import ad_remover
-        import pytest
         import pathlib
+        import subprocess
+
+        import pytest
+
+        import ad_remover
 
         src = tmp_path / "ep.mp3"
         src.write_bytes(b"\xff\xfb" * 5000)

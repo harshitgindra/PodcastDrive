@@ -70,8 +70,7 @@ def process_playlist(
 
     if sleep_between < 0:
         raise ValueError(
-            f"sleep_between must be >= 0, got {sleep_between}. "
-            "Set SLEEP_BETWEEN_DOWNLOADS=0 to disable sleeping."
+            f"sleep_between must be >= 0, got {sleep_between}. Set SLEEP_BETWEEN_DOWNLOADS=0 to disable sleeping."
         )
 
     if dry_run:
@@ -79,7 +78,10 @@ def process_playlist(
 
     logger.info(
         "[Config] max_downloads=%d  max_age_days=%d  sleep_between=%ds  dry_run=%s",
-        max_downloads, max_age_days, sleep_between, dry_run,
+        max_downloads,
+        max_age_days,
+        sleep_between,
+        dry_run,
     )
 
     playlist_id = extract_playlist_id(playlist_url)
@@ -89,7 +91,6 @@ def process_playlist(
     manifest = s3.load_manifest()
 
     try:
-
         # --- Step 1: Flat-extract playlist ---
         logger.info("[Step 1] Extracting playlist for %s", playlist_id)
         playlist_meta, video_entries = extract_playlist(playlist_url)
@@ -116,9 +117,7 @@ def process_playlist(
                 continue
             if v.live_status in _SKIP_STATUSES:
                 skipped_upcoming += 1
-                logger.debug(
-                    "[Step 3] Skipping %s — live_status=%r", v.video_id, v.live_status
-                )
+                logger.debug("[Step 3] Skipping %s — live_status=%r", v.video_id, v.live_status)
                 continue
             if not v.duration or v.duration <= 0:
                 skipped_no_duration += 1
@@ -128,7 +127,10 @@ def process_playlist(
 
         logger.info(
             "[Step 3] %d candidates to download (skipped %d existing, %d live streams, %d upcoming)",
-            len(candidates), skipped_existing, skipped_no_duration, skipped_upcoming,
+            len(candidates),
+            skipped_existing,
+            skipped_no_duration,
+            skipped_upcoming,
         )
         for i, c in enumerate(candidates):
             logger.info("[Step 3]   %d. %s (duration=%ss)", i + 1, c.video_id, int(c.duration or 0))
@@ -143,7 +145,9 @@ def process_playlist(
         for i, video in enumerate(candidates):
             logger.info(
                 "[Step 4] --- Processing %d/%d: %s ---",
-                i + 1, len(candidates), video.video_id,
+                i + 1,
+                len(candidates),
+                video.video_id,
             )
 
             try:
@@ -175,7 +179,8 @@ def process_playlist(
                         skipped_upcoming += 1
                         logger.info(
                             "[Step 4] Skipping %s — not yet available (live_status=%r)",
-                            video.video_id, meta_live_status,
+                            video.video_id,
+                            meta_live_status,
                         )
                         continue
 
@@ -185,14 +190,17 @@ def process_playlist(
                         skipped_old += 1
                         logger.info(
                             "[Step 4] Skipping %s — published %s, older than %d days",
-                            video.video_id, video.upload_date, max_age_days,
+                            video.video_id,
+                            video.upload_date,
+                            max_age_days,
                         )
                         continue
 
                 if dry_run:
                     logger.info(
                         "[DRY-RUN] Would download, remove ads, and upload %s: %s",
-                        video.video_id, video.title,
+                        video.video_id,
+                        video.title,
                     )
                     new_count += 1
                     continue
@@ -200,14 +208,18 @@ def process_playlist(
                 # Download audio
                 logger.info("[Step 4] Downloading %s: %s", video.video_id, video.title)
                 mp3_path = download_and_convert(
-                    video.webpage_url, video.video_id, tmp_dir,
+                    video.webpage_url,
+                    video.video_id,
+                    tmp_dir,
                 )
 
                 # Remove ads (falls back to original file on failure)
                 logger.info("[Step 4] Running ad removal for %s", video.video_id)
                 original_mp3 = mp3_path
                 mp3_path, ad_segments, episode_summary = remove_ads(
-                    mp3_path, video.video_id, tmp_dir,
+                    mp3_path,
+                    video.video_id,
+                    tmp_dir,
                     episode_title=video.title,
                     duration_secs=video.duration,
                 )
@@ -223,6 +235,7 @@ def process_playlist(
                 if mp3_path != original_mp3:
                     try:
                         from ad_evaluator import evaluate_ad_removal
+
                         evaluate_ad_removal(
                             cleaned_mp3=mp3_path,
                             episode_id=video.video_id,
@@ -247,7 +260,8 @@ def process_playlist(
                 bot_detected = True
                 logger.error(
                     "[Step 4] BOT DETECTION: YouTube is blocking requests. "
-                    "All remaining candidates will be skipped. Error: %s", bde,
+                    "All remaining candidates will be skipped. Error: %s",
+                    bde,
                 )
                 break
 
@@ -257,7 +271,10 @@ def process_playlist(
 
         logger.info(
             "[Step 4] Download phase complete: %d new, %d skipped (old), %d unavailable, %d failed",
-            new_count, skipped_old, skipped_unavailable, failed_count,
+            new_count,
+            skipped_old,
+            skipped_unavailable,
+            failed_count,
         )
 
         # Persist manifest with ads_removed metadata
@@ -271,7 +288,11 @@ def process_playlist(
         else:
             logger.info("[Step 5] Starting reconciliation...")
             _reconcile(
-                s3, video_entries, cloudfront_base, playlist_id, playlist_meta,
+                s3,
+                video_entries,
+                cloudfront_base,
+                playlist_id,
+                playlist_meta,
                 manifest=manifest,
             )
             final_keys = s3.list_existing_episodes()
@@ -280,7 +301,13 @@ def process_playlist(
         log_fn = logger.error if bot_detected else logger.info
         log_fn(
             "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d failed=%d bot_detected=%s total_s3=%d elapsed=%.1fs",
-            playlist_id, new_count, skipped_old, failed_count, bot_detected, len(final_keys), elapsed,
+            playlist_id,
+            new_count,
+            skipped_old,
+            failed_count,
+            bot_detected,
+            len(final_keys),
+            elapsed,
         )
 
         return {
@@ -314,7 +341,11 @@ def _rebuild_feed(
     if manifest:
         ads_removed_ids = {k for k, v in manifest.items() if isinstance(v, dict) and v.get("ads_removed")}
     episodes = build_episode_metadata(
-        video_entries, final_keys, cloudfront_base, playlist_id, s3,
+        video_entries,
+        final_keys,
+        cloudfront_base,
+        playlist_id,
+        s3,
         ads_removed_ids=ads_removed_ids,
         manifest=manifest,
     )
@@ -330,7 +361,8 @@ def _rebuild_feed(
     elif len(episodes) != len(final_keys):
         logger.warning(
             "[Feed] MISMATCH: feed=%d, S3=%d (some episodes may be missing from playlist extraction)",
-            len(episodes), len(final_keys),
+            len(episodes),
+            len(final_keys),
         )
 
     return len(episodes)
@@ -370,10 +402,31 @@ def _reconcile(
     if orphaned_files:
         logger.info("[Reconcile] Deleted %d orphaned files", len(orphaned_files))
 
-    # Pass remaining keys to avoid a redundant S3 list call inside _rebuild_feed
+    # Prune manifest entries that are neither in S3 nor in the current playlist.
+    # Episodes recently uploaded will be in S3; episodes still in the playlist
+    # might be re-downloaded on a future run. Only prune entries that are truly
+    # orphaned from both sources.
     remaining_keys = s3_keys - orphaned_files
+    if manifest:
+        playlist_ids_set = {v.video_id for v in video_entries}
+        stale_manifest_keys = set(manifest.keys()) - remaining_keys - playlist_ids_set
+        if stale_manifest_keys:
+            for k in stale_manifest_keys:
+                del manifest[k]
+            s3.save_manifest(manifest)
+            logger.info(
+                "[Reconcile] Pruned %d stale manifest entries (no longer in S3 or playlist)",
+                len(stale_manifest_keys),
+            )
+
+    # Pass remaining keys to avoid a redundant S3 list call inside _rebuild_feed
     ep_count = _rebuild_feed(
-        s3, video_entries, cloudfront_base, playlist_id, playlist_meta,
-        manifest=manifest, existing_keys=remaining_keys,
+        s3,
+        video_entries,
+        cloudfront_base,
+        playlist_id,
+        playlist_meta,
+        manifest=manifest,
+        existing_keys=remaining_keys,
     )
     logger.info("[Reconcile] Done. Feed has %d entries", ep_count)

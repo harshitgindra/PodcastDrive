@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Helpers shared across tests
 # ---------------------------------------------------------------------------
 
+
 def _make_segments(*pairs: tuple[float, float, str]) -> list[dict]:
     """Build transcript segment dicts from (start, end, text) triples."""
     return [{"start": s, "end": e, "text": t} for s, e, t in pairs]
@@ -41,11 +42,13 @@ def _bedrock_response(text: str) -> dict:
 # Fix #1 – Timestamp coordinate translation
 # ---------------------------------------------------------------------------
 
+
 class TestTranslateCleanedToOriginal:
     """_translate_cleaned_to_original converts cleaned timestamps → original space."""
 
     def _fn(self):
         from ad_evaluator import _translate_cleaned_to_original
+
         return _translate_cleaned_to_original
 
     def test_no_removed_segments_is_identity(self):
@@ -95,7 +98,7 @@ class TestTranslateCleanedToOriginal:
         orig_end = fn(131.6, removed)
 
         assert abs(orig_start - 141.5) < 0.5  # 139.6 + (95.3-93.4) = 141.5
-        assert abs(orig_end - 177.8) < 0.5    # 139.6 + (131.6-93.4) = 177.8
+        assert abs(orig_end - 177.8) < 0.5  # 139.6 + (131.6-93.4) = 177.8
 
     def test_lljpnubsowc_scenario(self):
         """Reproduce the LLjpnubsOWc missed-second-ad case.
@@ -124,11 +127,16 @@ class TestTranslateCleanedToOriginal:
         # cleaned 120 → original 170, cleaned 140 → original 190
         residual_segs = [{"start": 120.0, "end": 140.0}]
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=residual_segs):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]),
+            patch("ad_remover.detect_ads", return_value=residual_segs),
+        ):
             from ad_evaluator import evaluate_ad_removal
+
             report = evaluate_ad_removal(
-                "fake.mp3", "ep-001", "slug",
+                "fake.mp3",
+                "ep-001",
+                "slug",
                 original_ad_segments=removed,
                 reports_dir=str(tmp_path),
             )
@@ -139,29 +147,34 @@ class TestTranslateCleanedToOriginal:
         assert "original_time_start" in r
         assert "original_time_end" in r
         assert abs(r["original_time_start"] - 170.0) < 0.1  # 150+(120-100)
-        assert abs(r["original_time_end"] - 190.0) < 0.1    # 150+(140-100)
+        assert abs(r["original_time_end"] - 190.0) < 0.1  # 150+(140-100)
 
 
 # ---------------------------------------------------------------------------
 # Fix #2 – Max ad duration guard
 # ---------------------------------------------------------------------------
 
+
 class TestMaxAdDurationGuard:
     """detect_ads drops segments that exceed MAX_AD_SEGMENT_SECS."""
 
-    def _run_detect(self, monkeypatch, bedrock_json: str, max_secs: str = "180",
-                    verify_threshold: str = "9999") -> list[dict]:
+    def _run_detect(
+        self, monkeypatch, bedrock_json: str, max_secs: str = "180", verify_threshold: str = "9999"
+    ) -> list[dict]:
         monkeypatch.setenv("MAX_AD_SEGMENT_SECS", max_secs)
         monkeypatch.setenv("AD_VERIFY_THRESHOLD_SECS", verify_threshold)
 
         mock_bedrock = MagicMock()
         mock_bedrock.converse.return_value = _bedrock_response(bedrock_json)
 
-        with patch("boto3.client", return_value=mock_bedrock), \
-             patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("boto3.client", return_value=mock_bedrock),
+            patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             import importlib
 
             import ad_remover
+
             importlib.reload(ad_remover)
             segs = _make_segments((0.0, 5.0, "intro"), (10.0, 15.0, "more"))
             return ad_remover.detect_ads(segs)
@@ -222,6 +235,7 @@ class TestMaxAdDurationGuard:
 # Fix #3 – Merge gap reduced, prompt rule updated
 # ---------------------------------------------------------------------------
 
+
 class TestMergeGapReduced:
     """_merge_overlapping_ads uses a 2s gap (was 5s)."""
 
@@ -229,6 +243,7 @@ class TestMergeGapReduced:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         return ad_remover._merge_overlapping_ads(ads)
 
@@ -264,6 +279,7 @@ class TestMergeGapReduced:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         prompt = ad_remover._AD_DETECTION_PROMPT
         # Model should NOT merge — code does it with a calibrated 2s threshold
@@ -276,6 +292,7 @@ class TestMergeGapReduced:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         prompt = ad_remover._AD_DETECTION_PROMPT
         assert "When in doubt, INCLUDE" not in prompt
@@ -285,15 +302,17 @@ class TestMergeGapReduced:
 # Fix #4 – Second-pass verification
 # ---------------------------------------------------------------------------
 
+
 class TestSecondPassVerification:
     """_verify_ad_segment and its integration in detect_ads."""
 
-    def _verify(self, is_ad_response: bool, monkeypatch,
-                 segment: dict | None = None,
-                 transcript_segs: list | None = None) -> bool:
+    def _verify(
+        self, is_ad_response: bool, monkeypatch, segment: dict | None = None, transcript_segs: list | None = None
+    ) -> bool:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         seg = segment or {"start": 100.0, "end": 250.0}
@@ -318,6 +337,7 @@ class TestSecondPassVerification:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         mock_bedrock = MagicMock()
@@ -345,6 +365,7 @@ class TestSecondPassVerification:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         segs = _make_segments((50.0, 55.0, "intro"), (200.0, 205.0, "content"))
@@ -358,8 +379,10 @@ class TestSecondPassVerification:
             _bedrock_response(verify_json),
         ]
 
-        with patch("boto3.client", return_value=mock_bedrock), \
-             patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("boto3.client", return_value=mock_bedrock),
+            patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             result = ad_remover.detect_ads(segs)
 
         # Verification was called (two Bedrock calls total)
@@ -374,6 +397,7 @@ class TestSecondPassVerification:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         segs = _make_segments((100.0, 110.0, "discussion"))
@@ -386,8 +410,10 @@ class TestSecondPassVerification:
             _bedrock_response(reject_json),
         ]
 
-        with patch("boto3.client", return_value=mock_bedrock), \
-             patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("boto3.client", return_value=mock_bedrock),
+            patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             result = ad_remover.detect_ads(segs)
 
         assert result == [], "Rejected segment should not appear in results"
@@ -400,6 +426,7 @@ class TestSecondPassVerification:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         segs = _make_segments((10.0, 20.0, "ad text"))
@@ -408,8 +435,10 @@ class TestSecondPassVerification:
         mock_bedrock = MagicMock()
         mock_bedrock.converse.return_value = _bedrock_response(detection_json)
 
-        with patch("boto3.client", return_value=mock_bedrock), \
-             patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("boto3.client", return_value=mock_bedrock),
+            patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             result = ad_remover.detect_ads(segs)
 
         # Only one call (detection), no verification
@@ -421,6 +450,7 @@ class TestSecondPassVerification:
 # Fix #5 – Silence-based boundary snapping
 # ---------------------------------------------------------------------------
 
+
 class TestSilenceBoundarySnapping:
     """detect_silence, _snap_to_silence_boundary, snap_ad_boundaries."""
 
@@ -429,6 +459,7 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         fake_result = MagicMock(stderr=stderr_text)
@@ -455,6 +486,7 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         with patch("subprocess.run", side_effect=FileNotFoundError):
             result = ad_remover.detect_silence("/fake.mp3")
@@ -464,6 +496,7 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         silences = [{"start": 98.0, "end": 100.5, "duration": 2.5}]
         # time=100.0, nearest boundary is silence start 98.0 (dist 2.0) or end 100.5 (dist 0.5)
@@ -474,6 +507,7 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
         silences = [{"start": 90.0, "end": 95.0, "duration": 5.0}]
         # time=100.0, nearest boundary is 95.0 (dist 5.0) > window=3.0
@@ -485,19 +519,20 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
-        fake_result = MagicMock(stderr=(
-            "[silencedetect] silence_start: 92.0\n"
-            "[silencedetect] silence_end: 94.5 | silence_duration: 2.5\n"
-            "[silencedetect] silence_start: 138.0\n"
-            "[silencedetect] silence_end: 140.0 | silence_duration: 2.0\n"
-        ))
+        fake_result = MagicMock(
+            stderr=(
+                "[silencedetect] silence_start: 92.0\n"
+                "[silencedetect] silence_end: 94.5 | silence_duration: 2.5\n"
+                "[silencedetect] silence_start: 138.0\n"
+                "[silencedetect] silence_end: 140.0 | silence_duration: 2.0\n"
+            )
+        )
 
         with patch("subprocess.run", return_value=fake_result):
-            result = ad_remover.snap_ad_boundaries(
-                [{"start": 93.4, "end": 139.6}], "/fake.mp3", snap_window=3.0
-            )
+            result = ad_remover.snap_ad_boundaries([{"start": 93.4, "end": 139.6}], "/fake.mp3", snap_window=3.0)
 
         assert len(result) == 1
         # start 93.4 → nearest is 94.5 (dist 1.1) or 92.0 (dist 1.4)
@@ -509,12 +544,11 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         with patch("subprocess.run", return_value=MagicMock(stderr="")):
-            result = ad_remover.snap_ad_boundaries(
-                [{"start": 93.4, "end": 139.6}], "/fake.mp3"
-            )
+            result = ad_remover.snap_ad_boundaries([{"start": 93.4, "end": 139.6}], "/fake.mp3")
         assert result == [{"start": 93.4, "end": 139.6}]
 
     def test_snap_skips_if_result_too_short(self):
@@ -522,6 +556,7 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         # Silence right at 95 and 97 — would snap [93, 100] to [95, 97] = 2s (< 5s min)
@@ -532,9 +567,7 @@ class TestSilenceBoundarySnapping:
             "[silencedetect] silence_end: 97.5 | silence_duration: 1.0\n"
         )
         with patch("subprocess.run", return_value=MagicMock(stderr=fake_stderr)):
-            result = ad_remover.snap_ad_boundaries(
-                [{"start": 93.0, "end": 100.0}], "/fake.mp3", snap_window=3.0
-            )
+            result = ad_remover.snap_ad_boundaries([{"start": 93.0, "end": 100.0}], "/fake.mp3", snap_window=3.0)
         # Result kept at original since snapped version would be too short
         assert result == [{"start": 93.0, "end": 100.0}]
 
@@ -546,14 +579,17 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         fake_segs = _make_segments((100.0, 140.0, "ad text"))
         fake_ads = [{"start": 100.0, "end": 140.0}]
 
-        with patch("ad_remover.transcribe_audio", return_value=fake_segs), \
-             patch("ad_remover.detect_ads", return_value=fake_ads), \
-             patch("ad_remover.snap_ad_boundaries", return_value=fake_ads) as mock_snap:
+        with (
+            patch("ad_remover.transcribe_audio", return_value=fake_segs),
+            patch("ad_remover.detect_ads", return_value=fake_ads),
+            patch("ad_remover.snap_ad_boundaries", return_value=fake_ads) as mock_snap,
+        ):
             ad_remover.remove_ads("/fake.mp3", "ep-001", str(tmp_path))
 
         mock_snap.assert_called_once_with(fake_ads, "/fake.mp3", silences=[])
@@ -566,11 +602,14 @@ class TestSilenceBoundarySnapping:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=[{"start": 10.0, "end": 50.0}]), \
-             patch("ad_remover.snap_ad_boundaries") as mock_snap:
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]),
+            patch("ad_remover.detect_ads", return_value=[{"start": 10.0, "end": 50.0}]),
+            patch("ad_remover.snap_ad_boundaries") as mock_snap,
+        ):
             ad_remover.remove_ads("/fake.mp3", "ep-001", str(tmp_path))
 
         mock_snap.assert_not_called()
@@ -579,6 +618,7 @@ class TestSilenceBoundarySnapping:
 # ---------------------------------------------------------------------------
 # E2E scenarios – reproduce the 3 real failure cases
 # ---------------------------------------------------------------------------
+
 
 class TestE2EScenarios:
     """Wire the full detect → filter → verify → snap pipeline with mocked AWS.
@@ -610,6 +650,7 @@ class TestE2EScenarios:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         segs = _make_segments((50.0, 60.0, transcript_text))
@@ -624,8 +665,10 @@ class TestE2EScenarios:
         mock_bedrock = MagicMock()
         mock_bedrock.converse.side_effect = responses
 
-        with patch("boto3.client", return_value=mock_bedrock), \
-             patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("boto3.client", return_value=mock_bedrock),
+            patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             return ad_remover.detect_ads(segs)
 
     def test_e2e_7b0a1fd8_false_positive_blocked(self, monkeypatch):
@@ -656,12 +699,15 @@ class TestE2EScenarios:
         import importlib
 
         import ad_remover
+
         importlib.reload(ad_remover)
 
         # Transcript inside the ad window so verification receives text to evaluate
         segs = _make_segments((110.0, 200.0, "we discussed the architecture and tradeoffs"))
         detection_json = '{"start": 100.0, "end": 210.0}]'  # 110s triggers verify (no leading [ — prefill)
-        reject_json = json.dumps({"is_ad": False, "reason": "editorial discussion not ad"})[1:]  # strip leading { — prefill
+        reject_json = json.dumps({"is_ad": False, "reason": "editorial discussion not ad"})[
+            1:
+        ]  # strip leading { — prefill
 
         mock_bedrock = MagicMock()
         mock_bedrock.converse.side_effect = [
@@ -669,12 +715,13 @@ class TestE2EScenarios:
             _bedrock_response(reject_json),
         ]
 
-        with patch("boto3.client", return_value=mock_bedrock), \
-             patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()):
+        with (
+            patch("boto3.client", return_value=mock_bedrock),
+            patch("ad_remover.retry_aws_call", side_effect=lambda fn, **kw: fn()),
+        ):
             result = ad_remover.detect_ads(segs)
 
         assert result == [], "Content-like segment must be rejected by second-pass verification"
-
 
     def test_e2e_real_ad_confirmed_by_verification(self, monkeypatch):
         """E2E: A genuine 100s ad survives both duration guard and verification."""
@@ -720,11 +767,16 @@ class TestE2EScenarios:
         # Evaluator finds residual at [95.3–131.6] in cleaned file
         residual_segs = [{"start": 95.3, "end": 131.6}]
 
-        with patch("ad_remover.transcribe_audio", return_value=[]), \
-             patch("ad_remover.detect_ads", return_value=residual_segs):
+        with (
+            patch("ad_remover.transcribe_audio", return_value=[]),
+            patch("ad_remover.detect_ads", return_value=residual_segs),
+        ):
             from ad_evaluator import RESULT_PARTIAL, evaluate_ad_removal
+
             report = evaluate_ad_removal(
-                "fake.mp3", "mEWanV5zrac", "test-slug",
+                "fake.mp3",
+                "mEWanV5zrac",
+                "test-slug",
                 original_ad_segments=original_segs,
                 reports_dir=str(tmp_path),
             )
