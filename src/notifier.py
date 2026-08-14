@@ -6,7 +6,7 @@ skipped — this is by design so PodcastDrive works standalone.
 
 Install Herald: pipx install herald (or pip install -e ~/Projects/Herald)
 Configure: ~/.config/herald/config.yaml
-Requires: Herald >= 0.2.0 (for --message flag support)
+Requires: Herald >= 0.5.2 (for --message, --parse-mode, --job and --strict)
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-_MIN_HERALD_VERSION = (0, 2, 0)
+_MIN_HERALD_VERSION = (0, 5, 2)
 
 
 def send_run_notification(
@@ -43,7 +43,7 @@ def send_run_notification(
         logger.debug("Herald not installed — skipping notification")
         return False
 
-    if not _herald_supports_message_flag():
+    if not _herald_version_supported():
         return False
 
     message = _format_message(results, elapsed_secs=elapsed_secs, status=status)
@@ -60,7 +60,9 @@ def _format_message(
     runner = os.environ.get("RUNNER", platform.node() or "unknown")
     mins, secs = divmod(elapsed_secs, 60)
 
-    lines = [f"📡 *PodcastDrive* — {runner} ({mins}m {secs}s)\n"]
+    # Plain text, no markdown: podcast names are user data and a stray "*" or
+    # "_" makes Telegram reject the whole message with a 400.
+    lines = [f"📡 PodcastDrive — {runner} ({mins}m {secs}s)\n"]
 
     total_new = 0
     total_failed = 0
@@ -108,8 +110,8 @@ def _herald_available() -> bool:
     return shutil.which("herald") is not None
 
 
-def _herald_supports_message_flag() -> bool:
-    """Check that installed Herald is >= 0.2.0 (supports --message flag).
+def _herald_version_supported() -> bool:
+    """Check that installed Herald is >= 0.5.2 (supports --job and --strict).
 
     Runs ``herald version``, parses the X.Y.Z output, and compares against
     the minimum required version. On any failure, returns False with a
@@ -133,7 +135,7 @@ def _herald_supports_message_flag() -> bool:
         parts = version_str.split(".")
         if len(parts) < 3:
             logger.warning(
-                "Herald <0.2.0 detected (%r) — upgrade with `pipx upgrade herald`",
+                "Herald <0.5.2 detected (%r) — upgrade with `pipx upgrade herald`",
                 version_str,
             )
             return False
@@ -141,7 +143,7 @@ def _herald_supports_message_flag() -> bool:
         version_tuple = tuple(int(p) for p in parts[:3])
         if version_tuple < _MIN_HERALD_VERSION:
             logger.warning(
-                "Herald %s is too old (need >= 0.2.0) — upgrade with `pipx upgrade herald`",
+                "Herald %s is too old (need >= 0.5.2) — upgrade with `pipx upgrade herald`",
                 version_str,
             )
             return False
@@ -160,20 +162,39 @@ def _herald_supports_message_flag() -> bool:
 
 
 def _send_via_herald(message: str) -> bool:
-    """Call Herald CLI to send the message using the --message flag."""
+    """Call Herald CLI to send the message.
+
+    When HERALD_JOB_ID is set (i.e., Herald's listener triggered this run),
+    the reply routes back to whoever sent the command and Herald records a
+    report marker so its reconciler stays quiet. When it is not set (cron,
+    manual run), the message goes to the configured default destination.
+
+    ``--strict`` is what makes the return value meaningful: without it Herald
+    exits 0 even when it delivered nothing.
+    """
+    argv = ["herald", "notify", "--parse-mode", "plain", "--strict",
+            "--message", message]
+
+    # Herald also reads HERALD_JOB_ID itself, but passing it explicitly keeps
+    # the routing visible here instead of hiding in an inherited env var.
+    job_id = os.environ.get("HERALD_JOB_ID")
+    if job_id:
+        argv += ["--job", job_id]
+
     try:
         result = subprocess.run(
-            ["herald", "notify", "--message", message],
+            argv,
             capture_output=True,
             text=True,
             timeout=30,
         )
         if result.returncode == 0:
-            logger.info("Notification sent via Herald")
+            logger.info(
+                "Notification sent via Herald%s", f" (job {job_id})" if job_id else ""
+            )
             return True
-        else:
-            logger.warning("Herald exited %d: %s", result.returncode, result.stderr.strip())
-            return False
+        logger.warning("Herald exited %d: %s", result.returncode, result.stderr.strip())
+        return False
     except FileNotFoundError:
         logger.debug("Herald binary not found")
         return False
