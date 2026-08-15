@@ -12,9 +12,11 @@ from rss_generator import (
     _first_paragraph,
     _format_duration,
     _validate_cloudfront_base,
+    _xml_safe,
     build_episode_metadata,
     generate_rss,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -838,3 +840,82 @@ class TestGenerateRssProperty:
         ep = _make_episode(video_id=video_id, duration=duration)
         xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
         assert video_id in xml_str
+
+
+# ---------------------------------------------------------------------------
+# XML sanitisation (regression: "not well-formed (invalid token)")
+# ---------------------------------------------------------------------------
+
+
+class TestXmlSafe:
+    """Unit tests for the _xml_safe helper."""
+
+    def test_none_returns_empty(self):
+        assert _xml_safe(None) == ""
+
+    def test_empty_returns_empty(self):
+        assert _xml_safe("") == ""
+
+    def test_plain_text_unchanged(self):
+        assert _xml_safe("Hello World") == "Hello World"
+
+    def test_strips_control_characters(self):
+        assert _xml_safe("Bad\x08char\x1b here") == "Badchar here"
+
+    def test_preserves_allowed_whitespace(self):
+        # Tab, newline and carriage return are legal in XML 1.0.
+        assert _xml_safe("a\tb\nc\rd") == "a\tb\nc\rd"
+
+    def test_preserves_unicode(self):
+        assert _xml_safe("café — ✂️ 日本語") == "café — ✂️ 日本語"
+
+    def test_does_not_escape_markup(self):
+        # _xml_safe only strips illegal chars; escaping of & < > is ElementTree's job.
+        assert _xml_safe("a & b < c") == "a & b < c"
+
+
+class TestGenerateRssSanitisation:
+    """Regression: control characters in metadata must not break feed generation.
+
+    Previously a control character (e.g. from a YouTube channel title/description)
+    propagated through ElementTree into minidom.parseString and raised
+    ``xml.parsers.expat.ExpatError: not well-formed (invalid token)``,
+    which caused the whole podcast to be marked 'Failed'.
+    """
+
+    def test_control_char_in_channel_metadata_still_valid(self, monkeypatch):
+        monkeypatch.setenv("FEED_TITLE_SUFFIX", "")
+        monkeypatch.setenv("FEED_SUBTITLE", "")
+        meta = _make_playlist_meta(
+            title="The Pamphlet\x08 News",
+            description="Daily commentary\x1b with a control char",
+            uploader="Pamphlet\x0c Media",
+        )
+        xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
+        # Must parse cleanly (this is what previously threw).
+        root = ET.fromstring(xml_str)
+        assert root.find(".//channel/title").text == "The Pamphlet News"
+        assert "\x08" not in xml_str
+        assert "\x1b" not in xml_str
+        assert "\x0c" not in xml_str
+
+    def test_control_char_in_item_metadata_still_valid(self):
+        meta = _make_playlist_meta()
+        ep = _make_episode(
+            title="Episode\x07 One",
+            description="Body\x1f text",
+            summary="Summary\x0b with vertical tab",
+        )
+        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
+        root = ET.fromstring(xml_str)
+        assert root.find(".//item/title").text == "Episode One"
+        for bad in ("\x07", "\x1f", "\x0b"):
+            assert bad not in xml_str
+
+    def test_ampersand_still_escaped_after_sanitisation(self):
+        meta = _make_playlist_meta(description="Rock & Roll")
+        xml_str = generate_rss(meta, [], CLOUDFRONT_BASE, PLAYLIST_ID)
+        # Ampersand must be properly escaped, and the doc must parse.
+        assert "&amp;" in xml_str
+        root = ET.fromstring(xml_str)
+        assert root.find(".//channel/description").text == "Rock & Roll"

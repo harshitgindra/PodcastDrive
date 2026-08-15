@@ -6,6 +6,7 @@ information, using CloudFront URLs for audio enclosures.
 
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from email.utils import format_datetime
@@ -21,6 +22,36 @@ ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 
 # Register the itunes namespace prefix so ElementTree uses it in output
 ET.register_namespace("itunes", ITUNES_NS)
+
+# Characters that are illegal in XML 1.0 documents regardless of escaping.
+# ElementTree auto-escapes &, <, > but happily emits these control characters
+# and unpaired surrogates verbatim, which then makes the resulting document
+# not well-formed (expat raises "not well-formed (invalid token)"). We strip
+# them defensively from all text that originates from external sources
+# (YouTube titles/descriptions, AI summaries, etc.).
+_INVALID_XML_CHARS = re.compile(
+    "[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
+)
+
+
+def _xml_safe(text: str | None) -> str:
+    """Return *text* with characters illegal in XML 1.0 removed.
+
+    ElementTree escapes markup characters (``&``, ``<``, ``>``) automatically,
+    but does not remove control characters (e.g. ``\\x08``, ``\\x1a``) or
+    unpaired surrogates. Left in place these produce a document that the XML
+    parser rejects as *not well-formed*. This helper strips those characters
+    so feed generation is robust against arbitrary upstream metadata.
+
+    Args:
+        text: Arbitrary text (may be ``None``).
+
+    Returns:
+        The sanitized string (empty string when *text* is falsy).
+    """
+    if not text:
+        return ""
+    return _INVALID_XML_CHARS.sub("", text)
 
 
 def _format_duration(seconds: int | None) -> str:
@@ -148,9 +179,13 @@ def _add_channel_metadata(
     channel_link = meta.webpage_url or meta.channel_url
     suffix = os.environ.get("FEED_TITLE_SUFFIX", " ✂️")
 
-    ET.SubElement(channel, "title").text = meta.title + suffix
-    ET.SubElement(channel, "link").text = channel_link
-    ET.SubElement(channel, "description").text = meta.description or meta.title
+    channel_title = _xml_safe(meta.title) + suffix
+    channel_description = _xml_safe(meta.description) or _xml_safe(meta.title)
+    channel_author = _xml_safe(meta.uploader) or _xml_safe(meta.title)
+
+    ET.SubElement(channel, "title").text = channel_title
+    ET.SubElement(channel, "link").text = _xml_safe(channel_link)
+    ET.SubElement(channel, "description").text = channel_description
     ET.SubElement(channel, "language").text = language
     ET.SubElement(channel, "generator").text = "PodcastDrive"
 
@@ -159,26 +194,26 @@ def _add_channel_metadata(
 
     # Determine best artwork URL: prefer playlist-level thumbnail, fall back
     # to the first episode's thumbnail.
-    artwork_url = meta.thumbnail or (episodes[0].thumbnail if episodes else "")
+    artwork_url = _xml_safe(meta.thumbnail or (episodes[0].thumbnail if episodes else ""))
 
     # Standard RSS 2.0 <image> block (required by many non-iTunes podcast apps)
     if artwork_url:
         rss_image = ET.SubElement(channel, "image")
         ET.SubElement(rss_image, "url").text = artwork_url
-        ET.SubElement(rss_image, "title").text = meta.title + suffix
-        ET.SubElement(rss_image, "link").text = channel_link
+        ET.SubElement(rss_image, "title").text = channel_title
+        ET.SubElement(rss_image, "link").text = _xml_safe(channel_link)
 
     # iTunes tags
-    ET.SubElement(channel, f"{{{ITUNES_NS}}}author").text = meta.uploader or meta.title
-    ET.SubElement(channel, f"{{{ITUNES_NS}}}summary").text = meta.description or meta.title
+    ET.SubElement(channel, f"{{{ITUNES_NS}}}author").text = channel_author
+    ET.SubElement(channel, f"{{{ITUNES_NS}}}summary").text = channel_description
     ET.SubElement(channel, f"{{{ITUNES_NS}}}explicit").text = "no"
 
     subtitle = os.environ.get("FEED_SUBTITLE", "Ad-free · PodcastDrive")
     if subtitle:
-        ET.SubElement(channel, f"{{{ITUNES_NS}}}subtitle").text = subtitle
+        ET.SubElement(channel, f"{{{ITUNES_NS}}}subtitle").text = _xml_safe(subtitle)
 
     owner = ET.SubElement(channel, f"{{{ITUNES_NS}}}owner")
-    ET.SubElement(owner, f"{{{ITUNES_NS}}}name").text = meta.uploader or meta.title
+    ET.SubElement(owner, f"{{{ITUNES_NS}}}name").text = channel_author
 
     # iTunes <itunes:image> — uses same resolved artwork URL
     if artwork_url:
@@ -207,7 +242,7 @@ def _add_item(
     """
     item = ET.SubElement(channel, "item")
 
-    ep_title = episode.title
+    ep_title = _xml_safe(episode.title)
     if episode.ads_removed:
         ep_ad_suffix = os.environ.get("EPISODE_AD_REMOVED_SUFFIX", " ✂️")
         if ep_ad_suffix:
@@ -216,10 +251,10 @@ def _add_item(
 
     guid = ET.SubElement(item, "guid")
     guid.set("isPermaLink", "false")
-    guid.text = episode.video_id
+    guid.text = _xml_safe(episode.video_id)
 
     enclosure = ET.SubElement(item, "enclosure")
-    enclosure.set("url", episode.cloudfront_url)
+    enclosure.set("url", _xml_safe(episode.cloudfront_url))
     enclosure.set("length", str(episode.file_size))
     enclosure.set("type", "audio/mpeg")
 
@@ -246,6 +281,7 @@ def _add_item(
     if hasattr(episode, "summary") and episode.summary:
         desc_text = episode.summary + "\n\n" + desc_text
 
+    desc_text = _xml_safe(desc_text)
     ET.SubElement(item, "description").text = desc_text
 
     # iTunes item tags
@@ -255,7 +291,7 @@ def _add_item(
 
     if episode.thumbnail:
         img = ET.SubElement(item, f"{{{ITUNES_NS}}}image")
-        img.set("href", episode.thumbnail)
+        img.set("href", _xml_safe(episode.thumbnail))
 
     if episode.playlist_index is not None:
         ET.SubElement(item, f"{{{ITUNES_NS}}}episode").text = str(episode.playlist_index)
