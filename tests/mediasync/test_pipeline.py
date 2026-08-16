@@ -316,3 +316,34 @@ class TestProcessEntry:
                 _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert not audio_path.exists()
+
+
+class TestReset:
+    @patch("mediasync.notion_client.NotionClient.get_processed")
+    @patch("mediasync.notion_client.NotionClient.reset_status")
+    @patch("mediasync.notion_client.NotionClient.__init__", return_value=None)
+    def test_reset_clears_processed(self, mock_init, mock_reset, mock_get, config):
+        from mediasync.cli import _reset
+
+        mock_get.return_value = [
+            MediaEntry(page_id="p1", url="u1", profile="Harshit", format=Format.AUDIO, status=Status.DONE, delete=False),
+            MediaEntry(page_id="p2", url="u2", profile="Harshit", format=Format.AUDIO, status=Status.FAILED, delete=False),
+        ]
+
+        _reset(config)
+
+        assert mock_reset.call_count == 2
+        mock_reset.assert_any_call("p1")
+        mock_reset.assert_any_call("p2")
+
+    @patch("mediasync.notion_client.NotionClient.get_processed")
+    @patch("mediasync.notion_client.NotionClient.reset_status")
+    @patch("mediasync.notion_client.NotionClient.__init__", return_value=None)
+    def test_reset_nothing_to_reset(self, mock_init, mock_reset, mock_get, config):
+        from mediasync.cli import _reset
+
+        mock_get.return_value = []
+
+        _reset(config)  # Should not raise
+
+        mock_reset.assert_not_called()

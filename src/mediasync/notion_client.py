@@ -135,6 +135,32 @@ class NotionClient:
 
         self._patch(f"{NOTION_API}/pages/{page_id}", {"properties": properties})
 
+    def get_processed(self) -> list[MediaEntry]:
+        """Fetch all rows with Status=done or Status=failed (for reset)."""
+        return self._query(
+            filter_obj={
+                "and": [
+                    {"or": [
+                        {"property": "Status", "select": {"equals": "done"}},
+                        {"property": "Status", "select": {"equals": "failed"}},
+                    ]},
+                    {"property": "Delete", "checkbox": {"equals": False}},
+                ]
+            }
+        )
+
+    def reset_status(self, page_id: str) -> None:
+        """Clear status and processing metadata so the entry is re-processed."""
+        self._patch(f"{NOTION_API}/pages/{page_id}", {
+            "properties": {
+                "Status": {"select": None},
+                "File Key": {"rich_text": []},
+                "Duration": {"number": None},
+                "Error": {"rich_text": []},
+                "Processed At": {"date": None},
+            }
+        })
+
     def archive_page(self, page_id: str) -> None:
         """Archive a page after deletion processing."""
         self._patch(f"{NOTION_API}/pages/{page_id}", {"archived": True})

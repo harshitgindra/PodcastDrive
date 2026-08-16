@@ -27,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Show pending entries without processing",
     )
     parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Reset all done/failed entries to pending and re-process everything",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable debug logging",
@@ -49,12 +54,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return _dry_run(config)
 
+    if args.reset:
+        _reset(config)
+
     start = time.time()
     stats = run(config)
     elapsed = int(time.time() - start)
 
     _notify(config, stats, elapsed)
     return 1 if stats.failed > 0 else 0
+
+
+def _reset(config: Config) -> None:
+    """Reset all done/failed entries to pending so they get re-processed."""
+    from mediasync.notion_client import NotionClient
+
+    notion = NotionClient(config.notion_token, config.notion_database_id)
+    processed = notion.get_processed()
+
+    if not processed:
+        logging.info("Nothing to reset")
+        return
+
+    logging.info("Resetting %d entries to pending...", len(processed))
+    for entry in processed:
+        notion.reset_status(entry.page_id)
+    logging.info("Reset complete")
 
 
 def _dry_run(config: Config) -> int:
