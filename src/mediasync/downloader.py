@@ -53,8 +53,11 @@ def get_metadata(url: str) -> dict:
         "--dump-json",
         "--no-download",
         "--no-playlist",
-        url,
     ]
+    cookies = _cookies_path()
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+    cmd.append(url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise DownloadError(f"Metadata fetch failed: {result.stderr[:500]}")
@@ -121,9 +124,26 @@ def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) 
     return results
 
 
+def _cookies_path() -> Path | None:
+    """Find cookies.txt in project root or home directory."""
+    candidates = [
+        Path.cwd() / "cookies.txt",
+        Path.home() / "cookies.txt",
+        Path.home() / ".config" / "yt-dlp" / "cookies.txt",
+    ]
+    for p in candidates:
+        if p.is_file() and p.stat().st_size > 0:
+            return p
+    return None
+
+
 def _build_cmd(url: str, fmt: str, output: str) -> list[str]:
     """Build yt-dlp command for the given format."""
     cmd = ["yt-dlp", "--no-playlist"]
+
+    cookies = _cookies_path()
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
 
     if fmt == "audio":
         cmd += [
