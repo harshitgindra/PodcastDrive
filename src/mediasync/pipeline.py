@@ -1,6 +1,6 @@
 """Main pipeline orchestration for MediaSync.
 
-Stateless: reads pending work from Notion, downloads, uploads to S3,
+Stateless: reads pending work from Notion, downloads, uploads to storage,
 updates Notion. Safe to run from any machine.
 """
 
@@ -18,7 +18,7 @@ from mediasync.downloader import (
     download,
 )
 from mediasync.notion_client import Format, MediaEntry, NotionClient, Status
-from mediasync.s3_client import S3Client, S3Error
+from mediasync.storage import StorageBackend, StorageError, create_storage
 from mediasync.tagger import tag_file
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class RunStats:
 def run(config: Config) -> RunStats:
     """Execute one full pipeline cycle.
 
-    1. Process soft-delete entries (remove from S3, archive in Notion).
+    1. Process soft-delete entries (remove from storage, archive in Notion).
     2. Process pending downloads (dedupe, download, tag, upload, update Notion).
 
     Returns:
@@ -45,10 +45,10 @@ def run(config: Config) -> RunStats:
     """
     stats = RunStats()
     notion = NotionClient(config.notion_token, config.notion_database_id)
-    s3 = S3Client(config.s3_bucket, config.s3_region)
+    storage = create_storage(config)
 
     # Phase 1: deletions
-    stats.deleted = _process_deletions(notion, s3)
+    stats.deleted = _process_deletions(notion, storage)
 
     # Phase 2: pending downloads
     valid_profiles = {p.name for p in config.profiles}
@@ -69,7 +69,7 @@ def run(config: Config) -> RunStats:
             stats.skipped += 1
             continue
 
-        success = _process_entry(entry, notion, s3, config)
+        success = _process_entry(entry, notion, storage, config)
         if success:
             stats.processed += 1
         else:
@@ -82,20 +82,19 @@ def run(config: Config) -> RunStats:
     return stats
 
 
-def _process_deletions(notion: NotionClient, s3: S3Client) -> int:
-    """Delete files from S3 and archive Notion pages."""
+def _process_deletions(notion: NotionClient, storage: StorageBackend) -> int:
+    """Delete files from storage and archive Notion pages."""
     deletions = notion.get_deletions()
     count = 0
     for entry in deletions:
         try:
             if entry.file_key:
-                # file_key may contain multiple keys separated by "; "
                 for key in entry.file_key.split("; "):
                     if key.strip():
-                        s3.delete_file(key.strip())
+                        storage.delete_file(key.strip())
             notion.archive_page(entry.page_id)
             count += 1
-        except S3Error as exc:
+        except (StorageError, Exception) as exc:
             logger.error("Failed to delete %s: %s", entry.file_key, exc)
     return count
 
@@ -109,7 +108,7 @@ def _is_duplicate(notion: NotionClient, entry: MediaEntry) -> bool:
 def _process_entry(
     entry: MediaEntry,
     notion: NotionClient,
-    s3: S3Client,
+    storage: StorageBackend,
     config: Config,
 ) -> bool:
     """Download, tag, upload a single entry. Returns True on success."""
@@ -140,12 +139,12 @@ def _process_entry(
             duration = result.duration_secs
 
             fmt_folder = "audio" if result.format_type == "audio" else "video"
-            remote_folder = f"{config.s3_prefix}/{entry.profile}/{fmt_folder}"
+            remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
             filename = result.path.name
 
-            file_key = s3.upload(result.path, remote_folder, filename)
+            file_key = storage.upload(result.path, remote_folder, filename)
             file_keys.append(file_key)
-    except S3Error as exc:
+    except (StorageError, Exception) as exc:
         logger.error("Upload failed: %s — %s", entry.url, exc)
         notion.update_status(entry.page_id, Status.FAILED, error=str(exc))
         return False

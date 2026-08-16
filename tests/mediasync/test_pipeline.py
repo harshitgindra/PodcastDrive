@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 from mediasync.config import Config, Profile
 from mediasync.downloader import DownloadError, DownloadResult, DurationExceededError
 from mediasync.notion_client import Format, MediaEntry, NotionClient, Status
-from mediasync.s3_client import S3Client, S3Error
+from mediasync.storage import StorageError
 from mediasync.pipeline import (
     RunStats,
     run,
@@ -72,9 +72,9 @@ def delete_entry():
 
 
 class TestRun:
-    @patch("mediasync.pipeline.S3Client")
+    @patch("mediasync.pipeline.create_storage")
     @patch("mediasync.pipeline.NotionClient")
-    def test_empty_run(self, MockNotion, MockS3, config):
+    def test_empty_run(self, MockNotion, MockStorage, config):
         mock_notion = MockNotion.return_value
         mock_notion.get_deletions.return_value = []
         mock_notion.get_pending.return_value = []
@@ -85,9 +85,9 @@ class TestRun:
 
     @patch("mediasync.pipeline._process_entry", return_value=True)
     @patch("mediasync.pipeline._is_duplicate", return_value=False)
-    @patch("mediasync.pipeline.S3Client")
+    @patch("mediasync.pipeline.create_storage")
     @patch("mediasync.pipeline.NotionClient")
-    def test_processes_pending(self, MockNotion, MockS3, mock_dup, mock_proc, config, pending_entry):
+    def test_processes_pending(self, MockNotion, MockStorage, mock_dup, mock_proc, config, pending_entry):
         mock_notion = MockNotion.return_value
         mock_notion.get_deletions.return_value = []
         mock_notion.get_pending.return_value = [pending_entry]
@@ -98,9 +98,9 @@ class TestRun:
         mock_proc.assert_called_once()
 
     @patch("mediasync.pipeline._is_duplicate", return_value=True)
-    @patch("mediasync.pipeline.S3Client")
+    @patch("mediasync.pipeline.create_storage")
     @patch("mediasync.pipeline.NotionClient")
-    def test_skips_duplicates(self, MockNotion, MockS3, mock_dup, config, pending_entry):
+    def test_skips_duplicates(self, MockNotion, MockStorage, mock_dup, config, pending_entry):
         mock_notion = MockNotion.return_value
         mock_notion.get_deletions.return_value = []
         mock_notion.get_pending.return_value = [pending_entry]
@@ -111,9 +111,9 @@ class TestRun:
         mock_notion.update_status.assert_called_once()
 
     @patch("mediasync.pipeline._is_duplicate", return_value=False)
-    @patch("mediasync.pipeline.S3Client")
+    @patch("mediasync.pipeline.create_storage")
     @patch("mediasync.pipeline.NotionClient")
-    def test_skips_unknown_profile(self, MockNotion, MockS3, mock_dup, config, pending_entry):
+    def test_skips_unknown_profile(self, MockNotion, MockStorage, mock_dup, config, pending_entry):
         pending_entry.profile = "unknown_person"
         mock_notion = MockNotion.return_value
         mock_notion.get_deletions.return_value = []
@@ -128,12 +128,12 @@ class TestProcessDeletions:
     def test_deletes_and_archives(self, delete_entry):
         mock_notion = MagicMock()
         mock_notion.get_deletions.return_value = [delete_entry]
-        mock_s3 = MagicMock()
+        mock_storage = MagicMock()
 
-        count = _process_deletions(mock_notion, mock_s3)
+        count = _process_deletions(mock_notion, mock_storage)
 
         assert count == 1
-        mock_s3.delete_file.assert_called_once_with("MediaSync/Harshit/audio/old.m4a")
+        mock_storage.delete_file.assert_called_once_with("MediaSync/Harshit/audio/old.m4a")
         mock_notion.archive_page.assert_called_once_with("page-3")
 
     def test_handles_multiple_file_keys(self):
@@ -144,19 +144,19 @@ class TestProcessDeletions:
         )
         mock_notion = MagicMock()
         mock_notion.get_deletions.return_value = [entry]
-        mock_s3 = MagicMock()
+        mock_storage = MagicMock()
 
-        _process_deletions(mock_notion, mock_s3)
+        _process_deletions(mock_notion, mock_storage)
 
-        assert mock_s3.delete_file.call_count == 2
+        assert mock_storage.delete_file.call_count == 2
 
-    def test_s3_error_does_not_crash(self, delete_entry):
+    def test_storage_error_does_not_crash(self, delete_entry):
         mock_notion = MagicMock()
         mock_notion.get_deletions.return_value = [delete_entry]
-        mock_s3 = MagicMock()
-        mock_s3.delete_file.side_effect = S3Error("access denied")
+        mock_storage = MagicMock()
+        mock_storage.delete_file.side_effect = StorageError("access denied")
 
-        count = _process_deletions(mock_notion, mock_s3)
+        count = _process_deletions(mock_notion, mock_storage)
 
         assert count == 0
         mock_notion.archive_page.assert_not_called()
@@ -168,12 +168,12 @@ class TestProcessDeletions:
         )
         mock_notion = MagicMock()
         mock_notion.get_deletions.return_value = [entry]
-        mock_s3 = MagicMock()
+        mock_storage = MagicMock()
 
-        count = _process_deletions(mock_notion, mock_s3)
+        count = _process_deletions(mock_notion, mock_storage)
 
         assert count == 1
-        mock_s3.delete_file.assert_not_called()
+        mock_storage.delete_file.assert_not_called()
         mock_notion.archive_page.assert_called_once()
 
 
@@ -204,8 +204,8 @@ class TestProcessEntry:
         audio_path.write_bytes(b"audio data")
 
         mock_notion = MagicMock()
-        mock_s3 = MagicMock()
-        mock_s3.upload.return_value = "MediaSync/Harshit/audio/song.m4a"
+        mock_storage = MagicMock()
+        mock_storage.upload.return_value = "MediaSync/Harshit/audio/song.m4a"
 
         dl_result = DownloadResult(
             path=audio_path,
@@ -218,7 +218,7 @@ class TestProcessEntry:
 
         with patch("mediasync.pipeline.download", return_value=[dl_result]):
             with patch("mediasync.pipeline.tag_file"):
-                success = _process_entry(pending_entry, mock_notion, mock_s3, config)
+                success = _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert success is True
         mock_notion.update_status.assert_any_call(pending_entry.page_id, Status.DOWNLOADING)
@@ -227,10 +227,10 @@ class TestProcessEntry:
 
     def test_duration_exceeded(self, pending_entry, config):
         mock_notion = MagicMock()
-        mock_s3 = MagicMock()
+        mock_storage = MagicMock()
 
         with patch("mediasync.pipeline.download", side_effect=DurationExceededError("too long")):
-            success = _process_entry(pending_entry, mock_notion, mock_s3, config)
+            success = _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert success is False
         mock_notion.update_status.assert_any_call(
@@ -239,10 +239,10 @@ class TestProcessEntry:
 
     def test_download_error(self, pending_entry, config):
         mock_notion = MagicMock()
-        mock_s3 = MagicMock()
+        mock_storage = MagicMock()
 
         with patch("mediasync.pipeline.download", side_effect=DownloadError("network fail")):
-            success = _process_entry(pending_entry, mock_notion, mock_s3, config)
+            success = _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert success is False
 
@@ -251,8 +251,8 @@ class TestProcessEntry:
         audio_path.write_bytes(b"data")
 
         mock_notion = MagicMock()
-        mock_s3 = MagicMock()
-        mock_s3.upload.side_effect = S3Error("access denied")
+        mock_storage = MagicMock()
+        mock_storage.upload.side_effect = StorageError("access denied")
 
         dl_result = DownloadResult(
             path=audio_path, title="Song", artist="A",
@@ -261,7 +261,7 @@ class TestProcessEntry:
 
         with patch("mediasync.pipeline.download", return_value=[dl_result]):
             with patch("mediasync.pipeline.tag_file"):
-                success = _process_entry(pending_entry, mock_notion, mock_s3, config)
+                success = _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert success is False
         assert not audio_path.exists()
@@ -277,8 +277,8 @@ class TestProcessEntry:
         video_path.write_bytes(b"video")
 
         mock_notion = MagicMock()
-        mock_s3 = MagicMock()
-        mock_s3.upload.side_effect = [
+        mock_storage = MagicMock()
+        mock_storage.upload.side_effect = [
             "MediaSync/Harshit/audio/song.m4a",
             "MediaSync/Harshit/video/song.mp4",
         ]
@@ -290,10 +290,10 @@ class TestProcessEntry:
 
         with patch("mediasync.pipeline.download", return_value=results):
             with patch("mediasync.pipeline.tag_file"):
-                success = _process_entry(entry, mock_notion, mock_s3, config)
+                success = _process_entry(entry, mock_notion, mock_storage, config)
 
         assert success is True
-        assert mock_s3.upload.call_count == 2
+        assert mock_storage.upload.call_count == 2
         final_call = mock_notion.update_status.call_args_list[-1]
         file_key = final_call[1]["file_key"]
         assert "audio" in file_key and "video" in file_key
@@ -303,8 +303,8 @@ class TestProcessEntry:
         audio_path.write_bytes(b"data")
 
         mock_notion = MagicMock()
-        mock_s3 = MagicMock()
-        mock_s3.upload.return_value = "key"
+        mock_storage = MagicMock()
+        mock_storage.upload.return_value = "key"
 
         dl_result = DownloadResult(
             path=audio_path, title="S", artist="A",
@@ -313,6 +313,6 @@ class TestProcessEntry:
 
         with patch("mediasync.pipeline.download", return_value=[dl_result]):
             with patch("mediasync.pipeline.tag_file"):
-                _process_entry(pending_entry, mock_notion, mock_s3, config)
+                _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert not audio_path.exists()

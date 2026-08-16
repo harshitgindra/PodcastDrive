@@ -96,3 +96,49 @@ class TestConfigFromEnv:
             config = Config.from_env()
 
         assert config.profiles == [Profile("solo")]
+
+    def test_invalid_storage_backend_raises(self, full_env):
+        full_env["MEDIASYNC_STORAGE"] = "gcs"
+        with patch.dict(os.environ, full_env, clear=True):
+            with pytest.raises(ValueError, match="'s3' or 'onedrive'"):
+                Config.from_env()
+
+    def test_onedrive_missing_client_id_raises(self, full_env):
+        full_env["MEDIASYNC_STORAGE"] = "onedrive"
+        full_env["MEDIASYNC_ONEDRIVE_CLIENT_SECRET"] = "sec"
+        full_env["MEDIASYNC_ONEDRIVE_REFRESH_TOKEN"] = "rt"
+        with patch.dict(os.environ, full_env, clear=True):
+            with pytest.raises(ValueError, match="ONEDRIVE_CLIENT_ID"):
+                Config.from_env()
+
+    def test_onedrive_missing_client_secret_raises(self, full_env):
+        full_env["MEDIASYNC_STORAGE"] = "onedrive"
+        full_env["MEDIASYNC_ONEDRIVE_CLIENT_ID"] = "cid"
+        full_env["MEDIASYNC_ONEDRIVE_REFRESH_TOKEN"] = "rt"
+        with patch.dict(os.environ, full_env, clear=True):
+            with pytest.raises(ValueError, match="ONEDRIVE_CLIENT_SECRET"):
+                Config.from_env()
+
+    def test_onedrive_missing_refresh_token_raises(self, full_env):
+        full_env["MEDIASYNC_STORAGE"] = "onedrive"
+        full_env["MEDIASYNC_ONEDRIVE_CLIENT_ID"] = "cid"
+        full_env["MEDIASYNC_ONEDRIVE_CLIENT_SECRET"] = "sec"
+        with patch.dict(os.environ, full_env, clear=True):
+            with pytest.raises(ValueError, match="ONEDRIVE_REFRESH_TOKEN"):
+                Config.from_env()
+
+    def test_onedrive_valid_config(self, full_env):
+        full_env["MEDIASYNC_STORAGE"] = "onedrive"
+        full_env["MEDIASYNC_ONEDRIVE_CLIENT_ID"] = "cid"
+        full_env["MEDIASYNC_ONEDRIVE_CLIENT_SECRET"] = "sec"
+        full_env["MEDIASYNC_ONEDRIVE_REFRESH_TOKEN"] = "rt"
+        with patch.dict(os.environ, full_env, clear=True):
+            config = Config.from_env()
+        assert config.storage_backend == "onedrive"
+        assert config.prefix == "MediaSync"
+
+    def test_prefix_property_s3(self, full_env):
+        full_env["MEDIASYNC_S3_PREFIX"] = "Custom"
+        with patch.dict(os.environ, full_env, clear=True):
+            config = Config.from_env()
+        assert config.prefix == "Custom"
