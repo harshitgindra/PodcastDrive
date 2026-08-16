@@ -234,3 +234,4 @@ reports/
 deploy/.instance-info
 deploy/.webhook-env
 cookies.txt
+mediasync.env
