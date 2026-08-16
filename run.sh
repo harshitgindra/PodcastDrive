@@ -493,7 +493,7 @@ try:
     if notify_file:
         entries = json.load(open(notify_file))
         name = notion_podcast.name if notion_podcast else result.get('playlist_id', url.split('/@')[-1].split('/')[0] if '/@' in url else url)[:40]
-        entries.append({'name': name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'bot_detected': result.get('bot_detected', False)})
+        entries.append({'name': name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'unavailable': result.get('unavailable', 0), 'bot_detected': result.get('bot_detected', False)})
         json.dump(entries, open(notify_file, 'w'))
 
     if notion_podcast and not dry_run:
@@ -574,7 +574,7 @@ for i, podcast in enumerate(enabled):
         notify_file = os.environ.get('NOTIFY_RESULTS', '')
         if notify_file:
             entries = json.load(open(notify_file))
-            entries.append({'name': podcast.name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'bot_detected': result.get('bot_detected', False)})
+            entries.append({'name': podcast.name, 'new_episodes': result.get('new_episodes', 0), 'failed': result.get('failed', 0), 'unavailable': result.get('unavailable', 0), 'bot_detected': result.get('bot_detected', False)})
             json.dump(entries, open(notify_file, 'w'))
 
         # Build feed URL and update Notion

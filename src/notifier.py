@@ -32,7 +32,8 @@ def send_run_notification(
 
     Args:
         results: List of per-podcast dicts with keys:
-            name, new_episodes, failed, bot_detected (all optional except name)
+            name, new_episodes, failed, unavailable, bot_detected
+            (all optional except name)
         elapsed_secs: Total run duration in seconds.
         status: Overall run status (success/partial_failure/failure).
 
@@ -67,18 +68,21 @@ def _format_message(
     total_new = 0
     total_failed = 0
     total_splice_failed = 0
+    total_unavailable = 0
 
     for r in results:
         name = r.get("name", "?")
         new = r.get("new_episodes", 0)
         failed = r.get("failed", 0)
         splice_failed = r.get("splice_failed", 0)
+        unavailable = r.get("unavailable", 0)
         bot = r.get("bot_detected", False)
         error_msg = r.get("error")
 
         total_new += new
         total_failed += failed
         total_splice_failed += splice_failed
+        total_unavailable += unavailable
 
         if error_msg:
             lines.append(f"❌ {name} — {error_msg}")
@@ -88,18 +92,25 @@ def _format_message(
             lines.append(f"⚠️ {name} — {splice_failed} splice failed (ads not removed, will retry)")
         elif failed > 0:
             lines.append(f"❌ {name} — {failed} failed, {new} new")
+        elif unavailable > 0:
+            # Never report this as "up to date": a run that skipped every episode
+            # as unavailable is the signature of degraded extraction.
+            lines.append(f"⚠️ {name} — {unavailable} unavailable, {new} new")
         elif new > 0:
             lines.append(f"✅ {name} — {new} new")
         else:
             lines.append(f"— {name} — up to date")
 
     # Footer
-    status_emoji = "✅" if status == "success" and total_splice_failed == 0 else "⚠️"
+    healthy = status == "success" and total_splice_failed == 0 and total_unavailable == 0
+    status_emoji = "✅" if healthy else "⚠️"
     summary_parts = [f"{total_new} downloaded"]
     if total_failed:
         summary_parts.append(f"{total_failed} failed")
     if total_splice_failed:
         summary_parts.append(f"{total_splice_failed} splice failed")
+    if total_unavailable:
+        summary_parts.append(f"{total_unavailable} unavailable")
     lines.append(f"\n{status_emoji} {', '.join(summary_parts)}")
 
     return "\n".join(lines)

@@ -16,6 +16,7 @@ from preflight import (
     _check_s3_bucket,
     _check_transcribe,
     _check_yt_dlp,
+    _check_ytdlp_challenge_solver,
     _fail,
     _ok,
     _section,
@@ -310,11 +311,13 @@ class TestCheckYtDlp:
             patch("subprocess.run", return_value=mock_result),
             patch("preflight.shutil.which", return_value="/usr/local/bin/yt-dlp"),
             patch.dict(sys.modules, {"yt_dlp": MagicMock()}),
+            patch("preflight._check_ytdlp_challenge_solver") as mock_solver,
         ):
             _check_yt_dlp()
         out = capsys.readouterr().out
         assert "importable" in out
         assert "2024.01.01" in out
+        assert mock_solver.called, "the JS challenge solver must be checked too"
 
     def test_fails_when_import_fails(self):
         with patch.dict(sys.modules, {"yt_dlp": None}):
@@ -334,6 +337,127 @@ class TestCheckYtDlp:
             pytest.raises(SystemExit),
         ):
             _check_yt_dlp()
+
+    def test_fails_when_binary_not_on_path(self, capsys):
+        """A venv built under a different path leaves the package importable but no binary."""
+        with (
+            patch("preflight.shutil.which", return_value=None),
+            patch.dict(sys.modules, {"yt_dlp": MagicMock()}),
+            pytest.raises(SystemExit),
+        ):
+            _check_yt_dlp()
+        assert "yt-dlp binary not found" in capsys.readouterr().out
+
+    def test_warns_when_deno_missing(self, capsys):
+        """deno is the JS runtime for the n-challenge — degraded, but not fatal."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "2024.01.01\n"
+
+        def fake_which(name):
+            return None if name == "deno" else "/usr/local/bin/yt-dlp"
+
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch("preflight.shutil.which", side_effect=fake_which),
+            patch.dict(sys.modules, {"yt_dlp": MagicMock()}),
+            patch("preflight._check_ytdlp_challenge_solver"),
+        ):
+            _check_yt_dlp()
+        out = capsys.readouterr().out
+        assert "deno not found" in out
+        assert "⚠️" in out
+
+    def test_deno_version_reported_as_unknown_when_no_stdout(self, capsys):
+        """A deno build that prints nothing must not crash the check."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch("preflight.shutil.which", return_value="/opt/homebrew/bin/deno"),
+            patch.dict(sys.modules, {"yt_dlp": MagicMock()}),
+            patch("preflight._check_ytdlp_challenge_solver"),
+        ):
+            _check_yt_dlp()
+        assert "deno JS runtime: unknown" in capsys.readouterr().out
+
+
+# ── _check_ytdlp_challenge_solver ──────────────────────────────────────────────
+
+
+class TestCheckYtdlpChallengeSolver:
+    """A deno runtime alone is not enough — the solver script must be obtainable.
+
+    Without it yt-dlp returns storyboard images only and every download fails
+    with "Requested format is not available".
+    """
+
+    @staticmethod
+    def _seeded_cache(tmp_path):
+        cache = tmp_path / "challenge-solver"
+        cache.mkdir()
+        (cache / "lib.json").write_text("{}")
+        return cache
+
+    def test_ok_when_components_allowed_and_cache_present(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.delenv("YTDLP_REMOTE_COMPONENTS", raising=False)
+        monkeypatch.setattr("preflight._CHALLENGE_SOLVER_CACHE", self._seeded_cache(tmp_path))
+
+        _check_ytdlp_challenge_solver()
+
+        out = capsys.readouterr().out
+        assert "remote components allowed: ejs:github" in out
+        assert "challenge solver cached" in out
+        assert "⚠️" not in out
+
+    def test_warns_when_components_allowed_but_cache_missing(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.delenv("YTDLP_REMOTE_COMPONENTS", raising=False)
+        monkeypatch.setattr("preflight._CHALLENGE_SOLVER_CACHE", tmp_path / "absent")
+
+        _check_ytdlp_challenge_solver()
+
+        out = capsys.readouterr().out
+        assert "not cached yet" in out
+        assert "⚠️" in out
+
+    def test_warns_when_cache_dir_exists_but_is_empty(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.delenv("YTDLP_REMOTE_COMPONENTS", raising=False)
+        empty = tmp_path / "challenge-solver"
+        empty.mkdir()
+        monkeypatch.setattr("preflight._CHALLENGE_SOLVER_CACHE", empty)
+
+        _check_ytdlp_challenge_solver()
+
+        assert "not cached yet" in capsys.readouterr().out
+
+    def test_warns_when_disabled_but_cache_can_be_reused(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setenv("YTDLP_REMOTE_COMPONENTS", "")
+        monkeypatch.setattr("preflight._CHALLENGE_SOLVER_CACHE", self._seeded_cache(tmp_path))
+
+        _check_ytdlp_challenge_solver()
+
+        out = capsys.readouterr().out
+        assert "go stale" in out
+        assert "⚠️" in out
+
+    def test_fails_when_disabled_and_no_cache(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setenv("YTDLP_REMOTE_COMPONENTS", "")
+        monkeypatch.setattr("preflight._CHALLENGE_SOLVER_CACHE", tmp_path / "absent")
+
+        with pytest.raises(SystemExit):
+            _check_ytdlp_challenge_solver()
+
+        assert "Requested format is not available" in capsys.readouterr().out
+
+    def test_reports_custom_component_list(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setenv("YTDLP_REMOTE_COMPONENTS", "ejs:npm")
+        monkeypatch.setattr("preflight._CHALLENGE_SOLVER_CACHE", self._seeded_cache(tmp_path))
+
+        _check_ytdlp_challenge_solver()
+
+        assert "ejs:npm" in capsys.readouterr().out
 
 
 # ── _check_ffmpeg ─────────────────────────────────────────────────────────────

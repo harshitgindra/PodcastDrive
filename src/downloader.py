@@ -22,6 +22,7 @@ from tenacity import (
 )
 
 from ytdlp_cookies import inject_cookies
+from ytdlp_runtime import inject_remote_components
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ def download_and_convert(
         ],
     }
     inject_cookies(ydl_opts)
+    inject_remote_components(ydl_opts)
 
     try:
         _ydl_download(ydl_opts, video_url, tmp_dir, video_id)

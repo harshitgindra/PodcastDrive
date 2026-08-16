@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads
 from downloader import download_and_convert
-from extractor import BotDetectedError, extract_playlist, extract_video_metadata
+from extractor import BotDetectedError, ExtractionError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
 from s3_manager import S3Manager
@@ -256,6 +256,15 @@ def process_playlist(
                 if sleep_between > 0 and (i + 1) < len(candidates):
                     time.sleep(sleep_between)
 
+            except ExtractionError as exc:
+                failed_count += 1
+                logger.error(
+                    "[Step 4] EXTRACTION FAILED %s: %s. "
+                    "This is an extraction fault, not a missing video — it will be retried next run.",
+                    video.video_id,
+                    exc,
+                )
+
             except BotDetectedError as bde:
                 bot_detected = True
                 logger.error(
@@ -298,12 +307,22 @@ def process_playlist(
             final_keys = s3.list_existing_episodes()
 
         elapsed = time.monotonic() - _run_start
-        log_fn = logger.error if bot_detected else logger.info
+        # Unavailable episodes are silent no-ops, so escalate the summary's log
+        # level: a spike there means extraction is degraded, not that the videos
+        # actually vanished.
+        if bot_detected:
+            log_fn = logger.error
+        elif skipped_unavailable:
+            log_fn = logger.warning
+        else:
+            log_fn = logger.info
         log_fn(
-            "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d failed=%d bot_detected=%s total_s3=%d elapsed=%.1fs",
+            "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d unavailable=%d failed=%d "
+            "bot_detected=%s total_s3=%d elapsed=%.1fs",
             playlist_id,
             new_count,
             skipped_old,
+            skipped_unavailable,
             failed_count,
             bot_detected,
             len(final_keys),
@@ -314,6 +333,7 @@ def process_playlist(
             "playlist_id": playlist_id,
             "new_episodes": new_count,
             "skipped_old": skipped_old,
+            "unavailable": skipped_unavailable,
             "failed": failed_count,
             "bot_detected": bot_detected,
             "total_episodes": len(final_keys),

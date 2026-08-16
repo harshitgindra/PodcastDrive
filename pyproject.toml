@@ -16,6 +16,10 @@ known-first-party = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# importlib mode lets tests/mediasync/test_downloader.py coexist with the
+# top-level tests/test_downloader.py without turning tests/ into a package
+# (which would shadow src/mediasync).
+addopts = "--import-mode=importlib"
 
 [tool.coverage.run]
 source = ["src"]

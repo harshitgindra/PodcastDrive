@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import boto3
 import botocore.exceptions
@@ -196,6 +197,48 @@ def _check_yt_dlp() -> None:
         deno_ver = subprocess.run([deno_bin, "--version"], capture_output=True, text=True)
         ver_line = deno_ver.stdout.splitlines()[0] if deno_ver.stdout else "unknown"
         _ok(f"deno JS runtime: {ver_line} ({deno_bin})")
+
+    _check_ytdlp_challenge_solver()
+
+
+#: Where yt-dlp caches the downloaded EJS challenge-solver script.
+_CHALLENGE_SOLVER_CACHE = Path.home() / ".cache" / "yt-dlp" / "challenge-solver"
+
+
+def _check_ytdlp_challenge_solver() -> None:
+    """Verify yt-dlp can obtain the JavaScript challenge solver.
+
+    A deno runtime alone is not enough: the solver *script* ships as an opt-in
+    remote component.  Without it yt-dlp returns storyboard images only and
+    every download fails with "Requested format is not available".
+    """
+    from ytdlp_runtime import REMOTE_COMPONENTS_ENV, get_remote_components
+
+    components = get_remote_components()
+    cached = _CHALLENGE_SOLVER_CACHE.is_dir() and any(_CHALLENGE_SOLVER_CACHE.iterdir())
+
+    if components:
+        _ok(f"yt-dlp remote components allowed: {', '.join(components)}")
+        if cached:
+            _ok(f"JS challenge solver cached at {_CHALLENGE_SOLVER_CACHE}")
+        else:
+            _warn(
+                "JS challenge solver not cached yet — yt-dlp will fetch it on first use. "
+                "If downloads fail with 'Requested format is not available', check network access "
+                "to the component source."
+            )
+    elif cached:
+        _warn(
+            f"yt-dlp remote components disabled via {REMOTE_COMPONENTS_ENV}, "
+            f"falling back to the cached solver at {_CHALLENGE_SOLVER_CACHE}. "
+            "It will go stale when YouTube rotates its challenge."
+        )
+    else:
+        _fail(
+            f"yt-dlp remote components are disabled via {REMOTE_COMPONENTS_ENV} and no solver "
+            "is cached — every YouTube download will fail with 'Requested format is not "
+            f"available'.  Unset {REMOTE_COMPONENTS_ENV} or set it to 'ejs:github'."
+        )
 
 
 def _check_ffmpeg() -> None:

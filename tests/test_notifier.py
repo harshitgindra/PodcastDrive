@@ -367,3 +367,61 @@ class TestSendRunNotification:
         monkeypatch.setenv("RUNNER", "test")
         send_run_notification([{"name": "X", "new_episodes": 1}], elapsed_secs=10)
         mock_send.assert_not_called()
+
+
+class TestUnavailableReporting:
+    """A run that skipped everything as "unavailable" must never look healthy.
+
+    Regression guard: degraded YouTube extraction used to be reported as
+    "up to date" with a green tick, which is how a multi-day outage went
+    unnoticed.
+    """
+
+    def test_unavailable_replaces_up_to_date_line(self):
+        msg = _format_message([{"name": "ThinkSchool", "new_episodes": 0, "unavailable": 1}])
+        assert "1 unavailable, 0 new" in msg
+        assert "up to date" not in msg
+        assert "⚠️" in msg
+
+    def test_unavailable_counted_in_footer(self):
+        msg = _format_message(
+            [
+                {"name": "A", "new_episodes": 0, "unavailable": 2},
+                {"name": "B", "new_episodes": 1, "unavailable": 1},
+            ]
+        )
+        assert "3 unavailable" in msg
+
+    def test_unavailable_makes_overall_status_a_warning(self):
+        msg = _format_message(
+            [{"name": "A", "new_episodes": 0, "unavailable": 1}], status="success"
+        )
+        footer = msg.strip().splitlines()[-1]
+        assert footer.startswith("⚠️")
+
+    def test_clean_run_still_reports_success(self):
+        msg = _format_message([{"name": "A", "new_episodes": 2}], status="success")
+        footer = msg.strip().splitlines()[-1]
+        assert footer.startswith("✅")
+        assert "unavailable" not in msg
+
+    def test_up_to_date_still_used_when_nothing_is_wrong(self):
+        msg = _format_message([{"name": "A", "new_episodes": 0, "unavailable": 0}])
+        assert "up to date" in msg
+
+    def test_failed_takes_precedence_over_unavailable(self):
+        msg = _format_message([{"name": "A", "new_episodes": 0, "failed": 1, "unavailable": 1}])
+        assert "1 failed, 0 new" in msg
+        assert "1 unavailable, 0 new" not in msg
+
+    def test_bot_detected_takes_precedence_over_unavailable(self):
+        msg = _format_message(
+            [{"name": "A", "new_episodes": 0, "unavailable": 3, "bot_detected": True}]
+        )
+        assert "bot detected" in msg
+
+    def test_missing_unavailable_key_is_treated_as_zero(self):
+        """Older result dicts (and the RSS-podcast path) omit the key entirely."""
+        msg = _format_message([{"name": "A", "new_episodes": 1}])
+        assert "1 new" in msg
+        assert "unavailable" not in msg

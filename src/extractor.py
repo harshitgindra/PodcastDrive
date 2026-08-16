@@ -7,6 +7,7 @@ import yt_dlp
 from models import PlaylistMeta, VideoEntry
 from utils import extract_playlist_id
 from ytdlp_cookies import inject_cookies
+from ytdlp_runtime import inject_remote_components
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
         "ignoreerrors": True,
     }
     inject_cookies(ydl_opts)
+    inject_remote_components(ydl_opts)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         result = ydl.extract_info(playlist_url, download=False)
@@ -106,6 +108,52 @@ class BotDetectedError(Exception):
     pass
 
 
+class ExtractionError(Exception):
+    """Raised when metadata extraction fails for a reason that may be transient.
+
+    Distinct from a *genuinely unavailable* video (deleted, private,
+    region-blocked, members-only), which is reported by returning ``None``.
+    Infrastructure faults — a broken JS challenge solver, network errors, HTTP
+    5xx, rate limiting — surface as this exception so the caller counts them as
+    failures instead of silently writing the episode off forever.
+    """
+
+
+#: Substrings that identify a video as permanently unavailable to us.  Anything
+#: not matching one of these is treated as a retryable extraction failure.
+_PERMANENT_UNAVAILABILITY_MARKERS = (
+    "video unavailable",
+    "private video",
+    "this video is private",
+    "has been removed",
+    "removed by the uploader",
+    "removed for violating",
+    "account associated with this video has been terminated",
+    "who has blocked it in your country",
+    "not available in your country",
+    "not made this video available in your country",
+    "video is not available",
+    "members-only",
+    "join this channel",
+    "available to this channel's members",
+    "is not available on this app",
+    "this live event has ended",
+    "requested video is unavailable",
+    "age-restricted",
+    "inappropriate for some users",
+)
+
+
+def _is_permanently_unavailable(message: str) -> bool:
+    """Return ``True`` when *message* names a permanent unavailability reason.
+
+    Args:
+        message: The yt-dlp error text (any case).
+    """
+    lowered = message.lower()
+    return any(marker in lowered for marker in _PERMANENT_UNAVAILABILITY_MARKERS)
+
+
 def extract_video_metadata(video_url: str) -> dict | None:
     """Extract full metadata for a single video.
 
@@ -114,10 +162,14 @@ def extract_video_metadata(video_url: str) -> dict | None:
 
     Returns:
         Dict with upload_date, description, thumbnail, duration, title.
-        None if video is genuinely unavailable (deleted/private/region-blocked).
+        None if the video is genuinely unavailable (deleted, private,
+        region-blocked, members-only).
 
     Raises:
         BotDetectedError: YouTube is blocking requests (cookies expired or IP flagged).
+        ExtractionError: Extraction failed for a potentially transient reason
+            (broken JS challenge solver, network fault, rate limiting).  The
+            episode should be retried on a later run.
     """
     ydl_opts = {
         "quiet": True,
@@ -126,13 +178,14 @@ def extract_video_metadata(video_url: str) -> dict | None:
         "ignoreerrors": False,
     }
     inject_cookies(ydl_opts)
+    inject_remote_components(ydl_opts)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
 
         if not info:
-            return None
+            raise ExtractionError(f"yt-dlp returned no metadata for {video_url}")
 
         return {
             "upload_date": info.get("upload_date") or "",
@@ -144,16 +197,24 @@ def extract_video_metadata(video_url: str) -> dict | None:
             "chapters": info.get("chapters") or [],
         }
     except yt_dlp.utils.DownloadError as exc:
-        msg = str(exc).lower()
-        if "sign in to confirm" in msg or "bot" in msg:
+        msg = str(exc)
+        lowered = msg.lower()
+        if "sign in to confirm" in lowered or "bot" in lowered:
             raise BotDetectedError(
                 f"YouTube bot detection triggered for {video_url}. "
                 "Cookies are expired or missing authentication. "
                 "Refresh with: ./refresh_cookies.sh"
             ) from exc
-        # Genuine unavailability (private, deleted, region-blocked)
-        logger.info("Video unavailable %s: %s", video_url, exc)
-        return None
+
+        if _is_permanently_unavailable(msg):
+            logger.info("Video unavailable %s: %s", video_url, exc)
+            return None
+
+        # Anything else is an extraction fault, not a missing video.  Most
+        # commonly "Requested format is not available", which means yt-dlp could
+        # not solve the n challenge and returned no media formats at all.
+        raise ExtractionError(f"Extraction failed for {video_url}: {msg}") from exc
+    except BotDetectedError:
+        raise
     except Exception as exc:
-        logger.warning("Failed to extract metadata for %s: %s", video_url, exc)
-        return None
+        raise ExtractionError(f"Extraction failed for {video_url}: {exc}") from exc

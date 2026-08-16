@@ -66,6 +66,9 @@ class TestDownloadAndConvertSuccess:
             assert opts["format"] == "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
             assert opts["quiet"] is True
             assert opts["no_warnings"] is True
+            # Without the JS challenge solver no audio format exists at all and the
+            # format selector above can never match.
+            assert opts["remote_components"] == ["ejs:github"]
 
             # Check FFmpeg postprocessor
             pp = opts["postprocessors"]

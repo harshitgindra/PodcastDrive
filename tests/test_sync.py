@@ -1,11 +1,16 @@
 """Unit tests for the sync orchestration module."""
 
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Imported at module scope on purpose: an installed ``ytdlp_plugins.extractor``
+# package shadows this project's ``extractor`` module once yt-dlp has loaded its
+# plugins, so a late in-function import can resolve to the wrong module.
+from extractor import BotDetectedError, ExtractionError
 from models import PlaylistMeta, VideoEntry
 from sync import _rebuild_feed, _reconcile, process_playlist
 
@@ -164,6 +169,7 @@ class TestProcessPlaylistHappyPath:
             "playlist_id",
             "new_episodes",
             "skipped_old",
+            "unavailable",
             "failed",
             "bot_detected",
             "total_episodes",
@@ -888,3 +894,127 @@ class TestProcessPlaylistSummaryIntegration:
         assert "summary" not in saved_manifest.get("vid001", {}), (
             f"Error code {error_code!r} should not be stored as a summary"
         )
+
+
+# ---------------------------------------------------------------------------
+# process_playlist — extraction faults vs genuinely unavailable videos
+# ---------------------------------------------------------------------------
+
+
+class TestExtractionFaultAccounting:
+    """A broken extractor must be reported as a failure, never as a silent skip.
+
+    Regression guard: an ``ExtractionError`` used to surface as
+    "video unavailable" with ``failed=0``, so a total YouTube outage looked
+    identical to "no new episodes".
+    """
+
+    def _run(self, metadata_side_effect, videos=None, dry_run=False):
+        playlist_meta = _make_playlist_meta()
+        video_entries = videos if videos is not None else [_make_video("vid001")]
+
+        with (
+            patch.dict(os.environ, BASE_ENV, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)),
+            patch("sync.extract_video_metadata", side_effect=metadata_side_effect),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
+            s3 = _make_s3_manager()
+            mock_s3_cls.return_value = s3
+            mock_dl.side_effect = lambda url, vid, tmp: f"/tmp/PLtest/{vid}.mp3"
+            result = process_playlist(
+                "https://youtube.com/playlist?list=PLtest", dry_run=dry_run
+            )
+            return result, mock_dl
+
+    def test_extraction_error_counts_as_failure_not_unavailable(self):
+        result, mock_dl = self._run(
+            ExtractionError("Requested format is not available")
+        )
+
+        assert result["failed"] == 1
+        assert result["unavailable"] == 0
+        assert result["new_episodes"] == 0
+        assert mock_dl.call_count == 0, "must not attempt a download after extraction failed"
+
+    def test_extraction_error_is_logged_as_retryable(self, caplog):
+        with caplog.at_level(logging.ERROR, logger="sync"):
+            self._run(ExtractionError("Requested format is not available"))
+
+        assert "EXTRACTION FAILED" in caplog.text
+        assert "retried next run" in caplog.text
+
+    def test_extraction_error_does_not_abort_remaining_candidates(self):
+        """Unlike bot detection, a per-video fault must not stop the run."""
+        good = {
+            "upload_date": _RECENT_DATE,
+            "description": "",
+            "thumbnail": "",
+            "duration": 300,
+            "title": "Video Title",
+        }
+        result, mock_dl = self._run(
+            [ExtractionError("boom"), good],
+            videos=[_make_video("vid001"), _make_video("vid002")],
+        )
+
+        assert result["failed"] == 1
+        assert result["new_episodes"] == 1
+        assert mock_dl.call_count == 1
+
+    def test_unavailable_video_still_reported_separately(self):
+        result, mock_dl = self._run([None])
+
+        assert result["unavailable"] == 1
+        assert result["failed"] == 0
+        assert mock_dl.call_count == 0
+
+    def test_unavailable_count_is_in_the_summary_line(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="sync"):
+            self._run([None])
+
+        summaries = [r for r in caplog.records if "SYNC SUMMARY" in r.getMessage()]
+        assert len(summaries) == 1
+        assert "unavailable=1" in summaries[0].getMessage()
+        assert summaries[0].levelno == logging.WARNING, (
+            "a silent skip must be escalated above INFO so it is visible"
+        )
+
+    def test_clean_run_summary_stays_at_info(self, caplog):
+        good = {
+            "upload_date": _RECENT_DATE,
+            "description": "",
+            "thumbnail": "",
+            "duration": 300,
+            "title": "Video Title",
+        }
+        with caplog.at_level(logging.INFO, logger="sync"):
+            self._run([good])
+
+        summaries = [r for r in caplog.records if "SYNC SUMMARY" in r.getMessage()]
+        assert len(summaries) == 1
+        assert "unavailable=0" in summaries[0].getMessage()
+        assert summaries[0].levelno == logging.INFO
+
+    def test_bot_detection_still_takes_precedence_over_unavailable(self, caplog):
+        with caplog.at_level(logging.INFO, logger="sync"):
+            self._run(
+                [None, BotDetectedError("blocked")],
+                videos=[_make_video("vid001"), _make_video("vid002")],
+            )
+
+        summaries = [r for r in caplog.records if "SYNC SUMMARY" in r.getMessage()]
+        assert summaries[0].levelno == logging.ERROR
+        assert "bot_detected=True" in summaries[0].getMessage()
+
+    def test_extraction_error_reported_in_dry_run_too(self):
+        result, mock_dl = self._run(ExtractionError("boom"), dry_run=True)
+
+        assert result["failed"] == 1
+        assert mock_dl.call_count == 0
