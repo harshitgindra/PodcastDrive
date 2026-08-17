@@ -24,6 +24,12 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
 
     Returns:
         Tuple of (playlist metadata, list of video entries).
+
+    Raises:
+        BotDetectedError: YouTube returned a bot-detection challenge.
+        ExtractionError: yt-dlp returned no playlist data, or failed for a
+            potentially transient reason.  Callers must not treat this as an
+            empty playlist (see sync._orphan_deletion_is_safe).
     """
     ydl_opts = {
         "quiet": True,
@@ -34,8 +40,28 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
     inject_cookies(ydl_opts)
     inject_remote_components(ydl_opts)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        result = ydl.extract_info(playlist_url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            result = ydl.extract_info(playlist_url, download=False)
+    except yt_dlp.utils.DownloadError as exc:
+        # ignoreerrors only suppresses *per-entry* failures; a playlist-level
+        # fault (network, HTTP 5xx, bot challenge) still raises here.
+        if _is_bot_detection(str(exc)):
+            raise BotDetectedError(
+                f"YouTube bot detection triggered for playlist {playlist_url}. "
+                "Cookies are expired or missing authentication. "
+                "Refresh with: ./refresh_cookies.sh"
+            ) from exc
+        raise ExtractionError(f"Playlist extraction failed for {playlist_url}: {exc}") from exc
+
+    if not result:
+        # extract_info returns None when yt-dlp gave up entirely.  Previously
+        # result.get(...) raised AttributeError here, which callers logged as an
+        # opaque crash instead of a retryable extraction fault.
+        raise ExtractionError(
+            f"yt-dlp returned no playlist data for {playlist_url} "
+            "(throttling, an unsolved JS challenge, or a deleted playlist)"
+        )
 
     playlist_id = extract_playlist_id(playlist_url)
 

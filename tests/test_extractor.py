@@ -675,3 +675,63 @@ class TestBotDetectionFalsePositiveInMetadata:
 
         with pytest.raises(BotDetectedError):
             extract_video_metadata("https://youtube.com/watch?v=xyz")
+
+
+# ---------------------------------------------------------------------------
+# extract_playlist — playlist-level failures
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPlaylistFailures:
+    """A failed playlist fetch must be a typed error, not an AttributeError or an empty list."""
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_none_result_raises_extraction_error(self, mock_ydl_cls):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = None
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        with pytest.raises(ExtractionError, match="no playlist data"):
+            extract_playlist("https://www.youtube.com/playlist?list=PLtest123")
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_empty_dict_result_raises_extraction_error(self, mock_ydl_cls):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {}
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        with pytest.raises(ExtractionError, match="no playlist data"):
+            extract_playlist("https://www.youtube.com/playlist?list=PLtest123")
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_bot_challenge_raises_bot_detected(self, mock_ydl_cls):
+        import yt_dlp
+
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("ERROR: Sign in to confirm you're not a bot")
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        with pytest.raises(BotDetectedError, match="refresh_cookies"):
+            extract_playlist("https://www.youtube.com/playlist?list=PLtest123")
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_other_download_error_raises_extraction_error(self, mock_ydl_cls):
+        import yt_dlp
+
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("HTTP Error 503: Service Unavailable")
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        with pytest.raises(ExtractionError, match="503"):
+            extract_playlist("https://www.youtube.com/playlist?list=PLtest123")
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_playlist_with_no_entries_still_succeeds(self, mock_ydl_cls):
+        """A well-formed response that simply has no entries is a legitimate empty playlist."""
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {"title": "Empty", "entries": []}
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        meta, entries = extract_playlist("https://www.youtube.com/playlist?list=PLtest123")
+        assert meta.title == "Empty"
+        assert entries == []
