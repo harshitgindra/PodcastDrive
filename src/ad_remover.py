@@ -39,7 +39,7 @@ Environment variables (all optional — sensible defaults provided):
                               gap (±3 s window), producing cleaner audio cuts (default: "true").
     TRANSCRIBE_CACHE_ENABLED – Set to "false" to disable S3 transcript caching (default: "true").
                                When enabled, the segment JSON from each successful Transcribe job is
-                               saved to S3 at ``transcribe-cache/{video_id}.json`` and reused on
+                               saved to S3 at ``transcribe-cache/{slug}/{video_id}.json`` and reused on
                                subsequent runs, eliminating repeated transcription costs for
                                reprocessed episodes.
     TRANSCRIBE_CACHE_PREFIX  – S3 key prefix for cached transcripts (default: "transcribe-cache").
@@ -352,49 +352,118 @@ def detect_music_bookends(
 # ---------------------------------------------------------------------------
 
 
-def _transcript_cache_key(video_id: str) -> str:
-    """Return the S3 key used for caching a transcript."""
+def _safe_namespace(namespace: str) -> str:
+    """Return *namespace* reduced to characters that are safe in an S3 key."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", namespace).strip("-.")
+    return cleaned[:80]
+
+
+def _cache_key(video_id: str, suffix: str, namespace: str = "") -> str:
+    """Return the S3 cache key for *video_id* under *namespace*.
+
+    Episode identifiers are only unique *within* a feed.  RSS ``<guid>`` values
+    are frequently bare integers, so ``episode_id_from_guid`` produces ids like
+    ``"1"`` or ``"12345"`` that collide across podcasts.  Without a namespace,
+    two different episodes shared one transcript and one ad-segment cache entry,
+    and the second podcast had another show's ad timestamps spliced out of it.
+
+    Args:
+        video_id:  Episode identifier (unique within the namespace).
+        suffix:    Key suffix, e.g. ``".json"``, ``"_ads.json"``.
+        namespace: Per-podcast namespace, usually the S3 slug.  Empty means the
+            legacy flat layout.
+
+    Returns:
+        The S3 object key.
+    """
     prefix = os.environ.get("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache")
-    return f"{prefix}/{video_id}.json"
+    ns = _safe_namespace(namespace)
+    if ns:
+        return f"{prefix}/{ns}/{video_id}{suffix}"
+    return f"{prefix}/{video_id}{suffix}"
 
 
-def _load_transcript_cache(s3_client, bucket: str, video_id: str) -> list[dict] | None:
+def _cache_read_keys(video_id: str, suffix: str, namespace: str = "") -> list[str]:
+    """Return the keys to try when *reading* a cache entry, best match first.
+
+    The flat (un-namespaced) key is included as a fallback so entries written
+    before namespacing are still honoured instead of forcing a re-transcription
+    of the whole back catalogue.
+    """
+    keys = [_cache_key(video_id, suffix, namespace)]
+    flat = _cache_key(video_id, suffix, "")
+    if flat != keys[0]:
+        keys.append(flat)
+    return keys
+
+
+def _transcript_cache_key(video_id: str, namespace: str = "") -> str:
+    """Return the S3 key used for caching a transcript."""
+    return _cache_key(video_id, ".json", namespace)
+
+
+def _get_cached_bytes(s3_client, bucket: str, keys: list[str], label: str, video_id: str) -> bytes | None:
+    """Return the body of the first key in *keys* that exists, else ``None``.
+
+    Args:
+        s3_client: Boto3 S3 client.
+        bucket:    S3 bucket name.
+        keys:      Candidate keys, best match first.
+        label:     Human-readable cache name, used only for log messages.
+        video_id:  Episode identifier, used only for log messages.
+    """
+    from botocore.exceptions import ClientError
+
+    for key in keys:
+        try:
+            resp = s3_client.get_object(Bucket=bucket, Key=key)
+            return resp["Body"].read()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in ("NoSuchKey", "404"):
+                logger.debug("[AdRemover] %s cache error for %s (%s): %s", label, video_id, code, exc)
+        except Exception as exc:
+            logger.debug("[AdRemover] %s cache load failed for %s: %s", label, video_id, exc)
+    logger.debug("[AdRemover] %s cache MISS for %s", label, video_id)
+    return None
+
+
+def _load_transcript_cache(s3_client, bucket: str, video_id: str, namespace: str = "") -> list[dict] | None:
     """Try to load a cached transcript from S3.
 
     Args:
         s3_client: Boto3 S3 client.
         bucket:    S3 bucket name.
         video_id:  Episode identifier used as the cache key.
+        namespace: Per-podcast cache namespace (see :func:`_cache_key`).
 
     Returns:
         Cached segment list, or ``None`` if not found or loading fails.
     """
-    from botocore.exceptions import ClientError
-
-    key = _transcript_cache_key(video_id)
+    raw = _get_cached_bytes(
+        s3_client, bucket, _cache_read_keys(video_id, ".json", namespace), "Transcript", video_id
+    )
+    if raw is None:
+        return None
     try:
-        resp = s3_client.get_object(Bucket=bucket, Key=key)
-        data = json.loads(resp["Body"].read().decode("utf-8"))
-        if isinstance(data, list):
-            logger.info(
-                "[AdRemover] Transcript cache HIT for %s (%d segments) — skipping Transcribe job",
-                video_id,
-                len(data),
-            )
-            return data
-        logger.warning("[AdRemover] Cached transcript for %s is not a list — ignoring", video_id)
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchKey", "404"):
-            logger.debug("[AdRemover] Transcript cache MISS for %s", video_id)
-        else:
-            logger.debug("[AdRemover] Transcript cache load error for %s (%s): %s", video_id, code, exc)
+        data = json.loads(raw.decode("utf-8"))
     except Exception as exc:
-        logger.debug("[AdRemover] Transcript cache load failed for %s: %s", video_id, exc)
+        logger.debug("[AdRemover] Transcript cache decode failed for %s: %s", video_id, exc)
+        return None
+    if isinstance(data, list):
+        logger.info(
+            "[AdRemover] Transcript cache HIT for %s (%d segments) — skipping Transcribe job",
+            video_id,
+            len(data),
+        )
+        return data
+    logger.warning("[AdRemover] Cached transcript for %s is not a list — ignoring", video_id)
     return None
 
 
-def _save_transcript_cache(s3_client, bucket: str, video_id: str, segments: list[dict]) -> None:
+def _save_transcript_cache(
+    s3_client, bucket: str, video_id: str, segments: list[dict], namespace: str = ""
+) -> None:
     """Persist a transcript segment list to S3 for future reuse.
 
     Args:
@@ -402,8 +471,9 @@ def _save_transcript_cache(s3_client, bucket: str, video_id: str, segments: list
         bucket:    S3 bucket name.
         video_id:  Episode identifier used as the cache key.
         segments:  Segment list returned by ``_items_to_segments``.
+        namespace: Per-podcast cache namespace (see :func:`_cache_key`).
     """
-    key = _transcript_cache_key(video_id)
+    key = _cache_key(video_id, ".json", namespace)
     try:
         body = json.dumps(segments).encode("utf-8")
         s3_client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
@@ -412,31 +482,27 @@ def _save_transcript_cache(s3_client, bucket: str, video_id: str, segments: list
         logger.warning("[AdRemover] Could not save transcript cache for %s: %s", video_id, exc)
 
 
-def _load_summary_cache(s3_client, bucket: str, video_id: str) -> str | None:
+def _load_summary_cache(s3_client, bucket: str, video_id: str, namespace: str = "") -> str | None:
     """Try to load a cached episode summary from S3."""
-    from botocore.exceptions import ClientError
-
-    prefix = os.environ.get("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache")
-    key = f"{prefix}/{video_id}_summary.txt"
+    raw = _get_cached_bytes(
+        s3_client, bucket, _cache_read_keys(video_id, "_summary.txt", namespace), "Summary", video_id
+    )
+    if raw is None:
+        return None
     try:
-        resp = s3_client.get_object(Bucket=bucket, Key=key)
-        text = resp["Body"].read().decode("utf-8").strip()
-        if text:
-            logger.info("[AdRemover] Summary cache HIT for %s", video_id)
-            return text
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code not in ("NoSuchKey", "404"):
-            logger.debug("[AdRemover] Summary cache error for %s: %s", video_id, exc)
+        text = raw.decode("utf-8").strip()
     except Exception as exc:
-        logger.debug("[AdRemover] Summary cache load failed for %s: %s", video_id, exc)
+        logger.debug("[AdRemover] Summary cache decode failed for %s: %s", video_id, exc)
+        return None
+    if text:
+        logger.info("[AdRemover] Summary cache HIT for %s", video_id)
+        return text
     return None
 
 
-def _save_summary_cache(s3_client, bucket: str, video_id: str, summary: str) -> None:
+def _save_summary_cache(s3_client, bucket: str, video_id: str, summary: str, namespace: str = "") -> None:
     """Persist an episode summary to S3."""
-    prefix = os.environ.get("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache")
-    key = f"{prefix}/{video_id}_summary.txt"
+    key = _cache_key(video_id, "_summary.txt", namespace)
     try:
         s3_client.put_object(
             Bucket=bucket,
@@ -449,10 +515,11 @@ def _save_summary_cache(s3_client, bucket: str, video_id: str, summary: str) -> 
         logger.warning("[AdRemover] Could not save summary cache for %s: %s", video_id, exc)
 
 
-def _save_transcript_text(s3_client, bucket: str, video_id: str, segments: list[dict]) -> None:
+def _save_transcript_text(
+    s3_client, bucket: str, video_id: str, segments: list[dict], namespace: str = ""
+) -> None:
     """Persist the full transcript as plain text to S3 alongside the segment cache."""
-    prefix = os.environ.get("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache")
-    key = f"{prefix}/{video_id}.txt"
+    key = _cache_key(video_id, ".txt", namespace)
     text = "\n".join(f"[{s['start']:.1f}s]  {s['text']}" for s in segments)
     try:
         s3_client.put_object(
@@ -466,35 +533,36 @@ def _save_transcript_text(s3_client, bucket: str, video_id: str, segments: list[
         logger.warning("[AdRemover] Could not save transcript text for %s: %s", video_id, exc)
 
 
-def _load_ad_segments_cache(s3_client, bucket: str, video_id: str) -> list[AdSegment] | None:
+def _load_ad_segments_cache(s3_client, bucket: str, video_id: str, namespace: str = "") -> list[AdSegment] | None:
     """Try to load cached detected ad-segments from S3.
 
-    Stored alongside the transcript cache at ``transcribe-cache/{video_id}_ads.json``.
-    Returns ``None`` on miss or error so the caller falls back to a real Bedrock call.
+    Stored alongside the transcript cache at
+    ``transcribe-cache/{namespace}/{video_id}_ads.json``.  Returns ``None`` on
+    miss or error so the caller falls back to a real Bedrock call.
     """
-    from botocore.exceptions import ClientError
-
-    key = _transcript_cache_key(video_id).replace(".json", "_ads.json")
+    raw = _get_cached_bytes(
+        s3_client, bucket, _cache_read_keys(video_id, "_ads.json", namespace), "Ad-segments", video_id
+    )
+    if raw is None:
+        return None
     try:
-        resp = s3_client.get_object(Bucket=bucket, Key=key)
-        data = json.loads(resp["Body"].read().decode("utf-8"))
-        if isinstance(data, list):
-            logger.info(
-                "[AdRemover] Ad-segments cache HIT for %s (%d segments) — skipping Bedrock detection",
-                video_id,
-                len(data),
-            )
-            return data
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code not in ("NoSuchKey", "404"):
-            logger.debug("[AdRemover] Ad-segments cache error for %s (%s): %s", video_id, code, exc)
+        data = json.loads(raw.decode("utf-8"))
     except Exception as exc:
-        logger.debug("[AdRemover] Ad-segments cache load failed for %s: %s", video_id, exc)
+        logger.debug("[AdRemover] Ad-segments cache decode failed for %s: %s", video_id, exc)
+        return None
+    if isinstance(data, list):
+        logger.info(
+            "[AdRemover] Ad-segments cache HIT for %s (%d segments) — skipping Bedrock detection",
+            video_id,
+            len(data),
+        )
+        return data
     return None
 
 
-def _save_ad_segments_cache(s3_client, bucket: str, video_id: str, ad_segments: list[AdSegment]) -> None:
+def _save_ad_segments_cache(
+    s3_client, bucket: str, video_id: str, ad_segments: list[AdSegment], namespace: str = ""
+) -> None:
     """Persist detected ad-segments to S3 for future reuse.
 
     Empty results are intentionally not cached: a cache miss is always safer
@@ -508,7 +576,7 @@ def _save_ad_segments_cache(s3_client, bucket: str, video_id: str, ad_segments: 
             video_id,
         )
         return
-    key = _transcript_cache_key(video_id).replace(".json", "_ads.json")
+    key = _cache_key(video_id, "_ads.json", namespace)
     try:
         body = json.dumps(ad_segments).encode("utf-8")
         s3_client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
@@ -643,7 +711,7 @@ def _extract_audio_window(mp3_path: str, start: float, end: float, out_path: str
         raise RuntimeError(f"ffmpeg window extract failed (rc={result.returncode}): {result.stderr[-500:]}")
 
 
-def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
+def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") -> list[dict]:
     """Upload *mp3_path* to S3 and transcribe it with AWS Transcribe.
 
     Returns a list of segment dicts, each with keys ``start`` (float),
@@ -681,7 +749,7 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
 
     # 0. Check transcript cache (skip expensive Transcribe job if already done)
     if use_cache:
-        cached = _load_transcript_cache(s3_client, bucket, video_id)
+        cached = _load_transcript_cache(s3_client, bucket, video_id, cache_namespace)
         if cached is not None:
             return cached
 
@@ -779,12 +847,15 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
                 len(windows),
             )
             if use_cache:
-                _save_transcript_cache(s3_client, bucket, video_id, all_segments)
-                _save_transcript_text(s3_client, bucket, video_id, all_segments)
+                _save_transcript_cache(s3_client, bucket, video_id, all_segments, cache_namespace)
+                _save_transcript_text(s3_client, bucket, video_id, all_segments, cache_namespace)
             return all_segments
 
     # 1. Upload audio to a temporary S3 key
-    tmp_key = f"transcribe-tmp/{video_id}.mp3"
+    # Namespaced so two feeds that reuse an episode id cannot overwrite each
+    # other's in-flight Transcribe input while both jobs are running.
+    _tmp_ns = _safe_namespace(cache_namespace)
+    tmp_key = f"transcribe-tmp/{_tmp_ns}/{video_id}.mp3" if _tmp_ns else f"transcribe-tmp/{video_id}.mp3"
     logger.info("[AdRemover] Uploading %s to s3://%s/%s for transcription", mp3_path, bucket, tmp_key)
     retry_aws_call(
         lambda: s3_client.upload_file(mp3_path, bucket, tmp_key),
@@ -860,8 +931,8 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
 
         # Save to cache so subsequent runs skip the Transcribe job
         if use_cache:
-            _save_transcript_cache(s3_client, bucket, video_id, segments)
-            _save_transcript_text(s3_client, bucket, video_id, segments)
+            _save_transcript_cache(s3_client, bucket, video_id, segments, cache_namespace)
+            _save_transcript_text(s3_client, bucket, video_id, segments, cache_namespace)
 
         return segments
 
@@ -1845,6 +1916,7 @@ def _generate_summary(
     video_id: str,
     episode_title: str = "",
     duration_secs: float | None = None,
+    cache_namespace: str = "",
 ) -> str:
     """Generate an AI episode summary if enabled, with S3 caching.
 
@@ -1899,7 +1971,7 @@ def _generate_summary(
         return ""
 
     s3_client = boto3.client("s3", region_name=region)
-    summary = _load_summary_cache(s3_client, bucket, video_id) or ""
+    summary = _load_summary_cache(s3_client, bucket, video_id, cache_namespace) or ""
     if summary:
         return summary
 
@@ -1909,7 +1981,7 @@ def _generate_summary(
         title = episode_title or video_id  # use human-readable title in the Bedrock prompt
         summary = generate_episode_summary(segments, title)
         if summary:
-            _save_summary_cache(s3_client, bucket, video_id, summary)
+            _save_summary_cache(s3_client, bucket, video_id, summary, cache_namespace)
     except Exception as exc:
         logger.warning("[AdRemover] Summary generation failed for %s: %s", video_id, exc)
 
@@ -1927,6 +1999,7 @@ def remove_ads(
     min_music_outro_secs: float = 5.0,
     episode_title: str = "",
     duration_secs: float | None = None,
+    cache_namespace: str = "",
 ) -> tuple[str, list[AdSegment], str]:
     """Run the full ad-removal pipeline on *mp3_path*.
 
@@ -1951,6 +2024,11 @@ def remove_ads(
         duration_secs: Total episode duration in seconds.  Passed to the summary
                        guard — episodes longer than ``SUMMARY_MAX_DURATION_SECS``
                        are not summarised.  ``None`` bypasses the guard.
+        cache_namespace: Namespace for the transcript / ad-segment / summary S3
+                       caches, normally the podcast's S3 slug.  Required whenever
+                       *video_id* is not globally unique (RSS guids are only
+                       unique within their own feed), otherwise two shows share
+                       cache entries and get each other's ad timestamps.
 
     Returns:
         A tuple of ``(cleaned_path, ad_segments, summary)`` where *cleaned_path*
@@ -1993,7 +2071,7 @@ def remove_ads(
     _s3 = boto3.client("s3", region_name=_region) if _bucket else None
 
     if use_cache and _bucket and _s3:
-        cached_ads = _load_ad_segments_cache(_s3, _bucket, video_id)
+        cached_ads = _load_ad_segments_cache(_s3, _bucket, video_id, cache_namespace)
         if cached_ads is not None:
             ad_segments = cached_ads
             # Skip transcription + detection — jump straight to snap + splice
@@ -2007,7 +2085,7 @@ def remove_ads(
                 "GENERATE_SUMMARIES", "false"
             ).lower() in ("true", "1", "yes")
             if _want_cached_transcript:
-                _loaded_transcript = _load_transcript_cache(_s3, _bucket, video_id)
+                _loaded_transcript = _load_transcript_cache(_s3, _bucket, video_id, cache_namespace)
                 if _loaded_transcript:
                     _cached_transcript = _loaded_transcript
             if (_trim_intro or _trim_outro) and _cached_transcript:
@@ -2024,7 +2102,11 @@ def remove_ads(
             all_cached = _merge_overlapping_ads(ad_segments + music_segments)
             if not all_cached:
                 logger.info("[AdRemover] Cached ad-segments empty (no ads) for %s — using original file", video_id)
-                return mp3_path, [], _generate_summary(_cached_transcript, video_id, episode_title, duration_secs)
+                return (
+                    mp3_path,
+                    [],
+                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
+                )
             if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
                 all_cached = snap_ad_boundaries(all_cached, mp3_path)
             if dry_run:
@@ -2044,17 +2126,17 @@ def remove_ads(
                 return (
                     mp3_path,
                     all_cached,
-                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs),
+                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
                 )
             logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
             return (
                 cleaned_path,
                 all_cached,
-                _generate_summary(_cached_transcript, video_id, episode_title, duration_secs),
+                _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
             )
 
     try:
-        segments = transcribe_audio(mp3_path, video_id)
+        segments = transcribe_audio(mp3_path, video_id, cache_namespace=cache_namespace)
     except Exception as exc:
         logger.error("[AdRemover] Transcription failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, [], "TRANSCRIBE_FAILED"
@@ -2067,7 +2149,7 @@ def remove_ads(
 
     # Save detection result to cache so retries (after splice failure) skip Bedrock
     if use_cache and _bucket and _s3:
-        _save_ad_segments_cache(_s3, _bucket, video_id, ad_segments)
+        _save_ad_segments_cache(_s3, _bucket, video_id, ad_segments, cache_namespace)
 
     # Detect silence once for reuse in both music detection and boundary snapping
     _silences: list[dict] | None = None
@@ -2104,7 +2186,7 @@ def remove_ads(
 
     if not all_segments:
         logger.info("[AdRemover] No ads detected for %s — using original file", video_id)
-        summary = _generate_summary(segments, video_id, episode_title, duration_secs)
+        summary = _generate_summary(segments, video_id, episode_title, duration_secs, cache_namespace=cache_namespace)
         return mp3_path, [], summary
 
     # Fix #5: snap boundaries to silence gaps for cleaner cuts
@@ -2128,7 +2210,7 @@ def remove_ads(
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, all_segments, "SPLICE_FAILED"
 
-    summary = _generate_summary(segments, video_id, episode_title, duration_secs)
+    summary = _generate_summary(segments, video_id, episode_title, duration_secs, cache_namespace=cache_namespace)
 
     logger.info("[AdRemover] Ad removal complete for %s → %s", video_id, cleaned_path)
     return cleaned_path, all_segments, summary

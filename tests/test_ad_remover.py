@@ -608,7 +608,7 @@ class TestRemoveAds:
 
         ad_remover.remove_ads("/ep.mp3", "my_video_id", str(tmp_path))
 
-        mock_transcribe.assert_called_once_with("/ep.mp3", "my_video_id")
+        mock_transcribe.assert_called_once_with("/ep.mp3", "my_video_id", cache_namespace="")
 
     def test_dry_run_returns_original_without_splicing(self, monkeypatch, tmp_path):
         """With REMOVE_ADS_DRY_RUN=true, ads are detected but splice is never called."""
@@ -3363,7 +3363,7 @@ class TestRemoveAdsSummaryParams:
 
         captured: dict = {}
 
-        def fake_generate(segs, vid, episode_title="", duration_secs=None):
+        def fake_generate(segs, vid, episode_title="", duration_secs=None, cache_namespace=""):
             captured["episode_title"] = episode_title
             captured["duration_secs"] = duration_secs
             return ""
@@ -3396,7 +3396,7 @@ class TestRemoveAdsSummaryParams:
 
         captured: dict = {}
 
-        def fake_generate(segs, vid, episode_title="", duration_secs=None):
+        def fake_generate(segs, vid, episode_title="", duration_secs=None, cache_namespace=""):
             captured["episode_title"] = episode_title
             captured["duration_secs"] = duration_secs
             return ""
@@ -3700,3 +3700,184 @@ class TestSpliceConcatDemuxer:
 
         for seg in created_segs:
             assert not pathlib.Path(seg).exists(), f"Segment not cleaned up: {seg}"
+
+
+# ---------------------------------------------------------------------------
+# Cache namespacing
+# ---------------------------------------------------------------------------
+
+
+class TestCacheNamespacing:
+    """RSS guids are only unique within a feed, so cache keys must be namespaced."""
+
+    def test_flat_key_when_no_namespace(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        assert ad_remover._cache_key("12345", ".json") == "transcribe-cache/12345.json"
+
+    def test_namespace_is_inserted(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        assert ad_remover._cache_key("12345", ".json", "my-show") == "transcribe-cache/my-show/12345.json"
+
+    def test_same_id_in_two_namespaces_does_not_collide(self):
+        import ad_remover
+
+        a = ad_remover._cache_key("1", "_ads.json", "the-daily")
+        b = ad_remover._cache_key("1", "_ads.json", "hard-fork")
+        assert a != b
+
+    def test_prefix_env_var_is_honoured(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.setenv("TRANSCRIBE_CACHE_PREFIX", "cache-v2")
+        assert ad_remover._cache_key("7", ".txt", "show") == "cache-v2/show/7.txt"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("My Show!", "My-Show"),
+            ("../../etc", "etc"),
+            ("a/b", "a-b"),
+            ("...", ""),
+            ("", ""),
+        ],
+    )
+    def test_namespace_is_sanitised(self, raw, expected):
+        import ad_remover
+
+        assert ad_remover._safe_namespace(raw) == expected
+
+    def test_namespace_is_length_capped(self):
+        import ad_remover
+
+        assert len(ad_remover._safe_namespace("x" * 500)) == 80
+
+    def test_unsafe_namespace_cannot_escape_the_prefix(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        key = ad_remover._cache_key("1", ".json", "../../secrets")
+        assert ".." not in key
+        assert key.startswith("transcribe-cache/")
+
+    def test_read_keys_prefer_namespace_then_fall_back_to_flat(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        assert ad_remover._cache_read_keys("1", ".json", "show") == [
+            "transcribe-cache/show/1.json",
+            "transcribe-cache/1.json",
+        ]
+
+    def test_read_keys_are_deduplicated_without_a_namespace(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        assert ad_remover._cache_read_keys("1", ".json") == ["transcribe-cache/1.json"]
+
+
+class TestCacheReadFallback:
+    """Entries written before namespacing must still be honoured."""
+
+    def _s3_with(self, available: dict):
+        from botocore.exceptions import ClientError
+
+        def get_object(Bucket, Key):  # noqa: N803 - boto3 kwarg casing
+            if Key in available:
+                body = MagicMock()
+                body.read.return_value = available[Key]
+                return {"Body": body}
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+        return MagicMock(get_object=MagicMock(side_effect=get_object))
+
+    def test_namespaced_entry_is_used_when_present(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = self._s3_with(
+            {
+                "transcribe-cache/show/1.json": json.dumps([{"start": 1.0, "end": 2.0, "text": "ns"}]).encode(),
+                "transcribe-cache/1.json": json.dumps([{"start": 0.0, "end": 1.0, "text": "flat"}]).encode(),
+            }
+        )
+        segs = ad_remover._load_transcript_cache(s3, "bkt", "1", "show")
+        assert segs[0]["text"] == "ns"
+
+    def test_legacy_flat_entry_is_still_a_hit(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = self._s3_with(
+            {"transcribe-cache/1.json": json.dumps([{"start": 0.0, "end": 1.0, "text": "flat"}]).encode()}
+        )
+        segs = ad_remover._load_transcript_cache(s3, "bkt", "1", "show")
+        assert segs[0]["text"] == "flat"
+
+    def test_miss_in_both_returns_none(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        assert ad_remover._load_transcript_cache(self._s3_with({}), "bkt", "1", "show") is None
+
+    def test_ad_segments_cache_reads_namespaced_key(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = self._s3_with({"transcribe-cache/show/9_ads.json": json.dumps([{"start": 5.0, "end": 9.0}]).encode()})
+        assert ad_remover._load_ad_segments_cache(s3, "bkt", "9", "show") == [{"start": 5.0, "end": 9.0}]
+
+    def test_ad_segments_cache_does_not_read_another_namespace(self, monkeypatch):
+        """The collision this fix exists to prevent."""
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = self._s3_with({"transcribe-cache/other/9_ads.json": json.dumps([{"start": 5.0, "end": 9.0}]).encode()})
+        assert ad_remover._load_ad_segments_cache(s3, "bkt", "9", "show") is None
+
+    def test_corrupt_json_is_a_miss_not_a_crash(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = self._s3_with({"transcribe-cache/show/1.json": b"not json"})
+        assert ad_remover._load_transcript_cache(s3, "bkt", "1", "show") is None
+
+
+class TestCacheWriteNamespacing:
+    def test_transcript_is_written_to_the_namespaced_key(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = MagicMock()
+        ad_remover._save_transcript_cache(s3, "bkt", "1", [{"start": 0.0, "end": 1.0, "text": "x"}], "show")
+        assert s3.put_object.call_args.kwargs["Key"] == "transcribe-cache/show/1.json"
+
+    def test_ad_segments_are_written_to_the_namespaced_key(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = MagicMock()
+        ad_remover._save_ad_segments_cache(s3, "bkt", "1", [{"start": 1.0, "end": 2.0}], "show")
+        assert s3.put_object.call_args.kwargs["Key"] == "transcribe-cache/show/1_ads.json"
+
+    def test_summary_is_written_to_the_namespaced_key(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.delenv("TRANSCRIBE_CACHE_PREFIX", raising=False)
+        s3 = MagicMock()
+        ad_remover._save_summary_cache(s3, "bkt", "1", "a summary", "show")
+        assert s3.put_object.call_args.kwargs["Key"] == "transcribe-cache/show/1_summary.txt"
+
+    def test_remove_ads_forwards_the_namespace_to_transcribe(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        monkeypatch.delenv("REMOVE_ADS", raising=False)
+        mock_transcribe = MagicMock(return_value=[])
+        monkeypatch.setattr(ad_remover, "transcribe_audio", mock_transcribe)
+
+        ad_remover.remove_ads("/ep.mp3", "1", str(tmp_path), cache_namespace="the-daily")
+
+        assert mock_transcribe.call_args.kwargs["cache_namespace"] == "the-daily"

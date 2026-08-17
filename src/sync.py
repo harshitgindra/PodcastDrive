@@ -222,6 +222,8 @@ def process_playlist(
                     tmp_dir,
                     episode_title=video.title,
                     duration_secs=video.duration,
+                    # No cache_namespace: YouTube video ids are already globally
+                    # unique, so the flat cache layout cannot collide here.
                 )
 
                 # Track ad removal status, upload_date, and optional AI summary in manifest

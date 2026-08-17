@@ -543,6 +543,7 @@ def process_podcast_feed(
                         min_music_outro_secs=podcast.min_music_outro_secs,
                         episode_title=ep.title,
                         duration_secs=ep.duration,
+                        cache_namespace=slug,
                     )
 
                     splice_failed = bool(ad_segments) and cleaned_path == original_path
