@@ -3,6 +3,8 @@
 Reuses the yt-dlp/ffmpeg infrastructure from PodcastDrive but with format
 flexibility. Downloads are single-attempt by default (no retry needed for
 on-demand personal use).
+
+Supports both single videos and playlists.
 """
 
 from __future__ import annotations
@@ -39,8 +41,13 @@ class DownloadResult:
     format_type: str  # "audio" or "video"
 
 
+def is_playlist(url: str) -> bool:
+    """Detect if a URL points to a YouTube playlist."""
+    return "list=" in url and "/watch?" not in url or "/playlist?" in url
+
+
 def get_metadata(url: str) -> dict:
-    """Fetch video metadata without downloading.
+    """Fetch video metadata without downloading (single video only).
 
     Returns:
         Parsed JSON metadata dict from yt-dlp.
@@ -64,24 +71,63 @@ def get_metadata(url: str) -> dict:
     return json.loads(result.stdout)
 
 
-def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) -> list[DownloadResult]:
-    """Download media from YouTube.
-
-    Args:
-        url: YouTube video URL.
-        fmt: Desired format (audio, video, or both).
-        output_dir: Directory for downloaded files.
-        max_duration_secs: Maximum allowed duration.
+def get_playlist_metadata(url: str) -> list[dict]:
+    """Fetch metadata for all items in a playlist.
 
     Returns:
-        List of DownloadResult (1 for audio/video, 2 for both).
+        List of parsed JSON metadata dicts (one per video).
 
     Raises:
-        DurationExceededError: If video exceeds max duration.
+        DownloadError: If metadata extraction fails.
+    """
+    cmd = [
+        "yt-dlp",
+        "--dump-json",
+        "--no-download",
+        "--flat-playlist",
+    ]
+    cookies = _cookies_path()
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+    cmd.append(url)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise DownloadError(f"Playlist metadata fetch failed: {result.stderr[:500]}")
+
+    entries = []
+    for line in result.stdout.strip().splitlines():
+        if line.strip():
+            entries.append(json.loads(line))
+    if not entries:
+        raise DownloadError("Playlist is empty or unavailable")
+    return entries
+
+
+def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) -> list[DownloadResult]:
+    """Download media from YouTube (single video or playlist).
+
+    Args:
+        url: YouTube video or playlist URL.
+        fmt: Desired format (audio, video, or both).
+        output_dir: Directory for downloaded files.
+        max_duration_secs: Maximum allowed duration per video.
+
+    Returns:
+        List of DownloadResult — one per format per video.
+
+    Raises:
+        DurationExceededError: If any video exceeds max duration.
         DownloadError: If download fails.
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    if is_playlist(url):
+        return _download_playlist(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs)
+    return _download_single(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs)
+
+
+def _download_single(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) -> list[DownloadResult]:
+    """Download a single video."""
     meta = get_metadata(url)
     duration = int(meta.get("duration") or 0)
     if duration > max_duration_secs:
@@ -105,7 +151,7 @@ def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) 
         output_path = os.path.join(output_dir, f"{title}.{ext}")
 
         cmd = _build_cmd(url, dl_format, output_path)
-        logger.info("Downloading %s as %s → %s", url, dl_format, output_path)
+        logger.info("Downloading %s as %s \u2192 %s", url, dl_format, output_path)
 
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if proc.returncode != 0:
@@ -120,6 +166,43 @@ def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) 
             thumbnail_url=thumbnail,
             format_type=dl_format,
         ))
+
+    return results
+
+
+def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) -> list[DownloadResult]:
+    """Download all videos in a playlist."""
+    playlist_meta = get_playlist_metadata(url)
+    logger.info("Playlist has %d items", len(playlist_meta))
+
+    results: list[DownloadResult] = []
+    for idx, entry in enumerate(playlist_meta, 1):
+        video_url = entry.get("url") or entry.get("webpage_url", "")
+        if not video_url:
+            # flat-playlist gives id; construct URL
+            video_id = entry.get("id", "")
+            if not video_id:
+                logger.warning("Skipping playlist item %d: no URL or ID", idx)
+                continue
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        title = entry.get("title", f"track_{idx:03d}")
+        logger.info("Playlist item %d/%d: %s", idx, len(playlist_meta), title)
+
+        try:
+            item_results = _download_single(
+                video_url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs
+            )
+            results.extend(item_results)
+        except DurationExceededError as exc:
+            logger.warning("Skipping playlist item %d (too long): %s", idx, exc)
+            continue
+        except DownloadError as exc:
+            logger.error("Failed playlist item %d: %s", idx, exc)
+            raise
+
+    if not results:
+        raise DownloadError("No items could be downloaded from playlist")
 
     return results
 
