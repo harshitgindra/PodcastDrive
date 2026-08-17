@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mediasync.notion_client import Format
+from mediasync.retry import is_transient_download_error, retry_on_error
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,14 @@ def get_playlist_metadata(url: str) -> list[dict]:
     return entries
 
 
-def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) -> list[DownloadResult]:
+def download(
+    url: str,
+    fmt: Format,
+    *,
+    output_dir: str,
+    max_duration_secs: int,
+    max_retries: int = 3,
+) -> list[DownloadResult]:
     """Download media from YouTube (single video or playlist).
 
     Args:
@@ -112,6 +120,7 @@ def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) 
         fmt: Desired format (audio, video, or both).
         output_dir: Directory for downloaded files.
         max_duration_secs: Maximum allowed duration per video.
+        max_retries: Number of retry attempts for transient failures.
 
     Returns:
         List of DownloadResult — one per format per video.
@@ -123,8 +132,8 @@ def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     if is_playlist(url):
-        return _download_playlist(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs)
-    return _download_single(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs)
+        return _download_playlist(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
+    return _download_single(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
 
 
 def cleanup_results(results: list[DownloadResult]) -> None:
@@ -174,6 +183,7 @@ def _download_single(
     *,
     output_dir: str,
     max_duration_secs: int,
+    max_retries: int = 3,
     claimed_stems: set[str] | None = None,
 ) -> list[DownloadResult]:
     """Download a single video."""
@@ -207,9 +217,24 @@ def _download_single(
             cmd = _build_cmd(url, dl_format, output_path)
             logger.info("Downloading %s as %s \u2192 %s", url, dl_format, output_path)
 
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-            if proc.returncode != 0:
-                raise DownloadError(f"yt-dlp failed ({dl_format}): {proc.stderr[:500]}")
+            attempt_count = [0]
+
+            def _run_download() -> subprocess.CompletedProcess:
+                # Clean up partials from a previous failed attempt (not first try)
+                if attempt_count[0] > 0:
+                    _discard_partials(output_dir, stem)
+                attempt_count[0] += 1
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+                if proc.returncode != 0:
+                    raise DownloadError(f"yt-dlp failed ({dl_format}): {proc.stderr[:500]}")
+                return proc
+
+            retry_on_error(
+                _run_download,
+                max_retries=max_retries,
+                retryable=is_transient_download_error,
+                description=f"download {dl_format} for {url}",
+            )
 
             actual_path = _find_output(Path(output_path))
             results.append(DownloadResult(
@@ -230,7 +255,7 @@ def _download_single(
     return results
 
 
-def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) -> list[DownloadResult]:
+def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int, max_retries: int = 3) -> list[DownloadResult]:
     """Download all videos in a playlist."""
     playlist_meta = get_playlist_metadata(url)
     logger.info("Playlist has %d items", len(playlist_meta))
@@ -256,6 +281,7 @@ def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_s
                 fmt,
                 output_dir=output_dir,
                 max_duration_secs=max_duration_secs,
+                max_retries=max_retries,
                 claimed_stems=claimed_stems,
             )
             results.extend(item_results)

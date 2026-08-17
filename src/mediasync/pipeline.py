@@ -123,6 +123,7 @@ def _process_entry(
             entry.format,
             output_dir=config.output_dir,
             max_duration_secs=config.max_duration_secs,
+            max_retries=config.max_retries,
         )
     except DurationExceededError as exc:
         logger.warning("Duration exceeded: %s — %s", entry.url, exc)
