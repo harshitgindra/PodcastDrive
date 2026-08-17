@@ -3955,3 +3955,99 @@ class TestConcatDemuxerUniqueTempNames:
 
         leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(("_seg_", "_concat_"))]
         assert leftovers == []
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg / ffprobe timeouts
+# ---------------------------------------------------------------------------
+
+
+class TestFfmpegTimeouts:
+    """A hung ffmpeg holds the S3 lock for its whole TTL, so every call must be bounded."""
+
+    def _capture(self, monkeypatch, returncode=0, side_effect=None):
+        seen: list[dict] = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(kwargs)
+            if side_effect is not None:
+                raise side_effect
+            out = cmd[-1]
+            if isinstance(out, str) and out.endswith(".mp3"):
+                with open(out, "wb") as fh:
+                    fh.write(b"x")
+            return subprocess.CompletedProcess(cmd, returncode, "5.0", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return seen
+
+    def test_silencedetect_passes_a_timeout(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        seen = self._capture(monkeypatch)
+        ad_remover.detect_silence(str(tmp_path / "a.mp3"))
+        assert seen[0]["timeout"] > 0
+
+    def test_silencedetect_timeout_is_not_fatal(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        self._capture(monkeypatch, side_effect=subprocess.TimeoutExpired("ffmpeg", 1))
+        assert ad_remover.detect_silence(str(tmp_path / "a.mp3")) == []
+
+    def test_ffprobe_duration_passes_a_timeout(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        seen = self._capture(monkeypatch)
+        ad_remover._ffprobe_duration(str(tmp_path / "a.mp3"))
+        assert seen[0]["timeout"] > 0
+
+    def test_splice_passes_a_timeout(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        seen = self._capture(monkeypatch)
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"\x00" * 4096)  # above splice_audio's minimum-size guard
+        monkeypatch.setattr(ad_remover, "probe_duration_with_fallbacks", lambda p: 100.0)
+        ad_remover.splice_audio(str(src), [{"start": 10.0, "end": 20.0}], str(tmp_path / "out.mp3"))
+        assert all(kw.get("timeout", 0) > 0 for kw in seen)
+
+    def test_splice_timeout_becomes_a_runtime_error(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        self._capture(monkeypatch, side_effect=subprocess.TimeoutExpired("ffmpeg", 3600))
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"\x00" * 4096)
+        monkeypatch.setattr(ad_remover, "probe_duration_with_fallbacks", lambda p: 100.0)
+        with pytest.raises(RuntimeError, match="timed out"):
+            ad_remover.splice_audio(str(src), [{"start": 10.0, "end": 20.0}], str(tmp_path / "out.mp3"))
+
+    def test_concat_demuxer_passes_timeouts(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        seen = self._capture(monkeypatch)
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out_clean.mp3"))
+        assert len(seen) >= 2
+        assert all(kw.get("timeout", 0) > 0 for kw in seen)
+
+    def test_concat_segment_timeout_becomes_a_runtime_error(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        self._capture(monkeypatch, side_effect=subprocess.TimeoutExpired("ffmpeg", 600))
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+        with pytest.raises(RuntimeError, match="timed out"):
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out_clean.mp3"))
+
+    def test_timeouts_are_configurable(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.setenv("FFMPEG_SPLICE_TIMEOUT_SECS", "42")
+        assert ad_remover._ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0) == 42.0
+
+    def test_malformed_timeout_falls_back_to_the_default(self, monkeypatch):
+        import ad_remover
+
+        monkeypatch.setenv("FFMPEG_SPLICE_TIMEOUT_SECS", "forever")
+        assert ad_remover._ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0) == 3600.0

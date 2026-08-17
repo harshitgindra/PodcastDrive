@@ -181,6 +181,7 @@ def _check_yt_dlp() -> None:
         [yt_dlp_bin, "--version"],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         _fail(f"yt-dlp binary found at {yt_dlp_bin} but failed to run")
@@ -194,7 +195,7 @@ def _check_yt_dlp() -> None:
             "Install with: curl -fsSL https://deno.land/install.sh | sh"
         )
     else:
-        deno_ver = subprocess.run([deno_bin, "--version"], capture_output=True, text=True)
+        deno_ver = subprocess.run([deno_bin, "--version"], capture_output=True, text=True, timeout=30)
         ver_line = deno_ver.stdout.splitlines()[0] if deno_ver.stdout else "unknown"
         _ok(f"deno JS runtime: {ver_line} ({deno_bin})")
 
@@ -252,6 +253,7 @@ def _check_ffmpeg() -> None:
         ["ffmpeg", "-version"],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         _fail("ffmpeg binary found but failed to run")

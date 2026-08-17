@@ -107,6 +107,23 @@ REMOVE_ADS_ERROR_CODES: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# ffmpeg / ffprobe timeouts
+# ---------------------------------------------------------------------------
+#
+# Every ffmpeg and ffprobe call must be bounded.  A hung child process holds the
+# S3 distributed lock (TTL 3600s, see distributed_lock.py) for as long as it
+# lives, which silently blocks every subsequent cron run -- the pipeline just
+# stops producing episodes with no error reported anywhere.  A timeout raises
+# TimeoutExpired, which the splice paths convert into a splice failure so the
+# existing retry logic picks the episode up on a later run.
+
+
+def _ffmpeg_timeout(name: str, default: float) -> float:
+    """Return the configured timeout in seconds for an ffmpeg/ffprobe stage."""
+    return env_float(name, default)
+
+
+# ---------------------------------------------------------------------------
 # Fix #5 – Silence detection + boundary snapping
 # ---------------------------------------------------------------------------
 
@@ -139,9 +156,19 @@ def detect_silence(
         "-",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_ffmpeg_timeout("FFMPEG_SILENCEDETECT_TIMEOUT_SECS", 1800.0),
+        )
     except FileNotFoundError:
         logger.warning("[AdRemover] ffmpeg not found — silence detection skipped")
+        return []
+    except subprocess.TimeoutExpired:
+        # Silence detection only refines cut boundaries, so a timeout degrades
+        # to "no silences found" rather than failing the episode.
+        logger.warning("[AdRemover] ffmpeg silencedetect timed out for %s — skipping silence snapping", mp3_path)
         return []
 
     silences: list[dict] = []
@@ -1593,7 +1620,13 @@ def _ffprobe_duration(path: str, force_format: str | None = None) -> float:
         "default=noprint_wrappers=1:nokey=1",
         path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=_ffmpeg_timeout("FFPROBE_TIMEOUT_SECS", 60.0),
+    )
     if result.stderr.strip():
         logger.debug("[AdRemover] ffprobe stderr (non-fatal): %s", result.stderr.strip())
     return float(result.stdout.strip())
@@ -1803,7 +1836,15 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     logger.debug("[AdRemover] ffmpeg cmd: %s", " ".join(cmd))
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg splice timed out after {exc.timeout}s for {mp3_path}") from exc
     except subprocess.CalledProcessError as exc:
         if exc.returncode == -11:
             # SIGSEGV — the atrim filter_complex path crashed ffmpeg (seen on
@@ -1868,7 +1909,15 @@ def _splice_concat_demuxer(
                 "copy",
                 seg_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=_ffmpeg_timeout("FFMPEG_SEGMENT_TIMEOUT_SECS", 600.0),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(f"ffmpeg segment {i} extraction timed out after {exc.timeout}s") from exc
             if result.returncode != 0:
                 raise RuntimeError(f"ffmpeg segment {i} extraction failed (exit {result.returncode}):\n{result.stderr}")
 
@@ -1893,7 +1942,15 @@ def _splice_concat_demuxer(
             "2",
             output_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"ffmpeg concat-demuxer join timed out after {exc.timeout}s") from exc
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg concat-demuxer join failed (exit {result.returncode}):\n{result.stderr}")
 
