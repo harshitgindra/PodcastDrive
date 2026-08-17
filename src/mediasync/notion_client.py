@@ -31,6 +31,10 @@ import certifi
 logger = logging.getLogger(__name__)
 
 NOTION_API = "https://api.notion.com/v1"
+
+#: Hard cap on query pages (100 rows each) — a runaway-loop guard, not a limit
+#: anyone should hit in practice.
+MAX_QUERY_PAGES = 200
 NOTION_VERSION = "2022-06-28"
 
 
@@ -178,8 +182,13 @@ class NotionClient:
 
         has_more = True
         start_cursor: str | None = None
+        # Bounded on both a null next_cursor and an absolute page count: Notion
+        # can return has_more=True with next_cursor=None, and re-POSTing without
+        # a cursor re-fetches page 1 forever.
+        page_num = 0
 
-        while has_more:
+        while has_more and page_num < MAX_QUERY_PAGES:
+            page_num += 1
             if start_cursor:
                 payload["start_cursor"] = start_cursor
 
@@ -194,6 +203,15 @@ class NotionClient:
 
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
+            if has_more and not start_cursor:
+                logger.warning(
+                    "Notion reported has_more with no next_cursor after page %d — stopping pagination",
+                    page_num,
+                )
+                break
+
+        if has_more and page_num >= MAX_QUERY_PAGES:
+            logger.warning("Notion pagination hit the %d-page limit — results may be truncated", MAX_QUERY_PAGES)
 
         return entries
 

@@ -12,6 +12,10 @@ from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
+#: Hard cap on Notion query pages (100 rows each).  Purely a runaway-loop guard:
+#: 200 pages is 20,000 rows, far above any realistic subscription list.
+_MAX_NOTION_PAGES = 200
+
 
 @dataclass
 class PodcastConfig:
@@ -183,8 +187,14 @@ class NotionConfigProvider(ConfigProvider):
         podcasts = []
         has_more = True
         start_cursor = None
+        # Notion returns has_more=True with a null next_cursor under some error
+        # conditions.  Re-POSTing without a cursor then fetches page 1 forever,
+        # accumulating duplicates until the process is killed, so bound the loop
+        # on both a null cursor and an absolute page count.
+        page_num = 0
 
-        while has_more:
+        while has_more and page_num < _MAX_NOTION_PAGES:
+            page_num += 1
             body = {}
             if start_cursor:
                 body["start_cursor"] = start_cursor
@@ -212,6 +222,18 @@ class NotionConfigProvider(ConfigProvider):
 
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
+            if has_more and not start_cursor:
+                logger.warning(
+                    "Notion reported has_more with no next_cursor after page %d — stopping pagination",
+                    page_num,
+                )
+                break
+
+        if has_more and page_num >= _MAX_NOTION_PAGES:
+            logger.warning(
+                "Notion pagination hit the %d-page limit — results may be truncated",
+                _MAX_NOTION_PAGES,
+            )
 
         logger.info("Loaded %d podcasts from Notion", len(podcasts))
         self._cache = podcasts

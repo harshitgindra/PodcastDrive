@@ -899,3 +899,112 @@ class TestNotionPodcastParsePageExtended:
         }
         result = provider._parse_page(props)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# NotionConfigProvider — pagination bounds
+# ---------------------------------------------------------------------------
+
+
+class TestNotionPaginationBounds:
+    """Notion can report has_more with a null next_cursor, which used to loop forever."""
+
+    def _make_provider(self):
+        with patch.dict(
+            os.environ,
+            {"NOTION_API_KEY": "secret_key", "NOTION_DATABASE_ID": "db-abc"},
+        ):
+            return NotionConfigProvider()
+
+    def _page(self, name="Show A", url="PLabc"):
+        return {
+            "id": "page-001",
+            "properties": {
+                "Name": {"type": "title", "title": [{"plain_text": name}]},
+                "URL": {"type": "rich_text", "rich_text": [{"plain_text": url}]},
+                "Enabled": {"type": "checkbox", "checkbox": True},
+                "Source": {"type": "select", "select": {"name": "YouTube"}},
+            },
+        }
+
+    @patch("urllib.request.urlopen")
+    def test_has_more_with_null_cursor_stops_after_one_page(self, mock_urlopen):
+        provider = self._make_provider()
+        body = {"results": [self._page()], "has_more": True, "next_cursor": None}
+
+        import json
+
+        r = MagicMock()
+        r.read.return_value = json.dumps(body).encode("utf-8")
+        r.__enter__ = MagicMock(return_value=r)
+        r.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = r
+
+        podcasts = provider.get_podcasts()
+
+        assert mock_urlopen.call_count == 1
+        assert len(podcasts) == 1
+
+    @patch("urllib.request.urlopen")
+    def test_null_cursor_stop_is_logged(self, mock_urlopen, caplog):
+        import json
+        import logging
+
+        provider = self._make_provider()
+        body = {"results": [], "has_more": True, "next_cursor": None}
+        r = MagicMock()
+        r.read.return_value = json.dumps(body).encode("utf-8")
+        r.__enter__ = MagicMock(return_value=r)
+        r.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = r
+
+        with caplog.at_level(logging.WARNING, logger="config_provider"):
+            provider.get_podcasts()
+
+        assert "no next_cursor" in caplog.text
+
+    @patch("urllib.request.urlopen")
+    def test_page_count_is_capped(self, mock_urlopen):
+        """A cursor that never terminates must still stop at the page limit."""
+        import json
+
+        from config_provider import _MAX_NOTION_PAGES
+
+        provider = self._make_provider()
+        body = {"results": [], "has_more": True, "next_cursor": "always-more"}
+
+        def make_resp(*args, **kwargs):
+            r = MagicMock()
+            r.read.return_value = json.dumps(body).encode("utf-8")
+            r.__enter__ = MagicMock(return_value=r)
+            r.__exit__ = MagicMock(return_value=False)
+            return r
+
+        mock_urlopen.side_effect = make_resp
+
+        provider.get_podcasts()
+
+        assert mock_urlopen.call_count == _MAX_NOTION_PAGES
+
+    @patch("urllib.request.urlopen")
+    def test_normal_two_page_pagination_still_works(self, mock_urlopen):
+        import json
+
+        provider = self._make_provider()
+        bodies = [
+            {"results": [self._page("Show A", "PLa")], "has_more": True, "next_cursor": "cur-2"},
+            {"results": [self._page("Show B", "PLb")], "has_more": False, "next_cursor": None},
+        ]
+        resps = []
+        for body in bodies:
+            r = MagicMock()
+            r.read.return_value = json.dumps(body).encode("utf-8")
+            r.__enter__ = MagicMock(return_value=r)
+            r.__exit__ = MagicMock(return_value=False)
+            resps.append(r)
+        mock_urlopen.side_effect = resps
+
+        podcasts = provider.get_podcasts()
+
+        assert mock_urlopen.call_count == 2
+        assert [p.name for p in podcasts] == ["Show A", "Show B"]

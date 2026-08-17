@@ -287,3 +287,51 @@ class TestParsePageEdgeCases:
             },
         }
         assert client._parse_page(page) is None
+
+
+class TestPaginationBounds:
+    """Notion can report has_more with a null next_cursor, which used to loop forever."""
+
+    def test_has_more_with_null_cursor_stops(self, client, sample_page):
+        response = {"results": [sample_page], "has_more": True, "next_cursor": None}
+
+        with patch.object(client, "_post", return_value=response) as mock_post:
+            entries = client.get_pending()
+
+        assert mock_post.call_count == 1
+        assert len(entries) == 1
+
+    def test_null_cursor_stop_is_logged(self, client, caplog):
+        import logging
+
+        response = {"results": [], "has_more": True, "next_cursor": None}
+
+        with (
+            caplog.at_level(logging.WARNING, logger="mediasync.notion_client"),
+            patch.object(client, "_post", return_value=response),
+        ):
+            client.get_pending()
+
+        assert "no next_cursor" in caplog.text
+
+    def test_page_count_is_capped(self, client):
+        from mediasync.notion_client import MAX_QUERY_PAGES
+
+        response = {"results": [], "has_more": True, "next_cursor": "always-more"}
+
+        with patch.object(client, "_post", return_value=response) as mock_post:
+            client.get_pending()
+
+        assert mock_post.call_count == MAX_QUERY_PAGES
+
+    def test_normal_pagination_is_unaffected(self, client, sample_page):
+        page2 = dict(sample_page)
+        page2["id"] = "page-789"
+        r1 = {"results": [sample_page], "has_more": True, "next_cursor": "cursor-1"}
+        r2 = {"results": [page2], "has_more": False, "next_cursor": None}
+
+        with patch.object(client, "_post", side_effect=[r1, r2]) as mock_post:
+            entries = client.get_pending()
+
+        assert mock_post.call_count == 2
+        assert len(entries) == 2
