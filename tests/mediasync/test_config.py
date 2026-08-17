@@ -38,7 +38,8 @@ class TestConfigFromEnv:
         assert config.max_duration_secs == 7200
         assert config.output_dir == "/tmp/mediasync"
         assert config.herald_enabled is True
-        assert config.herald_job_id == "mediasync"
+        # Nothing injected the job id, so notify falls through to the default chat.
+        assert config.herald_job_id == ""
 
     def test_custom_optional_values(self, full_env):
         full_env.update({
@@ -47,7 +48,7 @@ class TestConfigFromEnv:
             "MEDIASYNC_MAX_DURATION_SECS": "3600",
             "MEDIASYNC_OUTPUT_DIR": "/data/tmp",
             "MEDIASYNC_HERALD_ENABLED": "false",
-            "MEDIASYNC_HERALD_JOB_ID": "custom-job",
+            "HERALD_JOB_ID": "01JOBFROMLISTENER",
         })
         with patch.dict(os.environ, full_env, clear=True):
             config = Config.from_env()
@@ -57,7 +58,7 @@ class TestConfigFromEnv:
         assert config.max_duration_secs == 3600
         assert config.output_dir == "/data/tmp"
         assert config.herald_enabled is False
-        assert config.herald_job_id == "custom-job"
+        assert config.herald_job_id == "01JOBFROMLISTENER"
 
     def test_missing_notion_token_raises(self, full_env):
         del full_env["MEDIASYNC_NOTION_TOKEN"]

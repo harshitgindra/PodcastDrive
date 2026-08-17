@@ -13,4 +13,9 @@ set +a
 # yt-dlp lives in .venv/bin
 export PATH="$PROJECT_DIR/.venv/bin:$PATH"
 
+# mediasync lives under src/ and is not pip-installed, so nothing but the test
+# conftest puts it on the path. Without this, `python -m mediasync` fails with
+# "No module named mediasync" regardless of the working directory.
+export PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
 exec "$PROJECT_DIR/.venv/bin/python" -m mediasync "$@"

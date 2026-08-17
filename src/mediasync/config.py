@@ -34,7 +34,10 @@ class Config:
     max_duration_secs: int = 7200
     output_dir: str = "/tmp/mediasync"
     herald_enabled: bool = True
-    herald_job_id: str = "mediasync"
+    # The job id the Herald listener injects; empty means "send to the
+    # configured default chat". Never invent a token: routing looks it up in
+    # jobs.json and refuses to deliver to an id that is not there.
+    herald_job_id: str = ""
 
     @classmethod
     def from_env(cls) -> Config:
@@ -61,7 +64,8 @@ class Config:
             MEDIASYNC_MAX_DURATION_SECS (default: 7200)
             MEDIASYNC_OUTPUT_DIR (default: /tmp/mediasync)
             MEDIASYNC_HERALD_ENABLED (default: true)
-            MEDIASYNC_HERALD_JOB_ID (default: mediasync)
+            HERALD_JOB_ID (injected by the Herald listener; unset means
+                          notifications go to the default chat)
         """
         notion_token = os.environ.get("MEDIASYNC_NOTION_TOKEN", "")
         notion_db_id = os.environ.get("MEDIASYNC_NOTION_DATABASE_ID", "")
@@ -110,7 +114,7 @@ class Config:
             max_duration_secs=int(os.environ.get("MEDIASYNC_MAX_DURATION_SECS", "7200")),
             output_dir=os.environ.get("MEDIASYNC_OUTPUT_DIR", "/tmp/mediasync"),
             herald_enabled=os.environ.get("MEDIASYNC_HERALD_ENABLED", "true").lower() == "true",
-            herald_job_id=os.environ.get("MEDIASYNC_HERALD_JOB_ID", "mediasync"),
+            herald_job_id=os.environ.get("HERALD_JOB_ID", "").strip(),
         )
 
     @property
