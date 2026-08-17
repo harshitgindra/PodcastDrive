@@ -542,13 +542,13 @@ class TestFeedDifferentiation:
 
 
 class TestAdRemovalParity:
-    """Regression guards ensuring test_ad_cleaner uses the canonical remove_ads() path."""
+    """Regression guards ensuring ad_cleaner_harness uses the canonical remove_ads() path."""
 
     def test_remove_ads_is_the_entrypoint(self):
-        """test_ad_cleaner.py must not import internal ad_remover functions directly."""
+        """ad_cleaner_harness.py must not import internal ad_remover functions directly."""
         import ast
 
-        source_path = os.path.join(os.path.dirname(__file__), "..", "test_ad_cleaner.py")
+        source_path = os.path.join(os.path.dirname(__file__), "..", "ad_cleaner_harness.py")
         with open(source_path) as f:
             tree = ast.parse(f.read())
 
@@ -569,7 +569,7 @@ class TestAdRemovalParity:
 
         violations = imported_names & forbidden
         assert not violations, (
-            f"test_ad_cleaner.py imports internal functions from ad_remover: {violations}. "
+            f"ad_cleaner_harness.py imports internal functions from ad_remover: {violations}. "
             "It should only import remove_ads()."
         )
 
@@ -607,3 +607,52 @@ class TestAdRemovalParity:
         )
         assert result.returncode != 0
         assert "DEPRECATED" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Repository layout / coverage configuration guards (Fix #18)
+# ---------------------------------------------------------------------------
+
+
+class TestProjectLayoutGuards:
+    """Keep the test/coverage configuration honest as the tree grows."""
+
+    @staticmethod
+    def _repo_root():
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    @staticmethod
+    def _pyproject():
+        import tomllib
+
+        with open(os.path.join(TestProjectLayoutGuards._repo_root(), "pyproject.toml"), "rb") as fh:
+            return tomllib.load(fh)
+
+    def test_no_test_named_scripts_outside_tests_dir(self):
+        """Manual harnesses must not be named test_*.py — `pytest .` would import them."""
+        root = self._repo_root()
+        stray = [
+            name
+            for name in os.listdir(root)
+            if name.startswith("test_") and name.endswith(".py") and os.path.isfile(os.path.join(root, name))
+        ]
+        assert stray == [], f"rename these manual scripts so pytest cannot collect them: {stray}"
+
+    def test_ad_cleaner_harness_exists_and_is_wired_to_the_wrapper(self):
+        root = self._repo_root()
+        harness = os.path.join(root, "ad_cleaner_harness.py")
+        assert os.path.isfile(harness)
+        with open(os.path.join(root, "test_ad.sh")) as fh:
+            assert "ad_cleaner_harness.py" in fh.read()
+
+    def test_coverage_threshold_is_configured_in_pyproject(self):
+        """CI must not carry its own threshold — it would drift from local runs."""
+        config = self._pyproject()
+        assert config["tool"]["coverage"]["report"]["fail_under"] == 95
+        assert config["tool"]["coverage"]["run"]["source"] == ["src"]
+        assert "--cov=src" in config["tool"]["pytest"]["ini_options"]["addopts"]
+
+    def test_ci_workflow_does_not_duplicate_coverage_flags(self):
+        with open(os.path.join(self._repo_root(), ".github", "workflows", "test.yml")) as fh:
+            workflow = fh.read()
+        assert "--cov-fail-under" not in workflow, "threshold is configured in pyproject.toml"

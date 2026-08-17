@@ -88,4 +88,4 @@ fi
 
 # ── 3. Run the test harness ───────────────────────────────────────────────────
 export PYTHONPATH="$SCRIPT_DIR/src:${PYTHONPATH:-}"
-exec "$VENV_PYTHON" "$SCRIPT_DIR/test_ad_cleaner.py" "$@"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/ad_cleaner_harness.py" "$@"

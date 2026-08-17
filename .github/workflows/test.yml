@@ -34,12 +34,9 @@ jobs:
           AWS_ACCESS_KEY_ID: dummy
           AWS_SECRET_ACCESS_KEY: dummy
           AWS_DEFAULT_REGION: us-east-1
-        run: |
-          python -m pytest tests/ \
-            --tb=short \
-            --cov=src \
-            --cov-report=term-missing \
-            --cov-fail-under=95
+        # Coverage source, omissions and the 95% threshold come from
+        # pyproject.toml so this run is identical to a local one.
+        run: python -m pytest tests/ --tb=short
 
       - name: Upload coverage report
         if: matrix.python-version == '3.13'

@@ -94,8 +94,8 @@ A JSON report with improvement proposals is written to `reports/{slug}/{episode_
 ├── split_audiobook.sh          # One-command audiobook splitter (transcribe → detect chapters → split)
 ├── find_chapter_timestamps.py  # Transcribe an audiobook and detect chapter timestamps (CSV output)
 ├── split_audiobook.py          # Split an MP3 into chapters given a chapters.csv or embedded markers
-├── test_ad_cleaner.py          # Manual end-to-end test harness (download → clean → listen)
-├── test_ad.sh                  # One-command wrapper for test_ad_cleaner.py
+├── ad_cleaner_harness.py       # Manual end-to-end test harness (download → clean → listen)
+├── test_ad.sh                  # One-command wrapper for ad_cleaner_harness.py
 ├── requirements.txt            # Python dependencies
 ├── run.sh                      # Local run script (loads config.env, manages venv)
 ├── config.env.example          # Configuration template (copy to config.env)

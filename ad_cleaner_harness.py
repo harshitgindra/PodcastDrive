@@ -17,19 +17,19 @@ All behaviour is controlled by env vars in config.env — identical to productio
 
 Usage examples:
     # YouTube video (direct)
-    python3 test_ad_cleaner.py "https://www.youtube.com/watch?v=LLjpnubsOWc"
+    python3 ad_cleaner_harness.py "https://www.youtube.com/watch?v=LLjpnubsOWc"
 
     # YouTube channel handle — fetches the latest upload
-    python3 test_ad_cleaner.py "@aliabdaal"
+    python3 ad_cleaner_harness.py "@aliabdaal"
 
     # YouTube playlist ID — fetches the latest item
-    python3 test_ad_cleaner.py "PLEVkQGIATCXI1F2qs0slVE2MScaj1cSM0"
+    python3 ad_cleaner_harness.py "PLEVkQGIATCXI1F2qs0slVE2MScaj1cSM0"
 
     # RSS feed URL
-    python3 test_ad_cleaner.py "https://feeds.megaphone.fm/WWO4510910710"
+    python3 ad_cleaner_harness.py "https://feeds.megaphone.fm/WWO4510910710"
 
     # Podcast name — searches iTunes for the feed, then fetches the latest episode
-    python3 test_ad_cleaner.py "The Tim Ferriss Show"
+    python3 ad_cleaner_harness.py "The Tim Ferriss Show"
 
 Options:
     --out-dir DIR   Where to save output files (default: ./test_output)
