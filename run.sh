@@ -163,6 +163,25 @@ VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python3"
 export PATH="${HOME}/.deno/bin:${SCRIPT_DIR}/.venv/bin:$PATH"
 ok "Virtual environment ready"
 
+# --- Deno prerequisite (required for YouTube JS challenge solver) ---
+# yt-dlp's remote "ejs" component solves YouTube's n-challenge by executing
+# JavaScript. Without a JS runtime (deno), extraction degrades to storyboard-only
+# formats and every download fails with "Requested format is not available".
+# ${HOME}/.deno/bin is already on PATH (set above), which is where the official
+# installer places the binary.
+if command -v deno >/dev/null 2>&1; then
+    ok "deno available: $(deno --version 2>/dev/null | head -1)"
+else
+    info "deno not found — installing (required for YouTube JS challenge solver)..."
+    curl -fsSL https://deno.land/install.sh | sh || true
+    hash -r 2>/dev/null || true
+    if command -v deno >/dev/null 2>&1; then
+        ok "deno installed: $(deno --version 2>/dev/null | head -1)"
+    else
+        fail "deno installation failed — cannot proceed (install manually: curl -fsSL https://deno.land/install.sh | sh)"
+    fi
+fi
+
 # Install dependencies if missing
 if ! "${VENV_PYTHON}" -c "import yt_dlp, boto3, yaml, certifi" 2>/dev/null; then
     info "Installing dependencies..."

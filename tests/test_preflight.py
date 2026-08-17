@@ -460,6 +460,81 @@ class TestCheckYtdlpChallengeSolver:
         assert "ejs:npm" in capsys.readouterr().out
 
 
+# ── _check_youtube_access ─────────────────────────────────────────────────────
+
+
+class TestCheckYoutubeAccess:
+    """The canary must mirror production: it needs both cookies *and* the remote
+    JS-challenge component injected, otherwise yt-dlp degrades to storyboard-only
+    formats and fails with "Requested format is not available".
+
+    The error handler must also resolve ``_is_bot_detection`` from this project's
+    ``extractor`` module — a late in-function import would instead pick up the
+    ``ytdlp_plugins.extractor`` package that yt-dlp loads, raising ImportError.
+    """
+
+    def _run(self, extract_side_effect=None, extract_return=None):
+        from preflight import _check_youtube_access
+
+        mock_ydl = MagicMock()
+        if extract_side_effect is not None:
+            mock_ydl.extract_info.side_effect = extract_side_effect
+        else:
+            mock_ydl.extract_info.return_value = extract_return
+        mock_ydl_cls = MagicMock()
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        with (
+            patch("yt_dlp.YoutubeDL", mock_ydl_cls),
+            patch("ytdlp_cookies.inject_cookies") as mock_cookies,
+            patch("ytdlp_runtime.inject_remote_components") as mock_components,
+        ):
+            _check_youtube_access()
+        return mock_cookies, mock_components
+
+    def test_injects_cookies_and_remote_components(self):
+        """Regression: the canary must inject the JS-challenge component like production."""
+        mock_cookies, mock_components = self._run(extract_return={"title": "Never Gonna Give You Up"})
+        assert mock_cookies.called, "cookies must be injected into the canary"
+        assert mock_components.called, "remote components must be injected into the canary"
+        # Both must mutate the *same* options dict.
+        assert mock_cookies.call_args[0][0] is mock_components.call_args[0][0]
+
+    def test_ok_when_extraction_succeeds(self, capsys):
+        self._run(extract_return={"title": "Never Gonna Give You Up"})
+        out = capsys.readouterr().out
+        assert "YouTube extraction working" in out
+        assert "Never Gonna Give You Up"[:40] in out
+
+    def test_warns_when_no_data_returned(self, capsys):
+        self._run(extract_return=None)
+        assert "returned no data" in capsys.readouterr().out
+
+    def test_warns_when_title_missing(self, capsys):
+        self._run(extract_return={"id": "dQw4w9WgXcQ"})
+        assert "returned no data" in capsys.readouterr().out
+
+    def test_fails_on_bot_detection(self, capsys):
+        """Regression for the module-shadowing ImportError: a bot-detection error
+        must reach the _fail() branch (not crash importing _is_bot_detection)."""
+        import yt_dlp
+
+        err = yt_dlp.utils.DownloadError("ERROR: Sign in to confirm you're not a bot")
+        with pytest.raises(SystemExit):
+            self._run(extract_side_effect=err)
+        out = capsys.readouterr().out
+        assert "BOT DETECTION active" in out
+
+    def test_warns_on_non_bot_download_error(self, capsys):
+        import yt_dlp
+
+        err = yt_dlp.utils.DownloadError("ERROR: Requested format is not available")
+        self._run(extract_side_effect=err)
+        out = capsys.readouterr().out
+        assert "canary failed (non-bot)" in out
+        assert "❌" not in out
+
+
 # ── _check_ffmpeg ─────────────────────────────────────────────────────────────
 
 

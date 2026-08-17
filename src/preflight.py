@@ -15,6 +15,12 @@ from pathlib import Path
 import boto3
 import botocore.exceptions
 
+# Imported at module scope on purpose: an installed ``ytdlp_plugins.extractor``
+# package shadows this project's ``extractor`` module once yt-dlp has loaded its
+# plugins, so a late in-function import can resolve to the wrong module (which
+# has no ``_is_bot_detection``).  See tests/test_sync.py for the same guard.
+from extractor import _is_bot_detection
+
 # ── Colour helpers ────────────────────────────────────────────────────────────
 
 _RED = "\033[0;31m"
@@ -430,8 +436,10 @@ def _check_youtube_access() -> None:
     }
 
     from ytdlp_cookies import inject_cookies
+    from ytdlp_runtime import inject_remote_components
 
     inject_cookies(ydl_opts)
+    inject_remote_components(ydl_opts)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -441,8 +449,6 @@ def _check_youtube_access() -> None:
         else:
             _warn("YouTube canary returned no data — downloads may fail")
     except yt_dlp.utils.DownloadError as exc:
-        from extractor import _is_bot_detection
-
         if _is_bot_detection(str(exc)):
             _fail(
                 "YouTube BOT DETECTION active — all channel downloads will fail. "
