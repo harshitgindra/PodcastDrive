@@ -3881,3 +3881,77 @@ class TestCacheWriteNamespacing:
         ad_remover.remove_ads("/ep.mp3", "1", str(tmp_path), cache_namespace="the-daily")
 
         assert mock_transcribe.call_args.kwargs["cache_namespace"] == "the-daily"
+
+
+class TestConcatDemuxerUniqueTempNames:
+    """Concurrent episodes share a PID and a work dir, so temp names need a unique token."""
+
+    def _capture_run(self, calls):
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            # Materialise the output so the caller's cleanup path is realistic.
+            out = cmd[-1]
+            with open(out, "wb") as fh:
+                fh.write(b"x")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        return fake_run
+
+    def test_segment_names_differ_between_calls(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(subprocess, "run", self._capture_run(calls))
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "a_clean.mp3"))
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "b_clean.mp3"))
+
+        seg_names = [c[-1] for c in calls if "_seg_0_" in c[-1]]
+        assert len(seg_names) == 2
+        assert seg_names[0] != seg_names[1]
+
+    def test_concat_list_names_differ_between_calls(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(subprocess, "run", self._capture_run(calls))
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "a_clean.mp3"))
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "b_clean.mp3"))
+
+        lists = [c[c.index("-i") + 1] for c in calls if "concat" in c]
+        assert len(lists) == 2
+        assert lists[0] != lists[1]
+
+    def test_temp_files_are_removed_after_success(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        monkeypatch.setattr(subprocess, "run", self._capture_run([]))
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0), (10.0, 20.0)], str(tmp_path / "out_clean.mp3"))
+
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(("_seg_", "_concat_"))]
+        assert leftovers == []
+
+    def test_list_file_is_removed_when_segment_extraction_fails(self, monkeypatch, tmp_path):
+        """list_path is now bound before the try block, so cleanup cannot NameError."""
+        import ad_remover
+
+        def failing_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "boom")
+
+        monkeypatch.setattr(subprocess, "run", failing_run)
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        with pytest.raises(RuntimeError, match="segment 0"):
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out_clean.mp3"))
+
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(("_seg_", "_concat_"))]
+        assert leftovers == []

@@ -1839,14 +1839,21 @@ def _splice_concat_demuxer(
         RuntimeError: If any ffmpeg sub-command fails.
     """
     import tempfile
+    import uuid
 
     work_dir = os.path.dirname(output_path) or tempfile.gettempdir()
     segment_paths: list[str] = []
+    # os.getpid() alone is not unique: episodes are spliced concurrently by
+    # threads (PODCAST_EPISODE_WORKERS) that share one PID and one work_dir, so
+    # two episodes wrote to the same _seg_0_<pid>.mp3 and each other's concat
+    # list, silently producing audio stitched from both episodes.
+    token = f"{os.getpid()}_{uuid.uuid4().hex[:12]}"
+    list_path = os.path.join(work_dir, f"_concat_{token}.txt")
 
     try:
         # Step 1: extract each keep interval via stream-copy
         for i, (start, end) in enumerate(keep):
-            seg_path = os.path.join(work_dir, f"_seg_{i}_{os.getpid()}.mp3")
+            seg_path = os.path.join(work_dir, f"_seg_{i}_{token}.mp3")
             segment_paths.append(seg_path)
             cmd = [
                 "ffmpeg",
@@ -1866,7 +1873,6 @@ def _splice_concat_demuxer(
                 raise RuntimeError(f"ffmpeg segment {i} extraction failed (exit {result.returncode}):\n{result.stderr}")
 
         # Step 2: write concat list file
-        list_path = os.path.join(work_dir, f"_concat_{os.getpid()}.txt")
         with open(list_path, "w") as fh:
             for seg_path in segment_paths:
                 fh.write(f"file '{seg_path}'\n")
@@ -1901,8 +1907,8 @@ def _splice_concat_demuxer(
             except OSError:
                 pass
         try:
-            os.remove(list_path)  # type: ignore[possibly-undefined]
-        except (OSError, NameError):
+            os.remove(list_path)
+        except OSError:
             pass
 
 
