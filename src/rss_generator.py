@@ -34,7 +34,7 @@ _INVALID_XML_CHARS = re.compile(
 )
 
 
-def _xml_safe(text: str | None) -> str:
+def xml_safe(text: str | None) -> str:
     """Return *text* with characters illegal in XML 1.0 removed.
 
     ElementTree escapes markup characters (``&``, ``<``, ``>``) automatically,
@@ -179,12 +179,12 @@ def _add_channel_metadata(
     channel_link = meta.webpage_url or meta.channel_url
     suffix = os.environ.get("FEED_TITLE_SUFFIX", " ✂️")
 
-    channel_title = _xml_safe(meta.title) + suffix
-    channel_description = _xml_safe(meta.description) or _xml_safe(meta.title)
-    channel_author = _xml_safe(meta.uploader) or _xml_safe(meta.title)
+    channel_title = xml_safe(meta.title) + suffix
+    channel_description = xml_safe(meta.description) or xml_safe(meta.title)
+    channel_author = xml_safe(meta.uploader) or xml_safe(meta.title)
 
     ET.SubElement(channel, "title").text = channel_title
-    ET.SubElement(channel, "link").text = _xml_safe(channel_link)
+    ET.SubElement(channel, "link").text = xml_safe(channel_link)
     ET.SubElement(channel, "description").text = channel_description
     ET.SubElement(channel, "language").text = language
     ET.SubElement(channel, "generator").text = "PodcastDrive"
@@ -194,14 +194,14 @@ def _add_channel_metadata(
 
     # Determine best artwork URL: prefer playlist-level thumbnail, fall back
     # to the first episode's thumbnail.
-    artwork_url = _xml_safe(meta.thumbnail or (episodes[0].thumbnail if episodes else ""))
+    artwork_url = xml_safe(meta.thumbnail or (episodes[0].thumbnail if episodes else ""))
 
     # Standard RSS 2.0 <image> block (required by many non-iTunes podcast apps)
     if artwork_url:
         rss_image = ET.SubElement(channel, "image")
         ET.SubElement(rss_image, "url").text = artwork_url
         ET.SubElement(rss_image, "title").text = channel_title
-        ET.SubElement(rss_image, "link").text = _xml_safe(channel_link)
+        ET.SubElement(rss_image, "link").text = xml_safe(channel_link)
 
     # iTunes tags
     ET.SubElement(channel, f"{{{ITUNES_NS}}}author").text = channel_author
@@ -210,7 +210,7 @@ def _add_channel_metadata(
 
     subtitle = os.environ.get("FEED_SUBTITLE", "Ad-free · PodcastDrive")
     if subtitle:
-        ET.SubElement(channel, f"{{{ITUNES_NS}}}subtitle").text = _xml_safe(subtitle)
+        ET.SubElement(channel, f"{{{ITUNES_NS}}}subtitle").text = xml_safe(subtitle)
 
     owner = ET.SubElement(channel, f"{{{ITUNES_NS}}}owner")
     ET.SubElement(owner, f"{{{ITUNES_NS}}}name").text = channel_author
@@ -242,7 +242,7 @@ def _add_item(
     """
     item = ET.SubElement(channel, "item")
 
-    ep_title = _xml_safe(episode.title)
+    ep_title = xml_safe(episode.title)
     if episode.ads_removed:
         ep_ad_suffix = os.environ.get("EPISODE_AD_REMOVED_SUFFIX", " ✂️")
         if ep_ad_suffix:
@@ -251,10 +251,10 @@ def _add_item(
 
     guid = ET.SubElement(item, "guid")
     guid.set("isPermaLink", "false")
-    guid.text = _xml_safe(episode.video_id)
+    guid.text = xml_safe(episode.video_id)
 
     enclosure = ET.SubElement(item, "enclosure")
-    enclosure.set("url", _xml_safe(episode.cloudfront_url))
+    enclosure.set("url", xml_safe(episode.cloudfront_url))
     enclosure.set("length", str(episode.file_size))
     enclosure.set("type", "audio/mpeg")
 
@@ -281,7 +281,7 @@ def _add_item(
     if hasattr(episode, "summary") and episode.summary:
         desc_text = episode.summary + "\n\n" + desc_text
 
-    desc_text = _xml_safe(desc_text)
+    desc_text = xml_safe(desc_text)
     ET.SubElement(item, "description").text = desc_text
 
     # iTunes item tags
@@ -291,7 +291,7 @@ def _add_item(
 
     if episode.thumbnail:
         img = ET.SubElement(item, f"{{{ITUNES_NS}}}image")
-        img.set("href", _xml_safe(episode.thumbnail))
+        img.set("href", xml_safe(episode.thumbnail))
 
     if episode.playlist_index is not None:
         ET.SubElement(item, f"{{{ITUNES_NS}}}episode").text = str(episode.playlist_index)

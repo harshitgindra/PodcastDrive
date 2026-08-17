@@ -1311,3 +1311,189 @@ class TestSpliceRetryReusesDetection:
         # attempts (no boto3 client is even constructed for that purpose any more).
         assert mock_remove_ads.call_count == 2
         assert result["new_episodes"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _build_podcast_feed_xml — sanitisation of third-party feed text
+# ---------------------------------------------------------------------------
+
+
+class TestFeedXmlSanitization:
+    """Third-party RSS text reaches the feed verbatim, so control chars must be stripped."""
+
+    def _ep(self, **kw):
+        base = dict(
+            title="Ep 1",
+            url="https://example.com/ep.mp3",
+            pub_date=datetime(2024, 1, 1, tzinfo=UTC),
+            guid="guid-1",
+            duration=300,
+            thumbnail="",
+        )
+        base.update(kw)
+        return EpisodeMeta(**base)
+
+    def _build(self, podcast, eps, ids, **kw):
+        return _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "test-pod", **kw)
+
+    def test_control_char_in_episode_title_does_not_raise(self):
+        podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+        xml = self._build(podcast, [self._ep(title="Bad\x08Title\x1a")], ["ep-001"])
+        assert "\x08" not in xml
+        assert "\x1a" not in xml
+        assert "BadTitle" in xml
+
+    def test_control_char_in_podcast_name_does_not_raise(self):
+        podcast = PodcastConfig(name="Bad\x0bPod", url="https://feeds.example.com/rss", source="Podcast")
+        xml = self._build(podcast, [], [])
+        assert "\x0b" not in xml
+        assert "BadPod" in xml
+
+    def test_control_char_in_description_does_not_raise(self):
+        podcast = PodcastConfig(
+            name="Test Pod",
+            url="https://feeds.example.com/rss",
+            source="Podcast",
+            description="Desc\x1fwith junk",
+        )
+        xml = self._build(podcast, [], [])
+        assert "\x1f" not in xml
+
+    def test_control_char_in_guid_does_not_raise(self):
+        podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+        xml = self._build(podcast, [self._ep(guid="gu\x07id")], ["ep-001"])
+        assert "\x07" not in xml
+
+    def test_control_char_in_ai_summary_does_not_raise(self):
+        podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+        xml = self._build(
+            podcast,
+            [self._ep()],
+            ["ep-001"],
+            manifest={"ep-001": {"summary": "A\x0csummary"}},
+        )
+        assert "\x0c" not in xml
+
+    def test_control_char_in_thumbnail_url_does_not_raise(self):
+        podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+        xml = self._build(podcast, [self._ep(thumbnail="https://img.example.com/a\x01.jpg")], ["ep-001"])
+        assert "\x01" not in xml
+
+    def test_output_is_parseable_after_sanitization(self):
+        import xml.etree.ElementTree as ET
+
+        podcast = PodcastConfig(name="P\x08od", url="https://feeds.example.com/rss", source="Podcast")
+        xml = self._build(podcast, [self._ep(title="T\x1ai", guid="g\x0bu")], ["ep-001"])
+        ET.fromstring(xml)  # must not raise
+
+    def test_legitimate_unicode_survives(self):
+        podcast = PodcastConfig(name="Café ☕ Pod", url="https://feeds.example.com/rss", source="Podcast")
+        xml = self._build(podcast, [self._ep(title="Épisode – naïve")], ["ep-001"])
+        assert "Café ☕ Pod" in xml
+        assert "Épisode – naïve" in xml
+
+    def test_tabs_and_newlines_are_preserved(self):
+        podcast = PodcastConfig(
+            name="Test Pod",
+            url="https://feeds.example.com/rss",
+            source="Podcast",
+            description="line1\nline2\tend",
+        )
+        xml = self._build(podcast, [], [])
+        assert "line1" in xml and "line2" in xml
+
+
+# ---------------------------------------------------------------------------
+# process_podcast_feed — feed-build failure isolation
+# ---------------------------------------------------------------------------
+
+
+class TestFeedBuildFailureIsolation:
+    """Episodes are already uploaded when the feed is built, so a build fault must not abort."""
+
+    def _run(self, tmp_path, feed_side_effect):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+            patch("podcast_sync._build_podcast_feed_xml", side_effect=feed_side_effect),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            result = process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        return result, mock_s3
+
+    def test_build_error_does_not_raise(self, tmp_path):
+        result, _ = self._run(tmp_path, ValueError("not well-formed"))
+        assert result["new_episodes"] == 1
+
+    def test_uploaded_episode_is_still_counted(self, tmp_path):
+        result, mock_s3 = self._run(tmp_path, ValueError("not well-formed"))
+        mock_s3.upload_episode.assert_called_once()
+        assert result["failed"] == 0
+
+    def test_feed_is_not_uploaded_when_the_build_fails(self, tmp_path):
+        _, mock_s3 = self._run(tmp_path, ValueError("not well-formed"))
+        mock_s3.upload_feed.assert_not_called()
+
+    def test_failure_is_logged_as_error(self, tmp_path, caplog):
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="podcast_sync"):
+            self._run(tmp_path, ValueError("not well-formed"))
+        assert "feed.xml generation failed" in caplog.text
+
+    def test_notion_write_back_still_happens(self, tmp_path):
+        """The provider update lives after the feed build and must not be skipped."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+        provider = MagicMock()
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+            patch("podcast_sync._build_podcast_feed_xml", side_effect=ValueError("boom")),
+        ):
+            MockS3.return_value.list_existing_episodes.return_value = set()
+            process_podcast_feed(podcast, provider=provider, dry_run=False)
+
+        provider.update_status.assert_called_once_with(podcast, "Done")
+
+    def test_upload_feed_failure_is_also_contained(self, tmp_path):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.upload_feed.side_effect = RuntimeError("S3 down")
+            result = process_podcast_feed(podcast, provider=None, dry_run=False)
+
+        assert result["new_episodes"] == 1

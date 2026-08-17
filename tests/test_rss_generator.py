@@ -12,11 +12,10 @@ from rss_generator import (
     _first_paragraph,
     _format_duration,
     _validate_cloudfront_base,
-    _xml_safe,
     build_episode_metadata,
     generate_rss,
+    xml_safe,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -848,30 +847,30 @@ class TestGenerateRssProperty:
 
 
 class TestXmlSafe:
-    """Unit tests for the _xml_safe helper."""
+    """Unit tests for the xml_safe helper."""
 
     def test_none_returns_empty(self):
-        assert _xml_safe(None) == ""
+        assert xml_safe(None) == ""
 
     def test_empty_returns_empty(self):
-        assert _xml_safe("") == ""
+        assert xml_safe("") == ""
 
     def test_plain_text_unchanged(self):
-        assert _xml_safe("Hello World") == "Hello World"
+        assert xml_safe("Hello World") == "Hello World"
 
     def test_strips_control_characters(self):
-        assert _xml_safe("Bad\x08char\x1b here") == "Badchar here"
+        assert xml_safe("Bad\x08char\x1b here") == "Badchar here"
 
     def test_preserves_allowed_whitespace(self):
         # Tab, newline and carriage return are legal in XML 1.0.
-        assert _xml_safe("a\tb\nc\rd") == "a\tb\nc\rd"
+        assert xml_safe("a\tb\nc\rd") == "a\tb\nc\rd"
 
     def test_preserves_unicode(self):
-        assert _xml_safe("café — ✂️ 日本語") == "café — ✂️ 日本語"
+        assert xml_safe("café — ✂️ 日本語") == "café — ✂️ 日本語"
 
     def test_does_not_escape_markup(self):
-        # _xml_safe only strips illegal chars; escaping of & < > is ElementTree's job.
-        assert _xml_safe("a & b < c") == "a & b < c"
+        # xml_safe only strips illegal chars; escaping of & < > is ElementTree's job.
+        assert xml_safe("a & b < c") == "a & b < c"
 
 
 class TestGenerateRssSanitisation:

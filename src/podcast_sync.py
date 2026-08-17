@@ -44,6 +44,7 @@ from podcast_downloader import (
     resolve_feed_url,
     search_feed_url_by_name,
 )
+from rss_generator import xml_safe
 from s3_manager import S3Manager
 from utils import env_int
 
@@ -187,32 +188,32 @@ def _build_podcast_feed_xml(
     channel = ET.SubElement(rss, "channel")
 
     suffix = os.environ.get("FEED_TITLE_SUFFIX", " ✂️")
-    ET.SubElement(channel, "title").text = podcast.name + suffix
-    ET.SubElement(channel, "link").text = podcast.url
-    ET.SubElement(channel, "description").text = podcast.description or podcast.name
-    ET.SubElement(channel, f"{{{_ITUNES_NS}}}summary").text = podcast.description or podcast.name
-    ET.SubElement(channel, "language").text = language
+    ET.SubElement(channel, "title").text = xml_safe(podcast.name + suffix)
+    ET.SubElement(channel, "link").text = xml_safe(podcast.url)
+    ET.SubElement(channel, "description").text = xml_safe(podcast.description or podcast.name)
+    ET.SubElement(channel, f"{{{_ITUNES_NS}}}summary").text = xml_safe(podcast.description or podcast.name)
+    ET.SubElement(channel, "language").text = xml_safe(language)
     ET.SubElement(channel, "generator").text = "PodcastDrive"
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(datetime.now(UTC))
 
     # Standard RSS 2.0 <image> block (required by many non-iTunes podcast apps)
     if artwork_url:
         rss_image = ET.SubElement(channel, "image")
-        ET.SubElement(rss_image, "url").text = artwork_url
-        ET.SubElement(rss_image, "title").text = podcast.name + suffix
-        ET.SubElement(rss_image, "link").text = podcast.url
+        ET.SubElement(rss_image, "url").text = xml_safe(artwork_url)
+        ET.SubElement(rss_image, "title").text = xml_safe(podcast.name + suffix)
+        ET.SubElement(rss_image, "link").text = xml_safe(podcast.url)
 
-    ET.SubElement(channel, f"{{{_ITUNES_NS}}}author").text = podcast.name
+    ET.SubElement(channel, f"{{{_ITUNES_NS}}}author").text = xml_safe(podcast.name)
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}explicit").text = "no"
 
     subtitle = os.environ.get("FEED_SUBTITLE", "Ad-free · PodcastDrive")
     if subtitle:
-        ET.SubElement(channel, f"{{{_ITUNES_NS}}}subtitle").text = subtitle
+        ET.SubElement(channel, f"{{{_ITUNES_NS}}}subtitle").text = xml_safe(subtitle)
 
     # iTunes channel artwork
     if artwork_url:
         img_el = ET.SubElement(channel, f"{{{_ITUNES_NS}}}image")
-        img_el.set("href", artwork_url)
+        img_el.set("href", xml_safe(artwork_url))
 
     ep_ad_suffix = os.environ.get("EPISODE_AD_REMOVED_SUFFIX", " ✂️")
 
@@ -221,11 +222,11 @@ def _build_podcast_feed_xml(
         title = ep.title
         if ep_ad_suffix and manifest.get(ep_id, {}).get("ads_removed"):
             title += ep_ad_suffix
-        ET.SubElement(item, "title").text = title
+        ET.SubElement(item, "title").text = xml_safe(title)
 
         guid_el = ET.SubElement(item, "guid")
         guid_el.set("isPermaLink", "false")
-        guid_el.text = ep.guid
+        guid_el.text = xml_safe(ep.guid)
 
         cf_url = f"{cloudfront_base}/{slug}/episodes/{ep_id}.mp3"
         enc = ET.SubElement(item, "enclosure")
@@ -239,13 +240,13 @@ def _build_podcast_feed_xml(
 
         # Episode description: prefer AI summary from manifest
         desc = manifest.get(ep_id, {}).get("summary") or ep.title
-        ET.SubElement(item, "description").text = desc
+        ET.SubElement(item, "description").text = xml_safe(desc)
 
         # Per-episode artwork (falls back to channel artwork if episode has none)
         ep_thumbnail = ep.thumbnail or artwork_url
         if ep_thumbnail:
             ep_img = ET.SubElement(item, f"{{{_ITUNES_NS}}}image")
-            ep_img.set("href", ep_thumbnail)
+            ep_img.set("href", xml_safe(ep_thumbnail))
 
     rough = ET.tostring(rss, encoding="unicode", xml_declaration=False)
     dom = parseString(rough)
@@ -776,20 +777,35 @@ def process_podcast_feed(
                 s3.save_manifest(manifest)
 
             logger.info("[PodcastSync] Generating feed.xml with %d episodes", len(feed_episodes))
-            channel_thumbnail = parse_channel_thumbnail(feed_xml)
-            xml_content = _build_podcast_feed_xml(
-                podcast,
-                feed_episodes,
-                feed_ep_ids,
-                cloudfront_base,
-                slug,
-                ep_sizes,
-                channel_thumbnail=channel_thumbnail,
-                language=podcast.language,
-                manifest=manifest,
-            )
-            s3.upload_feed(xml_content)
-            logger.info("[PodcastSync] feed.xml uploaded")
+            # The episodes and manifest are already uploaded at this point, so a
+            # feed-build fault must not propagate: it would abort the run, skip
+            # the Notion write-back, and discard the record of everything this
+            # run paid Transcribe and Bedrock for.  The next run rebuilds the
+            # feed from S3, so degrading to a warning is recoverable.
+            try:
+                channel_thumbnail = parse_channel_thumbnail(feed_xml)
+                xml_content = _build_podcast_feed_xml(
+                    podcast,
+                    feed_episodes,
+                    feed_ep_ids,
+                    cloudfront_base,
+                    slug,
+                    ep_sizes,
+                    channel_thumbnail=channel_thumbnail,
+                    language=podcast.language,
+                    manifest=manifest,
+                )
+                s3.upload_feed(xml_content)
+                logger.info("[PodcastSync] feed.xml uploaded")
+            except Exception as exc:
+                logger.error(
+                    "[PodcastSync] feed.xml generation failed for '%s': %s — "
+                    "%d episode(s) are uploaded and will appear once the feed rebuilds next run",
+                    podcast.name,
+                    exc,
+                    new_count,
+                    exc_info=True,
+                )
 
         # Update Notion status based on this run's outcomes.
         # splice_failed_this_run is used (not the historical manifest total) so
