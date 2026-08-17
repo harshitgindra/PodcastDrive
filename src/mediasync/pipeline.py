@@ -136,11 +136,11 @@ def _process_entry(
 
     # Tag and upload
     file_keys: list[str] = []
-    duration = 0
+    total_duration = 0
     try:
         for result in results:
             tag_file(result.path, result.title, result.artist)
-            duration = result.duration_secs
+            total_duration += result.duration_secs
 
             fmt_folder = "audio" if result.format_type == "audio" else "video"
             remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
@@ -165,7 +165,7 @@ def _process_entry(
         entry.page_id,
         Status.DONE,
         file_key="; ".join(file_keys),
-        duration=duration,
+        duration=total_duration,
     )
     return True
 
