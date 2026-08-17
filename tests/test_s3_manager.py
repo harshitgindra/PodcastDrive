@@ -1,5 +1,6 @@
 """Unit tests for S3Manager."""
 
+import logging
 import os
 import tempfile
 import unittest.mock
@@ -768,3 +769,101 @@ class TestPingOvercastRetry:
         manager._ping_overcast()  # should not raise
 
         assert call_count[0] == 2  # tried twice, then gave up
+
+
+# ---------------------------------------------------------------------------
+# reset_podcast — partial delete_objects failures (Fix #13)
+# ---------------------------------------------------------------------------
+
+
+class TestResetPodcastPartialDeleteFailures:
+    """delete_objects returns HTTP 200 with a per-key "Errors" list."""
+
+    @staticmethod
+    def _manager_with(delete_objects_response, keys=("vid1", "vid2", "vid3")):
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+        mock_paginator = unittest.mock.MagicMock()
+        mock_paginator.paginate.return_value = [
+            {"Contents": [{"Key": f"{PLAYLIST_ID}/episodes/{k}.mp3"} for k in keys]}
+        ]
+        mock_s3.get_paginator.return_value = mock_paginator
+        mock_s3.delete_objects.return_value = delete_objects_response
+        manager.s3_client = mock_s3
+        return manager
+
+    def test_failed_keys_are_not_counted_as_deleted(self):
+        manager = self._manager_with(
+            {
+                "Deleted": [{"Key": f"{PLAYLIST_ID}/episodes/vid1.mp3"}],
+                "Errors": [
+                    {"Key": f"{PLAYLIST_ID}/episodes/vid2.mp3", "Code": "AccessDenied", "Message": "nope"},
+                    {"Key": f"{PLAYLIST_ID}/episodes/vid3.mp3", "Code": "InternalError", "Message": "boom"},
+                ],
+            }
+        )
+
+        result = manager.reset_podcast()
+
+        assert result["episodes_deleted"] == 1
+        assert result["episodes_failed"] == 2
+
+    def test_errors_are_logged_with_key_and_code(self, caplog):
+        manager = self._manager_with(
+            {
+                "Errors": [
+                    {"Key": f"{PLAYLIST_ID}/episodes/vid2.mp3", "Code": "AccessDenied", "Message": "nope"},
+                ]
+            },
+            keys=("vid1", "vid2"),
+        )
+
+        with caplog.at_level(logging.ERROR):
+            manager.reset_podcast()
+
+        assert "vid2.mp3" in caplog.text
+        assert "AccessDenied" in caplog.text
+
+    def test_all_keys_failing_reports_zero_deleted(self):
+        manager = self._manager_with(
+            {
+                "Errors": [
+                    {"Key": f"{PLAYLIST_ID}/episodes/{k}.mp3", "Code": "AccessDenied", "Message": "nope"}
+                    for k in ("vid1", "vid2", "vid3")
+                ]
+            }
+        )
+
+        result = manager.reset_podcast()
+
+        assert result["episodes_deleted"] == 0
+        assert result["episodes_failed"] == 3
+
+    def test_clean_response_reports_no_failures(self):
+        manager = self._manager_with({"Deleted": [{"Key": "x"}, {"Key": "y"}, {"Key": "z"}]})
+
+        result = manager.reset_podcast()
+
+        assert result["episodes_deleted"] == 3
+        assert result["episodes_failed"] == 0
+
+    def test_missing_or_none_response_is_tolerated(self):
+        for response in ({}, None, {"Errors": None}):
+            manager = self._manager_with(response)
+            result = manager.reset_podcast()
+            assert result["episodes_deleted"] == 3
+            assert result["episodes_failed"] == 0
+
+    def test_moto_backed_reset_reports_no_failures(self):
+        with mock_aws():
+            conn = boto3.client("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket=BUCKET)
+            for vid in ("vid1", "vid2"):
+                conn.put_object(Bucket=BUCKET, Key=f"{PLAYLIST_ID}/episodes/{vid}.mp3", Body=b"audio")
+
+            manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+            manager.s3_client = conn
+            result = manager.reset_podcast()
+
+            assert result["episodes_deleted"] == 2
+            assert result["episodes_failed"] == 0

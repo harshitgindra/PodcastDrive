@@ -142,23 +142,30 @@ def run_reset(force: bool = False) -> int:
     # Perform the reset
     print()
     grand_total_episodes = 0
+    grand_total_failed = 0
     for name, slug, _ in podcast_info:
         print(f"Resetting '{name}' (slug={slug})…")
         s3 = S3Manager(bucket=bucket, playlist_id=slug)
         try:
             result = s3.reset_podcast()
             grand_total_episodes += result["episodes_deleted"]
+            failed = result.get("episodes_failed", 0)
+            grand_total_failed += failed
             feed_status = "✓" if result["feed_deleted"] else "–"
             manifest_status = "✓" if result["manifest_deleted"] else "–"
             print(
                 f"  ✅  {result['episodes_deleted']} episode(s) deleted  feed={feed_status}  manifest={manifest_status}"
             )
+            if failed:
+                print(f"  ⚠️  {failed} episode(s) could not be deleted — see the log for details", file=sys.stderr)
         except Exception as exc:
             print(f"  ❌  Failed to reset '{name}': {exc}", file=sys.stderr)
             logger.error("[Reset] Failed to reset '%s': %s", name, exc)
 
     print()
     print(f"✅  Reset complete — {grand_total_episodes} episode(s) deleted across {len(slugs)} podcast(s).")
+    if grand_total_failed:
+        print(f"⚠️  {grand_total_failed} episode(s) failed to delete.", file=sys.stderr)
     print("   Run './run.sh' to start fresh.")
     return 0
 

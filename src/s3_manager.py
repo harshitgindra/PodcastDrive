@@ -316,10 +316,14 @@ class S3Manager:
         efficiency.
 
         Returns:
-            dict with keys ``episodes_deleted``, ``feed_deleted``,
-            ``manifest_deleted``.
+            dict with keys ``episodes_deleted``, ``episodes_failed``,
+            ``feed_deleted``, ``manifest_deleted``.  ``episodes_deleted``
+            counts only keys S3 actually removed; per-key failures reported
+            in the ``Errors`` list of a 200 response are counted in
+            ``episodes_failed`` and logged at ERROR.
         """
         episodes_deleted = 0
+        episodes_failed = 0
         feed_deleted = False
         manifest_deleted = False
 
@@ -335,16 +339,31 @@ class S3Manager:
             if not objects:
                 continue
             delete_keys = [{"Key": obj["Key"]} for obj in objects]
-            retry_aws_call(
+            response = retry_aws_call(
                 lambda keys=delete_keys: self.s3_client.delete_objects(
                     Bucket=self.bucket,
                     Delete={"Objects": keys, "Quiet": True},
                 ),
                 label="s3.delete_objects[reset-episodes]",
             )
-            episodes_deleted += len(delete_keys)
+            # delete_objects returns HTTP 200 even when individual keys fail
+            # (AccessDenied, object-lock, ...).  Those failures live in the
+            # "Errors" list, so counting len(delete_keys) reported deletions
+            # that never happened.
+            errors = (response or {}).get("Errors") or []
+            for err in errors:
+                logger.error(
+                    "[S3Manager] Failed to delete %s: %s %s",
+                    err.get("Key", "?"),
+                    err.get("Code", "?"),
+                    err.get("Message", ""),
+                )
+            batch_deleted = len(delete_keys) - len(errors)
+            episodes_deleted += batch_deleted
+            episodes_failed += len(errors)
             logger.info(
-                "[S3Manager] Deleted %d episode(s) from %s",
+                "[S3Manager] Deleted %d of %d episode(s) from %s",
+                batch_deleted,
                 len(delete_keys),
                 episodes_prefix,
             )
@@ -374,14 +393,16 @@ class S3Manager:
             logger.warning("[S3Manager] Could not delete manifest %s: %s", manifest_key, exc)
 
         logger.info(
-            "[S3Manager] Reset complete for '%s': %d episodes, feed=%s, manifest=%s",
+            "[S3Manager] Reset complete for '%s': %d episodes deleted, %d failed, feed=%s, manifest=%s",
             self.playlist_id,
             episodes_deleted,
+            episodes_failed,
             feed_deleted,
             manifest_deleted,
         )
         return {
             "episodes_deleted": episodes_deleted,
+            "episodes_failed": episodes_failed,
             "feed_deleted": feed_deleted,
             "manifest_deleted": manifest_deleted,
         }
