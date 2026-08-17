@@ -9,6 +9,7 @@ Handles:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -412,12 +413,25 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
 # ---------------------------------------------------------------------------
 
 
+_UNSAFE_ID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+_EPISODE_ID_MAX_LEN = 80
+_EPISODE_ID_HASH_LEN = 10  # "-" + 9 hex chars
+
+
 def episode_id_from_guid(guid: str) -> str:
     """Derive a filesystem/S3-safe episode ID from a feed GUID.
 
     Takes the last path-segment of the GUID URL (or the whole string if it is
     not a URL), strips query strings and fragments, replaces unsafe characters
     with underscores, and limits to 80 characters.
+
+    Because that transformation is lossy, it used to collide: two distinct
+    GUIDs such as ``https://x/ep?v=1`` and ``https://x/ep?v=2`` both produced
+    ``ep``, and an empty GUID produced ``""`` — i.e. the S3 key
+    ``{slug}/episodes/.mp3``.  Colliding IDs mean one episode overwrites
+    another's audio.  Whenever the transformation loses information (unsafe
+    characters replaced, truncation, or a base that is empty or only dots) a
+    short digest of the *full* original GUID is appended to disambiguate.
 
     The episode ID is intentionally **not** prefixed with the podcast slug:
     each podcast is already isolated in its own S3 prefix
@@ -428,16 +442,35 @@ def episode_id_from_guid(guid: str) -> str:
         guid: The ``<guid>`` value from the RSS item.
 
     Returns:
-        An S3/filesystem-safe string derived from the GUID, e.g. ``"abc123def456"``.
+        A non-empty S3/filesystem-safe string derived from the GUID, e.g.
+        ``"abc123def456"`` or ``"ep-1f4a9c3b2"``.
     """
+    raw = guid if isinstance(guid, str) else ""
+
     # Strip query string / fragment
-    clean = guid.split("?")[0].split("#")[0]
+    clean = raw.split("?")[0].split("#")[0]
     # Take the last non-empty path segment
-    segment = [s for s in clean.rstrip("/").split("/") if s]
-    base = segment[-1] if segment else clean
-    # Keep only safe characters
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:80]
-    return safe
+    segments = [s for s in clean.rstrip("/").split("/") if s]
+    base = segments[-1] if segments else clean
+
+    safe = _UNSAFE_ID_CHARS.sub("_", base)
+    # Lossy when unsafe characters were replaced, when the base is not a usable
+    # filename ("", "." or ".."), or when a query string / fragment was dropped
+    # -- WordPress-style GUIDs such as "https://example.com/?p=1234" carry their
+    # only identifying part in the query string.
+    lossy = safe != base or not safe.strip(".") or clean != raw
+
+    max_base = _EPISODE_ID_MAX_LEN - _EPISODE_ID_HASH_LEN
+    if len(safe) > max_base:
+        safe = safe[:max_base]
+        lossy = True
+
+    if not lossy:
+        return safe
+
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:9]
+    prefix = safe.strip(".")
+    return f"{prefix}-{digest}" if prefix else digest
 
 
 # ---------------------------------------------------------------------------

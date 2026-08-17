@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
@@ -326,8 +327,9 @@ class TestEpisodeIdFromGuid:
         assert eid == "plain-guid-value"
 
     def test_guid_with_query_string_stripped(self):
+        """The path segment leads the ID; a digest keeps query-string variants distinct."""
         eid = episode_id_from_guid("https://example.com/episodes/ep99?source=rss")
-        assert eid == "ep99"
+        assert eid.startswith("ep99-")
 
     def test_guid_special_chars_replaced(self):
         eid = episode_id_from_guid("https://example.com/ep/hello world!")
@@ -792,3 +794,58 @@ class TestDownloadEpisodeRejectsLocalFiles:
                 download_episode(f"file://{source}", "ep-1", str(dest_dir))
         mock_open.assert_not_called()
         assert list(dest_dir.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# episode_id_from_guid — empty / colliding IDs (Fix #14)
+# ---------------------------------------------------------------------------
+
+
+class TestEpisodeIdNeverEmpty:
+    @pytest.mark.parametrize("guid", ["", "/", "///", "?x=1", "#frag", ".", "..", "https://example.com/"])
+    def test_degenerate_guids_still_produce_a_usable_id(self, guid):
+        eid = episode_id_from_guid(guid)
+        assert eid, f"empty id for {guid!r} would yield the S3 key 'slug/episodes/.mp3'"
+        assert eid.strip(".")
+        assert "/" not in eid
+        assert re.fullmatch(r"[A-Za-z0-9._-]+", eid)
+
+    def test_non_string_guid_is_tolerated(self):
+        assert episode_id_from_guid(None) != ""
+
+
+class TestEpisodeIdCollisions:
+    def test_wordpress_style_guids_do_not_all_collide(self):
+        """"https://example.com/?p=N" has its identity in the query string."""
+        ids = {episode_id_from_guid(f"https://example.com/?p={n}") for n in range(5)}
+        assert len(ids) == 5
+
+    def test_query_string_variants_do_not_collide(self):
+        a = episode_id_from_guid("https://example.com/ep?v=1")
+        b = episode_id_from_guid("https://example.com/ep?v=2")
+        assert a != b
+
+    def test_ids_differing_only_by_unsafe_chars_do_not_collide(self):
+        a = episode_id_from_guid("ep#1")
+        b = episode_id_from_guid("ep 1")
+        c = episode_id_from_guid("ep@1")
+        assert len({a, b, c}) == 3
+
+    def test_empty_guid_variants_do_not_collide(self):
+        assert episode_id_from_guid("") != episode_id_from_guid("/")
+
+    def test_long_guids_sharing_a_prefix_do_not_collide(self):
+        a = episode_id_from_guid("x" * 200 + "1")
+        b = episode_id_from_guid("x" * 200 + "2")
+        assert a != b
+        assert len(a) <= 80
+
+    def test_clean_guids_are_unchanged(self):
+        """Existing S3 keys must stay stable for GUIDs that need no sanitising."""
+        assert episode_id_from_guid("abc123def456") == "abc123def456"
+        assert episode_id_from_guid("plain-guid-value") == "plain-guid-value"
+        assert episode_id_from_guid("https://example.com/episodes/abc123") == "abc123"
+        assert episode_id_from_guid("https://example.com/episodes/abc123/") == "abc123"
+
+    def test_id_is_deterministic(self):
+        assert episode_id_from_guid("ep 1") == episode_id_from_guid("ep 1")
