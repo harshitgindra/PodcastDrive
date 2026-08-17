@@ -142,8 +142,16 @@ def _process_entry(
     # Tag and upload
     file_keys: list[str] = []
     total_duration = 0
+    total_items = len(results)
     try:
-        for result in results:
+        for idx, result in enumerate(results, 1):
+            # Progress feedback for multi-item downloads (playlists)
+            if total_items > 1:
+                notion.update_status(
+                    entry.page_id, Status.DOWNLOADING,
+                    error=f"Uploading {idx}/{total_items}: {result.title}",
+                )
+
             tag_file(result.path, result.title, result.artist)
             total_duration += result.duration_secs
 
