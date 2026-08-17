@@ -45,6 +45,46 @@ class OneDriveClient:
         self._refresh_token = refresh_token
         self._access_token = self._refresh_access_token()
 
+    @property
+    def current_refresh_token(self) -> str:
+        """Return the current refresh token (may have been rotated)."""
+        return self._refresh_token
+
+    def check_health(self) -> bool:
+        """Verify the OneDrive connection is working.
+
+        Makes a lightweight API call (get drive info) to confirm the access
+        token is valid. Returns True if healthy, False otherwise.
+        """
+        url = f"{GRAPH_API}/me/drive"
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {self._access_token}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+                quota = data.get("quota", {})
+                used = quota.get("used", 0)
+                total = quota.get("total", 0)
+                if total > 0:
+                    pct = (used / total) * 100
+                    logger.info(
+                        "OneDrive healthy: %.1f%% used (%d/%d bytes)",
+                        pct, used, total,
+                    )
+                else:
+                    logger.info("OneDrive healthy: connected")
+                return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                logger.error("OneDrive health check failed: token expired or invalid")
+            else:
+                logger.error("OneDrive health check failed: HTTP %d", exc.code)
+            return False
+        except Exception as exc:
+            logger.error("OneDrive health check failed: %s", exc)
+            return False
+
     def _refresh_access_token(self) -> str:
         """Exchange refresh token for a new access token."""
         data = urllib.parse.urlencode({
@@ -73,9 +113,39 @@ class OneDriveClient:
         # Update refresh token if a new one was issued
         if result.get("refresh_token"):
             self._refresh_token = result["refresh_token"]
+            self._persist_rotated_token(result["refresh_token"])
 
         logger.debug("Access token refreshed successfully")
         return result["access_token"]
+
+    def _persist_rotated_token(self, new_token: str) -> None:
+        """Persist a rotated refresh token to the env file if it exists.
+
+        This prevents token expiry if Microsoft issues a new refresh token
+        (rolling 90-day window). Updates MEDIASYNC_ONEDRIVE_REFRESH_TOKEN
+        in mediasync.env.
+        """
+        env_file = Path.cwd() / "mediasync.env"
+        if not env_file.is_file():
+            logger.debug("No mediasync.env found, skipping token persistence")
+            return
+
+        try:
+            content = env_file.read_text()
+            key = "MEDIASYNC_ONEDRIVE_REFRESH_TOKEN="
+            if key in content:
+                lines = content.splitlines()
+                new_lines = []
+                for line in lines:
+                    if line.startswith(key) or line.startswith(f"export {key}"):
+                        prefix = "export " if line.startswith("export ") else ""
+                        new_lines.append(f"{prefix}{key}{new_token}")
+                    else:
+                        new_lines.append(line)
+                env_file.write_text("\n".join(new_lines) + "\n")
+                logger.info("Persisted rotated OneDrive refresh token to mediasync.env")
+        except Exception as exc:
+            logger.warning("Failed to persist rotated token: %s", exc)
 
     def upload(self, local_path: Path, remote_folder: str, filename: str) -> str:
         """Upload a file to OneDrive.

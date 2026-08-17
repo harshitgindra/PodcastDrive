@@ -32,6 +32,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Reset all done/failed entries to pending and re-process everything",
     )
     parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate storage connection and token health without processing",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable debug logging",
@@ -51,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         logging.error("Configuration error: %s", exc)
         return 1
 
+    if args.check:
+        return _check_health(config)
+
     if args.dry_run:
         return _dry_run(config)
 
@@ -63,6 +71,48 @@ def main(argv: list[str] | None = None) -> int:
 
     _notify(config, stats, elapsed)
     return 1 if stats.failed > 0 else 0
+
+
+def _check_health(config: Config) -> int:
+    """Validate storage connection health."""
+    from mediasync.storage import create_storage
+
+    print(f"Storage backend: {config.storage_backend}")
+
+    if config.storage_backend == "onedrive":
+        from mediasync.onedrive_client import OneDriveClient, OneDriveError
+        try:
+            client = OneDriveClient(
+                config.onedrive_client_id,
+                config.onedrive_client_secret,
+                config.onedrive_refresh_token,
+            )
+        except OneDriveError as exc:
+            print(f"FAIL: Token refresh failed — {exc}")
+            print("The refresh token may have expired (90-day rolling window).")
+            print("Re-run the OAuth flow to obtain a new token.")
+            return 1
+
+        if client.check_health():
+            print("OK: OneDrive connection healthy")
+            return 0
+        else:
+            print("FAIL: OneDrive health check failed")
+            return 1
+    elif config.storage_backend == "s3":
+        from mediasync.s3_client import S3Client, S3Error
+        try:
+            client = S3Client(config.s3_bucket, config.s3_region)
+            # Verify bucket access with a HEAD request
+            client._client.head_bucket(Bucket=config.s3_bucket)
+            print(f"OK: S3 bucket '{config.s3_bucket}' accessible")
+            return 0
+        except Exception as exc:
+            print(f"FAIL: S3 health check failed — {exc}")
+            return 1
+    else:
+        print(f"Unknown storage backend: {config.storage_backend}")
+        return 1
 
 
 def _reset(config: Config) -> None:
