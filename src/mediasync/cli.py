@@ -32,6 +32,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Reset all done/failed entries to pending and re-process everything",
     )
     parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Migrate existing files to channel-grouped folders and regenerate playlists",
+    )
+    parser.add_argument(
+        "--regenerate-playlists",
+        action="store_true",
+        help="Regenerate All/Recent playlists from current Notion state (no downloads)",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="Validate storage connection and token health without processing",
@@ -56,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
         logging.error("Configuration error: %s", exc)
         return 1
 
+    if args.migrate:
+        return _run_migration(config, dry_run=args.dry_run)
+
+    if args.regenerate_playlists:
+        return _run_regenerate_playlists(config)
+
     if args.check:
         return _check_health(config)
 
@@ -71,6 +87,39 @@ def main(argv: list[str] | None = None) -> int:
 
     _notify(config, stats, elapsed)
     return 1 if stats.failed > 0 else 0
+
+
+def _run_migration(config: Config, *, dry_run: bool = False) -> int:
+    """Run migration to apply new features to existing data."""
+    from mediasync.migrate import migrate
+
+    mode = "DRY RUN" if dry_run else "LIVE"
+    print(f"\nMediaSync Migration ({mode})")
+    print("=" * 40)
+    print("This will:")
+    print("  - Move files to channel-grouped folders")
+    print("  - Upload folder.jpg artwork")
+    print("  - Regenerate All/Recent playlists")
+    print()
+
+    stats = migrate(config, dry_run=dry_run)
+
+    print(f"\nResults:")
+    print(f"  Moved:     {stats['moved']}")
+    print(f"  Skipped:   {stats['skipped']}")
+    print(f"  Failed:    {stats['failed']}")
+    print(f"  Playlists: {stats['playlists']}")
+
+    return 1 if stats["failed"] > 0 else 0
+
+
+def _run_regenerate_playlists(config: Config) -> int:
+    """Regenerate standing playlists from current Notion state."""
+    from mediasync.migrate import regenerate_playlists
+
+    count = regenerate_playlists(config)
+    print(f"Regenerated {count} playlists")
+    return 0
 
 
 def _check_health(config: Config) -> int:
