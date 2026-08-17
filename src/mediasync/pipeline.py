@@ -21,6 +21,7 @@ from mediasync.downloader import (
 )
 from mediasync.notion_client import MediaEntry, NotionClient, Status
 from mediasync.playlist import generate_m3u, make_relative_keys
+from mediasync.standing_playlists import generate_standing_playlists
 from mediasync.storage import StorageBackend, create_storage
 from mediasync.tagger import tag_file
 
@@ -77,6 +78,10 @@ def run(config: Config) -> RunStats:
             stats.processed += 1
         else:
             stats.failed += 1
+
+    # Phase 3: regenerate standing playlists if anything changed
+    if stats.processed > 0 or stats.deleted > 0:
+        generate_standing_playlists(config, notion, storage)
 
     logger.info(
         "Run complete: processed=%d, failed=%d, deleted=%d, skipped=%d",
