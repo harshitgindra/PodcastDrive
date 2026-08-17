@@ -10,6 +10,7 @@ import logging
 import os
 from dataclasses import dataclass
 
+from mediasync.artwork import download_thumbnail
 from mediasync.config import Config
 from mediasync.downloader import (
     DownloadError,
@@ -26,6 +27,9 @@ from mediasync.storage import StorageBackend, create_storage
 from mediasync.tagger import tag_file
 
 logger = logging.getLogger(__name__)
+
+# Track folders where artwork has been uploaded this run (avoid duplicates)
+_uploaded_artwork: set[str] = set()
 
 
 @dataclass
@@ -48,6 +52,7 @@ def run(config: Config) -> RunStats:
         RunStats with counts of actions taken.
     """
     stats = RunStats()
+    _uploaded_artwork.clear()
     notion = NotionClient(config.notion_token, config.notion_database_id)
     storage = create_storage(config)
 
@@ -166,6 +171,13 @@ def _process_entry(
             file_key = storage.upload(result.path, remote_folder, filename)
             file_keys.append(file_key)
 
+            # Upload folder artwork (once per unique remote_folder)
+            if result.thumbnail_url and remote_folder not in _uploaded_artwork:
+                _upload_folder_artwork(
+                    result.thumbnail_url, remote_folder, storage, config.output_dir
+                )
+                _uploaded_artwork.add(remote_folder)
+
         # Generate and upload M3U playlist for playlist URLs with multiple items
         if is_playlist(entry.url) and len(results) > 1:
             _upload_playlist(results, file_keys, entry, storage, config)
@@ -219,6 +231,25 @@ def _upload_playlist(
         logger.info("Uploaded playlist: %s/%s", playlist_folder, playlist_path.name)
     finally:
         playlist_path.unlink(missing_ok=True)
+
+
+def _upload_folder_artwork(
+    thumbnail_url: str,
+    remote_folder: str,
+    storage: StorageBackend,
+    output_dir: str,
+) -> None:
+    """Download thumbnail and upload as folder.jpg for player artwork display."""
+    thumb_path = download_thumbnail(thumbnail_url, output_dir)
+    if thumb_path is None:
+        return
+    try:
+        storage.upload(thumb_path, remote_folder, "folder.jpg")
+        logger.debug("Uploaded folder artwork to %s", remote_folder)
+    except Exception as exc:
+        logger.warning("Failed to upload folder artwork (non-fatal): %s", exc)
+    finally:
+        thumb_path.unlink(missing_ok=True)
 
 
 def _sanitize_folder_name(name: str) -> str:
