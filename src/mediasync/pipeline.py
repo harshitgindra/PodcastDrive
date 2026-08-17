@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from mediasync.artwork import download_thumbnail
 from mediasync.config import Config
+from mediasync.url_handler import normalize_url
 from mediasync.downloader import (
     DownloadError,
     DownloadResult,
@@ -127,9 +128,11 @@ def _process_entry(
     """Download, tag, upload a single entry. Returns True on success."""
     notion.update_status(entry.page_id, Status.DOWNLOADING)
 
+    url = normalize_url(entry.url)
+
     try:
         results = download(
-            entry.url,
+            url,
             entry.format,
             output_dir=config.output_dir,
             max_duration_secs=config.max_duration_secs,
@@ -179,7 +182,7 @@ def _process_entry(
                 _uploaded_artwork.add(remote_folder)
 
         # Generate and upload M3U playlist for playlist URLs with multiple items
-        if is_playlist(entry.url) and len(results) > 1:
+        if is_playlist(url) and len(results) > 1:
             _upload_playlist(results, file_keys, entry, storage, config)
 
     except Exception as exc:
