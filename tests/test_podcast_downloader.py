@@ -284,13 +284,11 @@ class TestParseEpisodes:
         episodes = parse_episodes(_FEED_ENCLOSURE_EMPTY_URL)
         assert len(episodes) == 0
 
-    def test_bad_pubdate_falls_back_to_now(self):
-        """Covers lines 322-324: unparseable pubDate → fallback to datetime.now."""
-        before = datetime.now(UTC)
+    def test_bad_pubdate_falls_back_to_epoch(self):
+        """An unparseable pubDate must not look like the newest episode in the feed."""
         episodes = parse_episodes(_FEED_BAD_PUBDATE)
-        after = datetime.now(UTC)
         assert len(episodes) == 1
-        assert before <= episodes[0].pub_date <= after
+        assert episodes[0].pub_date == datetime(1970, 1, 1, tzinfo=UTC)
 
     def test_naive_pubdate_gets_utc_timezone(self):
         """Covers line 322: timezone-naive date gets UTC applied."""
@@ -655,3 +653,70 @@ class TestDownloadEpisodeRangeResume:
             download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert captured_reqs[0].get_header("Range") is None
+
+
+# ---------------------------------------------------------------------------
+# parse_episodes — malformed pubDate must not defeat the age filter
+# ---------------------------------------------------------------------------
+
+_FEED_NO_PUBDATE = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>No Date Episode</title>
+      <guid>guid-no-date</guid>
+      <enclosure url="https://example.com/ep.mp3" length="1000" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>"""
+
+_FEED_MIXED_DATES = b"""<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Good</title>
+      <guid>guid-good</guid>
+      <enclosure url="https://example.com/good.mp3" length="1000" type="audio/mpeg"/>
+      <pubDate>Wed, 02 Oct 2030 13:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Broken</title>
+      <guid>guid-broken</guid>
+      <enclosure url="https://example.com/broken.mp3" length="1000" type="audio/mpeg"/>
+      <pubDate>garbage</pubDate>
+    </item>
+  </channel>
+</rss>"""
+
+
+class TestMalformedPubDate:
+    def test_missing_pubdate_element_falls_back_to_epoch(self):
+        episodes = parse_episodes(_FEED_NO_PUBDATE)
+        assert len(episodes) == 1
+        assert episodes[0].pub_date == datetime(1970, 1, 1, tzinfo=UTC)
+
+    def test_epoch_fallback_is_excluded_by_the_age_filter(self):
+        """The point of the fix: a dateless episode must not download forever."""
+        episodes = parse_episodes(_FEED_BAD_PUBDATE, max_age_days=30)
+        assert episodes == []
+
+    def test_missing_pubdate_is_excluded_by_the_age_filter(self):
+        episodes = parse_episodes(_FEED_NO_PUBDATE, max_age_days=30)
+        assert episodes == []
+
+    def test_broken_date_does_not_outrank_a_valid_one(self):
+        episodes = parse_episodes(_FEED_MIXED_DATES)
+        by_title = {e.title: e.pub_date for e in episodes}
+        assert by_title["Broken"] < by_title["Good"]
+
+    def test_malformed_pubdate_is_logged_as_a_warning(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="podcast_downloader"):
+            parse_episodes(_FEED_BAD_PUBDATE)
+        assert "unparseable pubDate" in caplog.text
+
+    def test_valid_pubdate_is_unaffected(self):
+        episodes = parse_episodes(_FEED_MIXED_DATES)
+        by_title = {e.title: e.pub_date for e in episodes}
+        assert by_title["Good"] == datetime(2030, 10, 2, 13, 0, tzinfo=UTC)

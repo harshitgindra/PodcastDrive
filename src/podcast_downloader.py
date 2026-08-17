@@ -317,15 +317,26 @@ def parse_episodes(feed_xml: bytes, max_age_days: int | None = None) -> list[Epi
         guid_el = item.find("guid")
         guid = (guid_el.text or audio_url).strip() if guid_el is not None else audio_url
 
-        # Publication date
+        # Publication date.  An unparseable or missing pubDate falls back to the
+        # epoch, not to now(): now() makes a malformed episode look like the
+        # newest one in the feed, so it always passes the max_age_days cutoff and
+        # is re-downloaded and re-sorted to the top of the feed on every run.
+        # The epoch matches utils.parse_upload_date and lets the age filter drop
+        # it, which is the safe direction for an episode we know nothing about.
         pub_date_el = item.find("pubDate")
         pub_date: datetime
         try:
-            pub_date = parsedate_to_datetime(pub_date_el.text or "")
+            pub_date = parsedate_to_datetime((pub_date_el.text or "") if pub_date_el is not None else "")
             if pub_date.tzinfo is None:
                 pub_date = pub_date.replace(tzinfo=UTC)
         except Exception:
-            pub_date = datetime.now(UTC)
+            logger.warning(
+                "[PodcastDownloader] Episode '%s' has a missing or unparseable pubDate (%r) — "
+                "treating it as epoch so the age filter can exclude it",
+                title,
+                pub_date_el.text if pub_date_el is not None else None,
+            )
+            pub_date = datetime(1970, 1, 1, tzinfo=UTC)
 
         # Age filter
         if cutoff and pub_date < cutoff:
