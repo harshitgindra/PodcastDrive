@@ -7,6 +7,7 @@ import pytest
 from extractor import (
     BotDetectedError,
     ExtractionError,
+    _is_bot_detection,
     _is_permanently_unavailable,
     extract_playlist,
     extract_video_metadata,
@@ -605,3 +606,72 @@ class TestThumbnailSelection:
         _, videos = extract_playlist("https://www.youtube.com/playlist?list=PLtest123")
 
         assert videos[0].thumbnail == ""
+
+
+# ---------------------------------------------------------------------------
+# _is_bot_detection
+# ---------------------------------------------------------------------------
+
+
+class TestIsBotDetection:
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ERROR: Sign in to confirm you're not a bot",
+            "sign in to confirm your age",
+            "Please confirm you are not a bot",
+            "Bot detection triggered",
+            "Suspected bot activity",
+            "We have detected unusual traffic from your network",
+        ],
+    )
+    def test_real_challenges_match(self, message):
+        assert _is_bot_detection(message) is True
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # "bot" appears as a substring of an ordinary English word.
+            "ERROR: unable to download video: Robots.txt disallowed",
+            "Requested format is not available (bottom of the list)",
+            "Video unavailable: alleged sabotage",
+            # yt-dlp echoes the video title back in some errors.
+            "ERROR: [youtube] abc123: 'How I Built a Robot' is unavailable",
+            "HTTP Error 429: Too Many Requests",
+            "Requested format is not available",
+            "",
+        ],
+    )
+    def test_incidental_bot_substring_does_not_match(self, message):
+        assert _is_bot_detection(message) is False
+
+    def test_matching_is_case_insensitive(self):
+        assert _is_bot_detection("SIGN IN TO CONFIRM YOU'RE NOT A BOT") is True
+
+
+class TestBotDetectionFalsePositiveInMetadata:
+    """A "robot" in an error message must not abort the whole playlist run."""
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_robot_in_message_is_an_extraction_error(self, mock_ydl_cls):
+        import yt_dlp
+
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
+            "ERROR: [youtube] xyz: Requested format is not available for 'Robot Wars'"
+        )
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        with pytest.raises(ExtractionError):
+            extract_video_metadata("https://youtube.com/watch?v=xyz")
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_genuine_challenge_still_raises_bot_detected(self, mock_ydl_cls):
+        import yt_dlp
+
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("ERROR: Sign in to confirm you're not a bot")
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        with pytest.raises(BotDetectedError):
+            extract_video_metadata("https://youtube.com/watch?v=xyz")

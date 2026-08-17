@@ -439,8 +439,9 @@ def _check_youtube_access() -> None:
         else:
             _warn("YouTube canary returned no data — downloads may fail")
     except yt_dlp.utils.DownloadError as exc:
-        msg = str(exc).lower()
-        if "sign in to confirm" in msg or "bot" in msg:
+        from extractor import _is_bot_detection
+
+        if _is_bot_detection(str(exc)):
             _fail(
                 "YouTube BOT DETECTION active — all channel downloads will fail. "
                 "Fix: log into YouTube in Firefox, run ./refresh_cookies.sh, "

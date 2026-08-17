@@ -154,6 +154,31 @@ def _is_permanently_unavailable(message: str) -> bool:
     return any(marker in lowered for marker in _PERMANENT_UNAVAILABILITY_MARKERS)
 
 
+#: Phrases that specifically identify YouTube's bot-detection challenge.  These
+#: must stay narrow: a bare "bot" substring also matches "robot", "bottom",
+#: "sabotage", and any bot-containing video title echoed back in the error text,
+#: and a false positive aborts the entire playlist run (see sync.process_playlist).
+_BOT_DETECTION_MARKERS = (
+    "sign in to confirm",
+    "confirm you're not a bot",
+    "confirm you are not a bot",
+    "not a bot",
+    "bot detect",
+    "suspected bot",
+    "unusual traffic",
+)
+
+
+def _is_bot_detection(message: str) -> bool:
+    """Return ``True`` when *message* is YouTube's bot-detection challenge.
+
+    Args:
+        message: The yt-dlp error text (any case).
+    """
+    lowered = message.lower()
+    return any(marker in lowered for marker in _BOT_DETECTION_MARKERS)
+
+
 def extract_video_metadata(video_url: str) -> dict | None:
     """Extract full metadata for a single video.
 
@@ -198,8 +223,7 @@ def extract_video_metadata(video_url: str) -> dict | None:
         }
     except yt_dlp.utils.DownloadError as exc:
         msg = str(exc)
-        lowered = msg.lower()
-        if "sign in to confirm" in lowered or "bot" in lowered:
+        if _is_bot_detection(msg):
             raise BotDetectedError(
                 f"YouTube bot detection triggered for {video_url}. "
                 "Cookies are expired or missing authentication. "
