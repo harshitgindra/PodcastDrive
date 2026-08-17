@@ -7,16 +7,20 @@ updates Notion. Safe to run from any machine.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 
 from mediasync.config import Config
 from mediasync.downloader import (
     DownloadError,
+    DownloadResult,
     DurationExceededError,
     cleanup_results,
     download,
+    is_playlist,
 )
 from mediasync.notion_client import MediaEntry, NotionClient, Status
+from mediasync.playlist import generate_m3u, make_relative_keys
 from mediasync.storage import StorageBackend, create_storage
 from mediasync.tagger import tag_file
 
@@ -143,6 +147,11 @@ def _process_entry(
 
             file_key = storage.upload(result.path, remote_folder, filename)
             file_keys.append(file_key)
+
+        # Generate and upload M3U playlist for playlist URLs with multiple items
+        if is_playlist(entry.url) and len(results) > 1:
+            _upload_playlist(results, file_keys, entry, storage, config)
+
     except Exception as exc:
         logger.error("Upload failed: %s — %s", entry.url, exc)
         notion.update_status(entry.page_id, Status.FAILED, error=str(exc))
@@ -158,3 +167,63 @@ def _process_entry(
         duration=duration,
     )
     return True
+
+
+def _upload_playlist(
+    results: list[DownloadResult],
+    file_keys: list[str],
+    entry: MediaEntry,
+    storage: StorageBackend,
+    config: Config,
+) -> None:
+    """Generate an M3U playlist file and upload it for playlist downloads."""
+    playlist_folder = f"{config.prefix}/{entry.profile}/playlists"
+
+    # Build playlist items with relative paths
+    relative_keys = make_relative_keys(playlist_folder, file_keys)
+
+    items = []
+    for result, rel_key in zip(results, relative_keys):
+        items.append({
+            "remote_key": rel_key,
+            "title": result.title,
+            "artist": result.artist,
+            "duration_secs": result.duration_secs,
+        })
+
+    # Use the first result's title as a base for the playlist name
+    # (yt-dlp metadata for playlists typically shares a common prefix)
+    playlist_title = _derive_playlist_title(results)
+
+    playlist_path = generate_m3u(playlist_title, items, config.output_dir)
+    try:
+        storage.upload(playlist_path, playlist_folder, playlist_path.name)
+        logger.info("Uploaded playlist: %s/%s", playlist_folder, playlist_path.name)
+    finally:
+        playlist_path.unlink(missing_ok=True)
+
+
+def _derive_playlist_title(results: list[DownloadResult]) -> str:
+    """Derive a playlist title from the downloaded items.
+
+    Uses the common prefix of all titles, falling back to the first title.
+    """
+    if not results:
+        return "Playlist"
+
+    titles = [r.title for r in results]
+    if len(titles) == 1:
+        return titles[0]
+
+    # Find common prefix (word-aligned)
+    prefix = os.path.commonprefix(titles).rstrip()
+    # Only use prefix if it's meaningful (>5 chars)
+    if len(prefix) > 5:
+        return prefix.rstrip(" -–—|·")
+
+    # Fallback: use the artist name if all same artist
+    artists = {r.artist for r in results}
+    if len(artists) == 1:
+        return f"{next(iter(artists))} Playlist"
+
+    return titles[0]

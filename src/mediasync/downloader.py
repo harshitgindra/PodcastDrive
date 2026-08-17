@@ -295,6 +295,9 @@ def _build_cmd(url: str, fmt: str, output: str) -> list[str]:
     if cookies:
         cmd += ["--cookies", str(cookies)]
 
+    # Embed YouTube thumbnail as cover art and metadata (title, artist, etc.)
+    cmd += ["--embed-thumbnail", "--embed-metadata"]
+
     if fmt == "audio":
         cmd += [
             "-x",

@@ -55,8 +55,10 @@ class TestTagFile:
 
 
 class TestTagMp4:
-    def test_sets_title_and_artist(self):
+    def test_fills_missing_title_and_artist(self):
         mock_mp4 = MagicMock()
+        # Simulate empty tags so fill-in writes them
+        mock_mp4.tags.get.return_value = None
         with patch("mutagen.mp4.MP4", return_value=mock_mp4):
             from mediasync.tagger import _tag_mp4
             _tag_mp4(Path("/fake/song.m4a"), "My Song", "My Artist")
@@ -65,16 +67,39 @@ class TestTagMp4:
         mock_mp4.__setitem__.assert_any_call("\xa9ART", ["My Artist"])
         mock_mp4.save.assert_called_once()
 
+    def test_skips_existing_tags(self):
+        mock_mp4 = MagicMock()
+        # Simulate tags already present
+        mock_mp4.tags.get.return_value = ["Existing"]
+        with patch("mutagen.mp4.MP4", return_value=mock_mp4):
+            from mediasync.tagger import _tag_mp4
+            _tag_mp4(Path("/fake/song.m4a"), "My Song", "My Artist")
+
+        mock_mp4.__setitem__.assert_not_called()
+        mock_mp4.save.assert_called_once()
+
 
 class TestTagMp3:
-    def test_sets_title_and_artist(self):
+    def test_fills_missing_title_and_artist(self):
         mock_tags = MagicMock()
+        # Simulate empty tags so fill-in writes them
+        mock_tags.get.return_value = None
         with patch("mutagen.easyid3.EasyID3", return_value=mock_tags):
             from mediasync.tagger import _tag_mp3
             _tag_mp3(Path("/fake/song.mp3"), "My Song", "My Artist")
 
         mock_tags.__setitem__.assert_any_call("title", "My Song")
         mock_tags.__setitem__.assert_any_call("artist", "My Artist")
+        mock_tags.save.assert_called_once()
+
+    def test_skips_existing_tags(self):
+        mock_tags = MagicMock()
+        mock_tags.get.side_effect = lambda k: ["Existing"] if k in ("title", "artist") else None
+        with patch("mutagen.easyid3.EasyID3", return_value=mock_tags):
+            from mediasync.tagger import _tag_mp3
+            _tag_mp3(Path("/fake/song.mp3"), "My Song", "My Artist")
+
+        mock_tags.__setitem__.assert_not_called()
         mock_tags.save.assert_called_once()
 
     def test_creates_id3_header_if_missing(self):

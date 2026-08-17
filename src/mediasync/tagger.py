@@ -1,5 +1,10 @@
 """Embed metadata tags (title, artist) into audio/video files.
 
+With --embed-metadata and --embed-thumbnail, yt-dlp handles the bulk of
+tagging. This module serves as a best-effort fallback to ensure title and
+artist are present even if yt-dlp'\''s embedding was partial (e.g. some
+extractors skip artist).
+
 Uses mutagen for m4a/mp4, best-effort (never fails the pipeline).
 """
 
@@ -12,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def tag_file(path: Path, title: str, artist: str) -> None:
-    """Embed title and artist metadata. Silently skips unsupported formats."""
+    """Ensure title and artist metadata are present. Skips unsupported formats."""
     suffix = path.suffix.lower()
     try:
         if suffix in (".m4a", ".mp4", ".m4v"):
@@ -29,10 +34,13 @@ def _tag_mp4(path: Path, title: str, artist: str) -> None:
     from mutagen.mp4 import MP4
 
     audio = MP4(str(path))
-    audio["\xa9nam"] = [title]
-    audio["\xa9ART"] = [artist]
+    # Only fill in missing fields — don'\''t overwrite what yt-dlp embedded
+    if not audio.tags.get("\xa9nam"):
+        audio["\xa9nam"] = [title]
+    if not audio.tags.get("\xa9ART"):
+        audio["\xa9ART"] = [artist]
     audio.save()
-    logger.debug("Tagged MP4: %s — %s", artist, title)
+    logger.debug("Tagged MP4 (fill-in): %s — %s", artist, title)
 
 
 def _tag_mp3(path: Path, title: str, artist: str) -> None:
@@ -47,7 +55,9 @@ def _tag_mp3(path: Path, title: str, artist: str) -> None:
         ID3().save(str(path))
         tags = EasyID3(str(path))
 
-    tags["title"] = title
-    tags["artist"] = artist
+    if not tags.get("title"):
+        tags["title"] = title
+    if not tags.get("artist"):
+        tags["artist"] = artist
     tags.save()
-    logger.debug("Tagged MP3: %s — %s", artist, title)
+    logger.debug("Tagged MP3 (fill-in): %s — %s", artist, title)
