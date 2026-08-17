@@ -45,6 +45,7 @@ from podcast_downloader import (
     search_feed_url_by_name,
 )
 from s3_manager import S3Manager
+from utils import env_int
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -140,7 +141,7 @@ def _splice_attempts_for_cdn(cdn: str) -> int:
     """Resolve the max fresh-download splice-retry attempts for a CDN tag."""
     if cdn in CDN_RETRY_OVERRIDES:
         return CDN_RETRY_OVERRIDES[cdn]
-    return int(os.environ.get("SPLICE_MAX_ATTEMPTS_PER_RUN", "2"))
+    return env_int("SPLICE_MAX_ATTEMPTS_PER_RUN", 2)
 
 
 def _build_podcast_feed_xml(
@@ -297,13 +298,11 @@ def process_podcast_feed(
 
     max_age_days = podcast.max_age_days
     if max_age_days is None:
-        env_val = os.environ.get("MAX_AGE_DAYS")
-        max_age_days = int(env_val) if env_val else None
+        max_age_days = env_int("MAX_AGE_DAYS", 0) or None
 
     max_episodes = podcast.max_downloads
     if max_episodes is None:
-        env_val = os.environ.get("PODCAST_MAX_EPISODES")
-        max_episodes = int(env_val) if env_val else 5  # conservative default
+        max_episodes = env_int("PODCAST_MAX_EPISODES", 5)  # conservative default
 
     slug = _podcast_slug(podcast.name)
     tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{slug}-")
@@ -384,7 +383,7 @@ def process_podcast_feed(
         # Retries are capped at MAX_SPLICE_RETRIES (default 3) to avoid downloading
         # and transcribing a persistently-broken episode on every run indefinitely.
         manifest = s3.load_manifest()
-        _max_splice_retries = int(os.environ.get("MAX_SPLICE_RETRIES", "3"))
+        _max_splice_retries = env_int("MAX_SPLICE_RETRIES", 3)
         splice_retry_ids = {
             k
             for k, v in manifest.items()
@@ -636,7 +635,7 @@ def process_podcast_feed(
                             os.remove(p)
                 return {"ok": False, "ep_id": ep_id, "error": exc}
 
-        workers = int(os.environ.get("PODCAST_EPISODE_WORKERS", "1"))
+        workers = env_int("PODCAST_EPISODE_WORKERS", 1)
         workers = max(1, min(workers, len(candidates)))  # clamp to [1, n_candidates]
         logger.info("[PodcastSync] Processing %d candidate(s) with %d worker(s)", len(candidates), workers)
 

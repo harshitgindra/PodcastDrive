@@ -1,6 +1,7 @@
 """Utility functions for YouTube Playlist to Podcast."""
 
 import logging
+import os
 import re
 import time
 from collections.abc import Callable
@@ -179,3 +180,65 @@ def parse_upload_date(date_str: str) -> datetime:
         return dt.replace(tzinfo=UTC)
     except (ValueError, TypeError):
         return datetime(1970, 1, 1, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# Tolerant environment-variable parsing
+# ---------------------------------------------------------------------------
+
+
+def env_int(name: str, default: int) -> int:
+    """Read integer environment variable *name*, falling back to *default*.
+
+    A malformed value (typo, stray whitespace, empty string) logs a warning and
+    yields *default* instead of raising ``ValueError`` mid-run.  Configuration
+    mistakes should degrade to documented defaults, not abort a sync that has
+    already paid for downloads and transcription.
+
+    Args:
+        name:    Environment variable name.
+        default: Value to use when unset or unparseable.
+
+    Returns:
+        The parsed integer, or *default*.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        _logger.warning(
+            "Invalid %s=%r (expected an integer) — falling back to %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    """Read float environment variable *name*, falling back to *default*.
+
+    See :func:`env_int` for the rationale.
+
+    Args:
+        name:    Environment variable name.
+        default: Value to use when unset or unparseable.
+
+    Returns:
+        The parsed float, or *default*.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError:
+        _logger.warning(
+            "Invalid %s=%r (expected a number) — falling back to %s",
+            name,
+            raw,
+            default,
+        )
+        return default

@@ -81,7 +81,7 @@ import uuid
 import boto3
 import certifi
 
-from utils import retry_aws_call
+from utils import env_float, env_int, retry_aws_call
 
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
@@ -669,8 +669,8 @@ def transcribe_audio(mp3_path: str, video_id: str) -> list[dict]:
 
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     language_code = os.environ.get("TRANSCRIBE_LANGUAGE_CODE", "en-US")
-    poll_interval = int(os.environ.get("TRANSCRIBE_POLL_INTERVAL", "10"))
-    max_wait = int(os.environ.get("TRANSCRIBE_MAX_WAIT", "3600"))
+    poll_interval = env_int("TRANSCRIBE_POLL_INTERVAL", 10)
+    max_wait = env_int("TRANSCRIBE_MAX_WAIT", 3600)
     cache_enabled = os.environ.get("TRANSCRIBE_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
     # Skip caching for evaluator re-transcriptions (eval- prefix) — those target the cleaned
     # file and should not overwrite the original episode's cache entry.
@@ -1270,8 +1270,8 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
     # Use a cheaper model here (e.g. Haiku) and keep Sonnet for verification.
     _default_model = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
     model_id = os.environ.get("BEDROCK_DETECT_MODEL_ID", _default_model)
-    max_chars = int(os.environ.get("AD_DETECT_MAX_CHARS", "60000"))
-    overlap_secs = float(os.environ.get("AD_DETECT_OVERLAP_SECS", "60"))
+    max_chars = env_int("AD_DETECT_MAX_CHARS", 60000)
+    overlap_secs = env_float("AD_DETECT_OVERLAP_SECS", 60.0)
 
     chunks = _split_segments_into_chunks(segments, max_chars, overlap_secs)
     logger.info(
@@ -1333,9 +1333,9 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
     merged = _merge_overlapping_ads(all_ads)
 
     # Fix #2: guard rails on duration — ads almost never exceed 5 min
-    _MIN_AD_SECONDS = float(os.environ.get("MIN_AD_SEGMENT_SECS", "5.0"))
-    max_ad_secs = float(os.environ.get("MAX_AD_SEGMENT_SECS", "300"))
-    verify_threshold = float(os.environ.get("AD_VERIFY_THRESHOLD_SECS", "90"))
+    _MIN_AD_SECONDS = env_float("MIN_AD_SEGMENT_SECS", 5.0)
+    max_ad_secs = env_float("MAX_AD_SEGMENT_SECS", 300.0)
+    verify_threshold = env_float("AD_VERIFY_THRESHOLD_SECS", 90.0)
 
     valid = []
     for seg in merged:
@@ -1492,7 +1492,7 @@ def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
     if not ads:
         return []
 
-    merge_gap = float(os.environ.get("AD_MERGE_GAP_SECS", "2"))
+    merge_gap = env_float("AD_MERGE_GAP_SECS", 2.0)
     sorted_ads = sorted(ads, key=lambda s: s["start"])
     merged: list[AdSegment] = [{"start": sorted_ads[0]["start"], "end": sorted_ads[0]["end"]}]
 
@@ -1972,10 +1972,10 @@ def remove_ads(
     _trim_intro = trim_music_intro or os.environ.get("TRIM_MUSIC_INTRO", "false").lower() in ("true", "1", "yes")
     _trim_outro = trim_music_outro or os.environ.get("TRIM_MUSIC_OUTRO", "false").lower() in ("true", "1", "yes")
     _min_intro = (
-        min_music_intro_secs if min_music_intro_secs != 8.0 else float(os.environ.get("MUSIC_INTRO_MIN_SECS", "8.0"))
+        min_music_intro_secs if min_music_intro_secs != 8.0 else env_float("MUSIC_INTRO_MIN_SECS", 8.0)
     )
     _min_outro = (
-        min_music_outro_secs if min_music_outro_secs != 5.0 else float(os.environ.get("MUSIC_OUTRO_MIN_SECS", "5.0"))
+        min_music_outro_secs if min_music_outro_secs != 5.0 else env_float("MUSIC_OUTRO_MIN_SECS", 5.0)
     )
 
     logger.info("[AdRemover] Starting ad removal for %s", video_id)

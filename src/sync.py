@@ -17,7 +17,7 @@ from extractor import BotDetectedError, ExtractionError, extract_playlist, extra
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
 from s3_manager import S3Manager
-from utils import extract_playlist_id, parse_upload_date
+from utils import env_int, extract_playlist_id, parse_upload_date
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -57,11 +57,11 @@ def process_playlist(
     if not cloudfront_base:
         raise ValueError("CLOUDFRONT_BASE environment variable must be set")
     if max_downloads is None:
-        max_downloads = int(os.environ.get("MAX_DOWNLOADS_PER_RUN", "10"))
+        max_downloads = env_int("MAX_DOWNLOADS_PER_RUN", 10)
     if max_age_days is None:
-        max_age_days = int(os.environ.get("MAX_AGE_DAYS", "7"))
+        max_age_days = env_int("MAX_AGE_DAYS", 7)
     if sleep_between is None:
-        sleep_between = int(os.environ.get("SLEEP_BETWEEN_DOWNLOADS", "5"))
+        sleep_between = env_int("SLEEP_BETWEEN_DOWNLOADS", 5)
 
     # Ensure int types (Notion returns floats for numbers)
     max_downloads = int(max_downloads)

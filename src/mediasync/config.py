@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from utils import env_int
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -111,7 +113,7 @@ class Config:
             onedrive_client_secret=onedrive_client_secret,
             onedrive_refresh_token=onedrive_refresh_token,
             onedrive_prefix=os.environ.get("MEDIASYNC_ONEDRIVE_PREFIX", "MediaSync"),
-            max_duration_secs=int(os.environ.get("MEDIASYNC_MAX_DURATION_SECS", "7200")),
+            max_duration_secs=env_int("MEDIASYNC_MAX_DURATION_SECS", 7200),
             output_dir=os.environ.get("MEDIASYNC_OUTPUT_DIR", "/tmp/mediasync"),
             herald_enabled=os.environ.get("MEDIASYNC_HERALD_ENABLED", "true").lower() == "true",
             herald_job_id=os.environ.get("HERALD_JOB_ID", "").strip(),

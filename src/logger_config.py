@@ -16,6 +16,8 @@ import os
 from datetime import UTC, datetime
 from logging.handlers import TimedRotatingFileHandler
 
+from utils import env_int
+
 # Detect Lambda environment — file logging is skipped there.
 _IS_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 
@@ -109,7 +111,7 @@ def setup_logging(
     """
     # Allow env-var overrides so cron / launchd jobs can tune without code changes.
     log_level = os.environ.get("LOG_LEVEL", log_level).upper()
-    retention_days = int(os.environ.get("LOG_RETENTION_DAYS", retention_days))
+    retention_days = env_int("LOG_RETENTION_DAYS", retention_days)
     log_dir = os.environ.get("LOG_DIR", log_dir)
     use_json = os.environ.get("LOG_FORMAT", "").lower() == "json"
 

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
-from utils import extract_playlist_id, parse_upload_date, retry_aws_call
+from utils import env_float, env_int, extract_playlist_id, parse_upload_date, retry_aws_call
 
 # ---------------------------------------------------------------------------
 # retry_aws_call
@@ -198,3 +198,63 @@ class TestValidatePlaylistId:
     def test_path_traversal_raises(self):
         with pytest.raises(ValueError, match="path traversal"):
             extract_playlist_id("PL..secret")
+
+
+# ── env_int / env_float ──────────────────────────────────────────────────────
+
+
+class TestEnvInt:
+    def test_parses_valid_value(self, monkeypatch):
+        monkeypatch.setenv("PD_TEST_INT", "42")
+        assert env_int("PD_TEST_INT", 7) == 42
+
+    def test_strips_surrounding_whitespace(self, monkeypatch):
+        monkeypatch.setenv("PD_TEST_INT", "  42\n")
+        assert env_int("PD_TEST_INT", 7) == 42
+
+    def test_unset_returns_default(self, monkeypatch):
+        monkeypatch.delenv("PD_TEST_INT", raising=False)
+        assert env_int("PD_TEST_INT", 7) == 7
+
+    def test_blank_returns_default(self, monkeypatch):
+        monkeypatch.setenv("PD_TEST_INT", "   ")
+        assert env_int("PD_TEST_INT", 7) == 7
+
+    def test_malformed_returns_default_and_warns(self, monkeypatch, caplog):
+        monkeypatch.setenv("PD_TEST_INT", "3 hours")
+        with caplog.at_level("WARNING", logger="utils"):
+            assert env_int("PD_TEST_INT", 7) == 7
+        assert "PD_TEST_INT" in caplog.text
+
+    def test_float_string_is_rejected(self, monkeypatch):
+        # int("1.5") raises, so a float-looking value must not be silently truncated.
+        monkeypatch.setenv("PD_TEST_INT", "1.5")
+        assert env_int("PD_TEST_INT", 7) == 7
+
+    def test_negative_value_is_accepted(self, monkeypatch):
+        monkeypatch.setenv("PD_TEST_INT", "-3")
+        assert env_int("PD_TEST_INT", 7) == -3
+
+
+class TestEnvFloat:
+    def test_parses_valid_value(self, monkeypatch):
+        monkeypatch.setenv("PD_TEST_FLOAT", "2.5")
+        assert env_float("PD_TEST_FLOAT", 1.0) == 2.5
+
+    def test_parses_integer_string(self, monkeypatch):
+        monkeypatch.setenv("PD_TEST_FLOAT", "3")
+        assert env_float("PD_TEST_FLOAT", 1.0) == 3.0
+
+    def test_unset_returns_default(self, monkeypatch):
+        monkeypatch.delenv("PD_TEST_FLOAT", raising=False)
+        assert env_float("PD_TEST_FLOAT", 1.5) == 1.5
+
+    def test_blank_returns_default(self, monkeypatch):
+        monkeypatch.setenv("PD_TEST_FLOAT", "")
+        assert env_float("PD_TEST_FLOAT", 1.5) == 1.5
+
+    def test_malformed_returns_default_and_warns(self, monkeypatch, caplog):
+        monkeypatch.setenv("PD_TEST_FLOAT", "ninety")
+        with caplog.at_level("WARNING", logger="utils"):
+            assert env_float("PD_TEST_FLOAT", 1.5) == 1.5
+        assert "PD_TEST_FLOAT" in caplog.text
