@@ -60,6 +60,7 @@ class MediaEntry:
     status: Status
     delete: bool
     file_key: str = ""
+    priority: int | None = None
 
 
 class NotionClient:
@@ -76,7 +77,11 @@ class NotionClient:
         self._ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
     def get_pending(self) -> list[MediaEntry]:
-        """Fetch rows with Status=pending (or empty) and Delete=false, ordered by created time."""
+        """Fetch rows with Status=pending (or empty) and Delete=false.
+
+        Sort order: Priority ascending (nulls last), then created_time ascending.
+        This allows urgent items to be processed first when a Priority number is set.
+        """
         return self._query(
             filter_obj={
                 "and": [
@@ -87,7 +92,10 @@ class NotionClient:
                     {"property": "Delete", "checkbox": {"equals": False}},
                 ]
             },
-            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
+            sorts=[
+                {"property": "Priority", "direction": "ascending"},
+                {"timestamp": "created_time", "direction": "ascending"},
+            ],
         )
 
     def get_deletions(self) -> list[MediaEntry]:
@@ -248,6 +256,12 @@ class NotionClient:
         if file_key_prop.get("rich_text"):
             file_key = file_key_prop["rich_text"][0]["plain_text"]
 
+        # Priority is optional (number column, nullable)
+        priority = None
+        priority_prop = props.get("Priority", {})
+        if priority_prop.get("type") == "number" and priority_prop.get("number") is not None:
+            priority = int(priority_prop["number"])
+
         return MediaEntry(
             page_id=page["id"],
             url=url,
@@ -256,6 +270,7 @@ class NotionClient:
             status=status,
             delete=delete,
             file_key=file_key,
+            priority=priority,
         )
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
