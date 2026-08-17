@@ -31,6 +31,39 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
+# URL safety
+# ---------------------------------------------------------------------------
+
+_ALLOWED_URL_SCHEMES = ("http", "https")
+
+
+def require_http_url(url: str, what: str) -> str:
+    """Return *url* if it is a plain http(s) URL, else raise ``ValueError``.
+
+    Feed and enclosure URLs come from Notion and from third-party RSS, i.e.
+    they are untrusted.  ``urllib.request.urlopen`` happily accepts
+    ``file:///etc/passwd`` (and ``ftp://``, ``data:``, ...), so without this
+    check an attacker-supplied URL could make the pipeline read a local file
+    and publish it to the public CloudFront feed.
+
+    Args:
+        url:  The candidate URL.
+        what: Human-readable description used in the error message.
+
+    Returns:
+        The URL unchanged.
+
+    Raises:
+        ValueError: If the URL is empty or does not use http/https.
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError(f"Refusing to fetch {what}: empty URL")
+    scheme = urllib.parse.urlsplit(url.strip()).scheme.lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(f"Refusing to fetch {what}: unsupported URL scheme {scheme or '(none)'!r} in {url!r}")
+    return url
+
+# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
@@ -210,8 +243,11 @@ def fetch_feed_xml(feed_url: str) -> bytes:
         Raw feed bytes.
 
     Raises:
+        ValueError:   If *feed_url* is not an http(s) URL.
         RuntimeError: If the HTTP request fails after all retries.
     """
+
+    require_http_url(feed_url, "RSS feed")
 
     @_fetch_feed_attempt
     def _attempt() -> bytes:
@@ -435,8 +471,11 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
         Local path to the downloaded file.
 
     Raises:
+        ValueError:   If *url* is not an http(s) URL.
         RuntimeError: If the download fails after all retries.
     """
+    require_http_url(url, f"episode {episode_id}")
+
     local_path = os.path.join(tmp_dir, f"{episode_id}.mp3")
     logger.info("[PodcastDownloader] Downloading episode %s from %s", episode_id, url)
 

@@ -20,6 +20,7 @@ from podcast_downloader import (
     is_apple_podcasts_url,
     parse_channel_thumbnail,
     parse_episodes,
+    require_http_url,
     resolve_feed_url,
     search_feed_url_by_name,
 )
@@ -720,3 +721,74 @@ class TestMalformedPubDate:
         episodes = parse_episodes(_FEED_MIXED_DATES)
         by_title = {e.title: e.pub_date for e in episodes}
         assert by_title["Good"] == datetime(2030, 10, 2, 13, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# URL scheme allowlist (Fix #12)
+# ---------------------------------------------------------------------------
+
+
+class TestRequireHttpUrl:
+    """Feed/enclosure URLs are untrusted, so only http(s) may be fetched."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://feeds.example.com/rss",
+            "https://feeds.example.com/rss",
+            "HTTPS://feeds.example.com/rss",
+            "  https://feeds.example.com/rss  ",
+        ],
+    )
+    def test_accepts_http_and_https(self, url):
+        assert require_http_url(url, "RSS feed") == url
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "file://localhost/etc/shadow",
+            "ftp://example.com/feed.xml",
+            "data:text/xml,<rss/>",
+            "gopher://example.com/",
+            "/etc/passwd",
+            "feeds.example.com/rss",
+        ],
+    )
+    def test_rejects_other_schemes(self, url):
+        with pytest.raises(ValueError, match="unsupported URL scheme"):
+            require_http_url(url, "RSS feed")
+
+    @pytest.mark.parametrize("url", ["", None])
+    def test_rejects_empty_url(self, url):
+        with pytest.raises(ValueError, match="empty URL"):
+            require_http_url(url, "RSS feed")
+
+    def test_error_message_names_the_resource(self):
+        with pytest.raises(ValueError, match="episode ep-1"):
+            require_http_url("file:///etc/passwd", "episode ep-1")
+
+
+class TestFetchFeedXmlRejectsLocalFiles:
+    def test_file_url_is_refused_without_opening_it(self, tmp_path):
+        secret = tmp_path / "secret.xml"
+        secret.write_text("<rss><channel><title>secret</title></channel></rss>")
+
+        with patch("podcast_downloader.urllib.request.urlopen") as mock_open:
+            with pytest.raises(ValueError, match="unsupported URL scheme"):
+                fetch_feed_xml(f"file://{secret}")
+        mock_open.assert_not_called()
+
+
+class TestDownloadEpisodeRejectsLocalFiles:
+    def test_file_url_is_refused_and_nothing_written(self, tmp_path):
+        source = tmp_path / "local.mp3"
+        source.write_bytes(b"\x00" * 2048)
+        dest_dir = tmp_path / "dl"
+        dest_dir.mkdir()
+
+        with patch("podcast_downloader.urllib.request.urlopen") as mock_open:
+            with pytest.raises(ValueError, match="unsupported URL scheme"):
+                download_episode(f"file://{source}", "ep-1", str(dest_dir))
+        mock_open.assert_not_called()
+        assert list(dest_dir.iterdir()) == []
