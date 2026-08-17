@@ -17,7 +17,7 @@ from extractor import BotDetectedError, ExtractionError, extract_playlist, extra
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
 from s3_manager import S3Manager
-from utils import env_int, extract_playlist_id, parse_upload_date
+from utils import env_float, env_int, extract_playlist_id, parse_upload_date
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -388,6 +388,65 @@ def _rebuild_feed(
     return len(episodes)
 
 
+def _orphan_deletion_is_safe(
+    orphaned_files: set,
+    s3_keys: set,
+    video_entries: list,
+) -> bool:
+    """Return ``True`` when deleting *orphaned_files* is safe.
+
+    ``extract_playlist`` runs with ``ignoreerrors=True`` (see
+    :func:`extractor.extract_playlist`), so a throttled, bot-blocked, or
+    partially-failed YouTube response produces a short — or empty — entry list
+    without raising.  Reconciliation would then classify most of the published
+    catalogue as orphaned and delete it.  Two guards prevent that:
+
+    1. An empty playlist is never a licence to delete: a real playlist that
+       genuinely lost every video is indistinguishable from a failed extraction,
+       and keeping the files is the recoverable choice.
+    2. When the playlist did return entries, a deletion batch that removes more
+       than ``RECONCILE_MAX_ORPHAN_RATIO`` (default 0.5) of the catalogue is
+       treated as suspicious — but only once at least
+       ``RECONCILE_MIN_ORPHANS`` (default 3) files are involved, so ordinary
+       churn in a small catalogue still reconciles normally.
+
+    Args:
+        orphaned_files: Episode IDs present in S3 but absent from the playlist.
+        s3_keys:        All episode IDs currently in S3.
+        video_entries:  Entries returned by playlist extraction.
+
+    Returns:
+        ``True`` to proceed with deletion, ``False`` to skip it this run.
+    """
+    if not video_entries:
+        logger.error(
+            "[Reconcile] Playlist extraction returned 0 videos but S3 has %d episode(s) — "
+            "refusing to delete anything (likely throttling or bot detection, not an empty playlist). "
+            "Feed will be rebuilt from existing S3 contents.",
+            len(s3_keys),
+        )
+        return False
+
+    min_orphans = env_int("RECONCILE_MIN_ORPHANS", 3)
+    max_ratio = env_float("RECONCILE_MAX_ORPHAN_RATIO", 0.5)
+    ratio = len(orphaned_files) / len(s3_keys) if s3_keys else 0.0
+
+    if len(orphaned_files) >= min_orphans and ratio > max_ratio:
+        logger.error(
+            "[Reconcile] Refusing to delete %d of %d S3 episode(s) (%.0f%% > %.0f%% limit) — "
+            "playlist extraction returned only %d video(s) and is likely degraded. "
+            "Set RECONCILE_MAX_ORPHAN_RATIO higher to override.",
+            len(orphaned_files),
+            len(s3_keys),
+            ratio * 100,
+            max_ratio * 100,
+            len(video_entries),
+        )
+        return False
+
+    return True
+
+
 def _reconcile(
     s3: "S3Manager",
     video_entries: list,
@@ -412,6 +471,11 @@ def _reconcile(
 
     playlist_ids = {v.video_id for v in video_entries}
     orphaned_files = s3_keys - playlist_ids
+
+    if orphaned_files and not _orphan_deletion_is_safe(orphaned_files, s3_keys, video_entries):
+        # Keep the files and rebuild the feed from whatever is actually in S3.
+        orphaned_files = set()
+
     for vid in orphaned_files:
         logger.info("[Reconcile] Deleting orphaned S3 file: %s", vid)
         try:

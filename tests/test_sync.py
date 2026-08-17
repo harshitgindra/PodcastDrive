@@ -629,6 +629,107 @@ class TestReconcile:
 
 
 # ---------------------------------------------------------------------------
+# _reconcile — orphan-deletion safety guard
+# ---------------------------------------------------------------------------
+
+
+class TestOrphanDeletionGuard:
+    """extract_playlist swallows errors, so a degraded response must not delete the catalogue."""
+
+    def test_empty_playlist_never_deletes(self):
+        """0 entries means extraction failed, not that the playlist was emptied."""
+        s3 = _make_s3_manager(existing=["vid001", "vid002"])
+        s3.list_existing_episodes.return_value = {"vid001", "vid002"}
+
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [], "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        s3.delete_episode.assert_not_called()
+
+    def test_empty_playlist_still_rebuilds_feed_from_s3(self):
+        s3 = _make_s3_manager(existing=["vid001"])
+        s3.list_existing_episodes.return_value = {"vid001"}
+
+        with (
+            patch("sync.build_episode_metadata", return_value=[]) as mock_build,
+            patch("sync.generate_rss", return_value="<rss/>"),
+        ):
+            _reconcile(s3, [], "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        mock_build.assert_called_once()
+        s3.upload_feed.assert_called_once()
+
+    def test_partial_extraction_over_ratio_is_refused(self):
+        """1 of 5 videos returned would orphan 4/5 (80%) — above the 50% default limit."""
+        existing = [f"vid00{i}" for i in range(1, 6)]
+        s3 = _make_s3_manager(existing=existing)
+        s3.list_existing_episodes.return_value = set(existing)
+
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [_make_video("vid001")], "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        s3.delete_episode.assert_not_called()
+
+    def test_refusal_is_logged_as_error(self, caplog):
+        existing = [f"vid00{i}" for i in range(1, 6)]
+        s3 = _make_s3_manager(existing=existing)
+        s3.list_existing_episodes.return_value = set(existing)
+
+        with (
+            caplog.at_level(logging.ERROR, logger="sync"),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+        ):
+            _reconcile(s3, [_make_video("vid001")], "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        assert "Refusing to delete" in caplog.text
+
+    def test_deletion_under_ratio_proceeds(self):
+        """4 of 5 videos returned orphans 1/5 (20%) — normal churn, must still reconcile."""
+        existing = [f"vid00{i}" for i in range(1, 6)]
+        s3 = _make_s3_manager(existing=existing)
+        s3.list_existing_episodes.return_value = set(existing)
+        videos = [_make_video(f"vid00{i}") for i in range(1, 5)]
+
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, videos, "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        s3.delete_episode.assert_called_once_with("vid005")
+
+    def test_small_catalogue_below_min_orphans_still_deletes(self):
+        """A 2-of-2 orphan batch is 100% but only 2 files — under RECONCILE_MIN_ORPHANS."""
+        s3 = _make_s3_manager(existing=["old1", "old2"])
+        s3.list_existing_episodes.return_value = {"old1", "old2"}
+
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [_make_video("vid001")], "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        assert s3.delete_episode.call_count == 2
+
+    def test_ratio_limit_is_configurable(self, monkeypatch):
+        """Raising RECONCILE_MAX_ORPHAN_RATIO lets an operator force the deletion through."""
+        monkeypatch.setenv("RECONCILE_MAX_ORPHAN_RATIO", "0.99")
+        existing = [f"vid00{i}" for i in range(1, 6)]
+        s3 = _make_s3_manager(existing=existing)
+        s3.list_existing_episodes.return_value = set(existing)
+
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [_make_video("vid001")], "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        assert s3.delete_episode.call_count == 4
+
+    def test_min_orphans_is_configurable(self, monkeypatch):
+        monkeypatch.setenv("RECONCILE_MIN_ORPHANS", "1")
+        s3 = _make_s3_manager(existing=["old1", "old2"])
+        s3.list_existing_episodes.return_value = {"old1", "old2"}
+
+        with patch("sync.build_episode_metadata", return_value=[]), patch("sync.generate_rss", return_value="<rss/>"):
+            _reconcile(s3, [_make_video("vid001")], "https://cdn.example.com", "PLtest", _make_playlist_meta())
+
+        s3.delete_episode.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # process_playlist — live_status filtering (Step 3 & Step 4)
 # ---------------------------------------------------------------------------
 
