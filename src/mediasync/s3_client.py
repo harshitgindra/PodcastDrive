@@ -33,8 +33,27 @@ class S3Client:
         self._bucket = bucket
         self._client = boto3.client("s3", region_name=region)
 
+    def file_exists(self, key: str) -> bool:
+        """Check if a file already exists in S3.
+
+        Args:
+            key: Full S3 key to check.
+
+        Returns:
+            True if the object exists, False otherwise.
+        """
+        try:
+            self._client.head_object(Bucket=self._bucket, Key=key)
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "404":
+                return False
+            return False
+
     def upload(self, local_path: Path, remote_folder: str, filename: str) -> str:
         """Upload a file to S3.
+
+        Skips upload if a file with the same key already exists (idempotent).
 
         Args:
             local_path: Path to the local file.
@@ -45,6 +64,11 @@ class S3Client:
             Full S3 key of the uploaded file.
         """
         key = f"{remote_folder}/{filename}"
+
+        if self.file_exists(key):
+            logger.info("Already exists in S3, skipping: s3://%s/%s", self._bucket, key)
+            return key
+
         content_type = self._guess_content_type(filename)
 
         try:

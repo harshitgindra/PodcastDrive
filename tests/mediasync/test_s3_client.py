@@ -10,10 +10,14 @@ from mediasync.s3_client import S3Client, S3Error
 
 @pytest.fixture
 def client():
-    """S3Client with mocked boto3."""
+    """S3Client with mocked boto3. head_object raises 404 by default (file not found)."""
     with patch("mediasync.s3_client.boto3") as mock_boto:
         mock_s3 = MagicMock()
         mock_boto.client.return_value = mock_s3
+        # Default: file does not exist
+        mock_s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
+        )
         c = S3Client("hg-mediafiles", "us-west-2")
         c._client = mock_s3
         yield c
@@ -97,6 +101,34 @@ class TestDeleteFile:
 
         with pytest.raises(S3Error, match="Delete failed"):
             client.delete_file("some/key.m4a")
+
+
+class TestFileExists:
+    def test_exists_returns_true(self, client):
+        client._client.head_object.side_effect = None  # No error = file exists
+        assert client.file_exists("MediaSync/audio/song.m4a") is True
+
+    def test_not_found_returns_false(self, client):
+        # Default fixture has 404
+        assert client.file_exists("MediaSync/audio/missing.m4a") is False
+
+    def test_other_error_returns_false(self, client):
+        client._client.head_object.side_effect = ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
+        )
+        assert client.file_exists("key") is False
+
+
+class TestUploadIdempotent:
+    def test_skips_when_file_exists(self, client, tmp_path):
+        test_file = tmp_path / "song.m4a"
+        test_file.write_bytes(b"fake")
+        client._client.head_object.side_effect = None  # File exists
+
+        key = client.upload(test_file, "prefix", "song.m4a")
+
+        assert key == "prefix/song.m4a"
+        client._client.upload_file.assert_not_called()
 
 
 class TestGuessContentType:

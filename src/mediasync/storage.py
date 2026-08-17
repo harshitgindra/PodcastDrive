@@ -20,8 +20,12 @@ class StorageError(Exception):
 class StorageBackend(Protocol):
     """Protocol for storage backends (S3 or OneDrive)."""
 
+    def file_exists(self, key: str) -> bool:
+        """Check if a remote file exists."""
+        ...
+
     def upload(self, local_path: Path, remote_folder: str, filename: str) -> str:
-        """Upload a file. Returns the remote key/path."""
+        """Upload a file. Returns the remote key/path. Skips if already exists."""
         ...
 
     def delete_file(self, key: str) -> None:

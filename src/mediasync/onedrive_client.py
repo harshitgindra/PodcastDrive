@@ -147,10 +147,38 @@ class OneDriveClient:
         except Exception as exc:
             logger.warning("Failed to persist rotated token: %s", exc)
 
+    def file_exists(self, remote_path: str) -> bool:
+        """Check if a file already exists on OneDrive.
+
+        Args:
+            remote_path: Full path on OneDrive.
+
+        Returns:
+            True if the file exists, False otherwise.
+        """
+        encoded_path = urllib.parse.quote(remote_path)
+        url = f"{GRAPH_API}/me/drive/root:/{encoded_path}"
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {self._access_token}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            if exc.code == 401:
+                self._access_token = self._refresh_access_token()
+                return self.file_exists(remote_path)
+            return False
+        except Exception:
+            return False
+
     def upload(self, local_path: Path, remote_folder: str, filename: str) -> str:
         """Upload a file to OneDrive.
 
         Uses simple upload for files <=4MB, resumable upload for larger files.
+        Skips upload if a file with the same path already exists (idempotent).
 
         Args:
             local_path: Path to the local file.
@@ -162,6 +190,10 @@ class OneDriveClient:
         """
         file_size = local_path.stat().st_size
         remote_path = f"{remote_folder}/{filename}"
+
+        if self.file_exists(remote_path):
+            logger.info("Already exists on OneDrive, skipping: %s", remote_path)
+            return remote_path
 
         if file_size <= SIMPLE_UPLOAD_LIMIT:
             self._simple_upload(local_path, remote_path)

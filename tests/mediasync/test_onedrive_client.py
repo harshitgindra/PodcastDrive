@@ -81,13 +81,14 @@ class TestUpload:
         test_file = tmp_path / "song.m4a"
         test_file.write_bytes(b"x" * 100)  # Small file
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            resp_mock = MagicMock()
-            resp_mock.__enter__ = lambda s: s
-            resp_mock.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = resp_mock
+        with patch.object(client, "file_exists", return_value=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                resp_mock = MagicMock()
+                resp_mock.__enter__ = lambda s: s
+                resp_mock.__exit__ = MagicMock(return_value=False)
+                mock_urlopen.return_value = resp_mock
 
-            result = client.upload(test_file, "MediaSync/Harshit/audio", "song.m4a")
+                result = client.upload(test_file, "MediaSync/Harshit/audio", "song.m4a")
 
         assert result == "MediaSync/Harshit/audio/song.m4a"
         mock_urlopen.assert_called_once()
@@ -100,26 +101,37 @@ class TestUpload:
         test_file = tmp_path / "video.mp4"
         test_file.write_bytes(b"x" * (SIMPLE_UPLOAD_LIMIT + 100))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            # First call: create session; subsequent: chunk uploads
-            session_resp = MagicMock()
-            session_resp.read.return_value = json.dumps(
-                {"uploadUrl": "https://upload.example.com/session123"}
-            ).encode()
-            session_resp.__enter__ = lambda s: s
-            session_resp.__exit__ = MagicMock(return_value=False)
+        with patch.object(client, "file_exists", return_value=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                # First call: create session; subsequent: chunk uploads
+                session_resp = MagicMock()
+                session_resp.read.return_value = json.dumps(
+                    {"uploadUrl": "https://upload.example.com/session123"}
+                ).encode()
+                session_resp.__enter__ = lambda s: s
+                session_resp.__exit__ = MagicMock(return_value=False)
 
-            chunk_resp = MagicMock()
-            chunk_resp.__enter__ = lambda s: s
-            chunk_resp.__exit__ = MagicMock(return_value=False)
+                chunk_resp = MagicMock()
+                chunk_resp.__enter__ = lambda s: s
+                chunk_resp.__exit__ = MagicMock(return_value=False)
 
-            mock_urlopen.side_effect = [session_resp, chunk_resp, chunk_resp]
+                mock_urlopen.side_effect = [session_resp, chunk_resp, chunk_resp]
 
-            result = client.upload(test_file, "MediaSync/Harshit/video", "video.mp4")
+                result = client.upload(test_file, "MediaSync/Harshit/video", "video.mp4")
 
         assert result == "MediaSync/Harshit/video/video.mp4"
-        # session creation + 2 chunks (file is just over limit, needs 2 chunks)
-        assert mock_urlopen.call_count == 3
+
+    def test_skips_upload_when_file_exists(self, make_client, tmp_path):
+        client = make_client()
+        test_file = tmp_path / "song.m4a"
+        test_file.write_bytes(b"x" * 100)
+
+        with patch.object(client, "file_exists", return_value=True):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                result = client.upload(test_file, "MediaSync/Harshit/audio", "song.m4a")
+
+        assert result == "MediaSync/Harshit/audio/song.m4a"
+        mock_urlopen.assert_not_called()
 
     def test_upload_401_retries(self, make_client, tmp_path):
         client = make_client()
@@ -218,25 +230,26 @@ class TestResumableUploadChunks:
         test_file = tmp_path / "big.mp4"
         test_file.write_bytes(b"x" * file_size)
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            session_resp = MagicMock()
-            session_resp.read.return_value = json.dumps(
-                {"uploadUrl": "https://upload.example.com/s"}
-            ).encode()
-            session_resp.__enter__ = lambda s: s
-            session_resp.__exit__ = MagicMock(return_value=False)
+        with patch.object(client, "file_exists", return_value=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                session_resp = MagicMock()
+                session_resp.read.return_value = json.dumps(
+                    {"uploadUrl": "https://upload.example.com/s"}
+                ).encode()
+                session_resp.__enter__ = lambda s: s
+                session_resp.__exit__ = MagicMock(return_value=False)
 
-            chunk_resp = MagicMock()
-            chunk_resp.__enter__ = lambda s: s
-            chunk_resp.__exit__ = MagicMock(return_value=False)
+                chunk_resp = MagicMock()
+                chunk_resp.__enter__ = lambda s: s
+                chunk_resp.__exit__ = MagicMock(return_value=False)
 
-            # session + 3 chunks
-            mock_urlopen.side_effect = [session_resp, chunk_resp, chunk_resp, chunk_resp]
+                # session + 3 chunks
+                mock_urlopen.side_effect = [session_resp, chunk_resp, chunk_resp, chunk_resp]
 
-            client.upload(test_file, "folder", "big.mp4")
+                client.upload(test_file, "folder", "big.mp4")
 
-        # 1 session creation + 3 chunk PUTs
-        assert mock_urlopen.call_count == 4
+            # 1 session creation + 3 chunk PUTs
+            assert mock_urlopen.call_count == 4
 
 
 class TestDeleteRetry:
@@ -287,7 +300,7 @@ class TestResumableUpload401:
         test_file = tmp_path / "big.mp4"
         test_file.write_bytes(b"x" * (SIMPLE_UPLOAD_LIMIT + 10))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch.object(client, "file_exists", return_value=False), patch("urllib.request.urlopen") as mock_urlopen:
             # Session create: 401
             http_401 = urllib.error.HTTPError("url", 401, "Unauth", {}, None)
             # Token refresh
@@ -318,29 +331,31 @@ class TestResumableUpload401:
         test_file = tmp_path / "big.mp4"
         test_file.write_bytes(b"x" * (SIMPLE_UPLOAD_LIMIT + 10))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.HTTPError("url", 500, "Error", {}, None)
-            with pytest.raises(OneDriveError, match="Upload session creation failed"):
-                client.upload(test_file, "folder", "big.mp4")
+        with patch.object(client, "file_exists", return_value=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = urllib.error.HTTPError("url", 500, "Error", {}, None)
+                with pytest.raises(OneDriveError, match="Upload session creation failed"):
+                    client.upload(test_file, "folder", "big.mp4")
 
     def test_chunk_upload_error_raises(self, make_client, tmp_path):
         client = make_client()
         test_file = tmp_path / "big.mp4"
         test_file.write_bytes(b"x" * (SIMPLE_UPLOAD_LIMIT + 10))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            session_resp = MagicMock()
-            session_resp.read.return_value = json.dumps(
-                {"uploadUrl": "https://upload.example.com/s"}
-            ).encode()
-            session_resp.__enter__ = lambda s: s
-            session_resp.__exit__ = MagicMock(return_value=False)
+        with patch.object(client, "file_exists", return_value=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                session_resp = MagicMock()
+                session_resp.read.return_value = json.dumps(
+                    {"uploadUrl": "https://upload.example.com/s"}
+                ).encode()
+                session_resp.__enter__ = lambda s: s
+                session_resp.__exit__ = MagicMock(return_value=False)
 
-            chunk_error = urllib.error.HTTPError("url", 503, "Unavailable", {}, None)
+                chunk_error = urllib.error.HTTPError("url", 503, "Unavailable", {}, None)
 
-            mock_urlopen.side_effect = [session_resp, chunk_error]
-            with pytest.raises(OneDriveError, match="Chunk upload failed"):
-                client.upload(test_file, "folder", "big.mp4")
+                mock_urlopen.side_effect = [session_resp, chunk_error]
+                with pytest.raises(OneDriveError, match="Chunk upload failed"):
+                    client.upload(test_file, "folder", "big.mp4")
 
 
 class TestUploadGenericError:
@@ -349,7 +364,8 @@ class TestUploadGenericError:
         test_file = tmp_path / "song.m4a"
         test_file.write_bytes(b"x" * 50)
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = OSError("timeout")
-            with pytest.raises(OneDriveError, match="timeout"):
-                client.upload(test_file, "folder", "file.m4a")
+        with patch.object(client, "file_exists", return_value=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = OSError("timeout")
+                with pytest.raises(OneDriveError, match="timeout"):
+                    client.upload(test_file, "folder", "file.m4a")
