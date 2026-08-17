@@ -10,7 +10,9 @@ All external I/O is mocked:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -4051,3 +4053,224 @@ class TestFfmpegTimeouts:
 
         monkeypatch.setenv("FFMPEG_SPLICE_TIMEOUT_SECS", "forever")
         assert ad_remover._ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0) == 3600.0
+
+
+# ---------------------------------------------------------------------------
+# Ad-segment validation / clamping (Fix #11)
+# ---------------------------------------------------------------------------
+
+
+class TestCoerceAdSegment:
+    """_coerce_ad_segment rejects untrusted model output that would corrupt audio."""
+
+    def test_accepts_well_formed_segment(self):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment({"start": 10, "end": 20.5}) == {"start": 10.0, "end": 20.5}
+
+    @pytest.mark.parametrize(
+        "seg",
+        [
+            None,
+            "not a dict",
+            [10, 20],
+            {"start": 10},
+            {"end": 20},
+            {},
+        ],
+    )
+    def test_rejects_non_dict_or_missing_keys(self, seg):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment(seg) is None
+
+    @pytest.mark.parametrize(
+        "seg",
+        [
+            {"start": None, "end": 20},
+            {"start": 10, "end": None},
+            {"start": "abc", "end": 20},
+            {"start": 10, "end": [1]},
+        ],
+    )
+    def test_rejects_non_numeric_bounds(self, seg):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment(seg) is None
+
+    @pytest.mark.parametrize(
+        "seg",
+        [
+            {"start": float("nan"), "end": 20},
+            {"start": 10, "end": float("nan")},
+            {"start": 10, "end": float("inf")},
+            {"start": float("-inf"), "end": 20},
+        ],
+    )
+    def test_rejects_non_finite_bounds(self, seg):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment(seg) is None
+
+    def test_clamps_negative_start_to_zero(self):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment({"start": -30.0, "end": 20.0}) == {"start": 0.0, "end": 20.0}
+
+    def test_rejects_negative_start_whose_end_is_also_negative(self):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment({"start": -30.0, "end": -10.0}) is None
+
+    def test_rejects_inverted_segment(self):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment({"start": 500.0, "end": 100.0}) is None
+
+    def test_rejects_zero_length_segment(self):
+        import ad_remover
+
+        assert ad_remover._coerce_ad_segment({"start": 42.0, "end": 42.0}) is None
+
+    def test_logs_a_warning_when_dropping(self, caplog):
+        import ad_remover
+
+        with caplog.at_level(logging.WARNING):
+            ad_remover._coerce_ad_segment({"start": 500.0, "end": 100.0})
+        assert "inverted" in caplog.text.lower()
+
+
+class TestClampAdSegments:
+    """_clamp_ad_segments keeps segments inside the real file duration."""
+
+    def test_passthrough_when_duration_unknown(self):
+        import ad_remover
+
+        segs = [{"start": 10.0, "end": 20.0}]
+        assert ad_remover._clamp_ad_segments(segs, 0.0) == segs
+
+    def test_drops_segment_starting_past_eof(self, caplog):
+        import ad_remover
+
+        with caplog.at_level(logging.WARNING):
+            out = ad_remover._clamp_ad_segments([{"start": 900.0, "end": 950.0}], 600.0)
+        assert out == []
+        assert "past the end" in caplog.text
+
+    def test_clamps_segment_end_to_duration(self, caplog):
+        import ad_remover
+
+        with caplog.at_level(logging.WARNING):
+            out = ad_remover._clamp_ad_segments([{"start": 550.0, "end": 950.0}], 600.0)
+        assert out == [{"start": 550.0, "end": 600.0}]
+        assert "Clamping ad segment end" in caplog.text
+
+    def test_leaves_in_range_segments_untouched(self):
+        import ad_remover
+
+        segs = [{"start": 10.0, "end": 20.0}, {"start": 100.0, "end": 150.0}]
+        assert ad_remover._clamp_ad_segments(segs, 600.0) == segs
+
+
+class TestParseAdResponseValidation:
+    """Malformed entries inside an otherwise valid JSON array are skipped."""
+
+    def test_skips_bad_entries_and_keeps_good_ones(self):
+        import ad_remover
+
+        raw = (
+            '[{"start": 10, "end": 20}, {"start": null, "end": 5}, '
+            '{"start": 500, "end": 100}, "junk", {"start": 30, "end": 40}]'
+        )
+        assert ad_remover._parse_ad_response(raw) == [
+            {"start": 10.0, "end": 20.0},
+            {"start": 30.0, "end": 40.0},
+        ]
+
+    def test_all_entries_invalid_yields_empty_list(self):
+        import ad_remover
+
+        assert ad_remover._parse_ad_response('[{"start": 9, "end": 9}, {"start": 5, "end": 1}]') == []
+
+
+class TestSpliceAudioSegmentValidation:
+    """splice_audio re-validates segments arriving from the cache or bookend detection."""
+
+    @staticmethod
+    def _patch_ffmpeg(monkeypatch, duration="600.0"):
+        import ad_remover  # noqa: F401
+
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            return MagicMock(stdout=f"{duration}\n", returncode=0, stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return run_calls
+
+    def test_inverted_segment_does_not_duplicate_audio(self, monkeypatch):
+        """The bug: {"start":500,"end":100} produced overlapping keep intervals."""
+        import ad_remover
+
+        self._patch_ffmpeg(monkeypatch)
+
+        with pytest.raises(ValueError, match="No usable ad segments"):
+            ad_remover.splice_audio("/in.mp3", [{"start": 500.0, "end": 100.0}], "/out.mp3")
+
+    def test_keep_intervals_stay_monotonic_with_mixed_input(self, monkeypatch):
+        import ad_remover
+
+        run_calls = self._patch_ffmpeg(monkeypatch)
+
+        ad_remover.splice_audio(
+            "/in.mp3",
+            [
+                {"start": 500.0, "end": 100.0},  # inverted → dropped
+                {"start": 60.0, "end": 120.0},  # kept
+                {"start": None, "end": 5.0},  # non-numeric → dropped
+                {"start": 900.0, "end": 950.0},  # past EOF → dropped
+            ],
+            "/out.mp3",
+        )
+
+        fc = run_calls[1][run_calls[1].index("-filter_complex") + 1]
+        starts = [float(m) for m in re.findall(r"atrim=start=([\d.]+)", fc)]
+        assert starts == sorted(starts)
+        assert "concat=n=2" in fc
+
+    def test_negative_start_is_clamped(self, monkeypatch):
+        import ad_remover
+
+        run_calls = self._patch_ffmpeg(monkeypatch)
+
+        ad_remover.splice_audio("/in.mp3", [{"start": -10.0, "end": 60.0}], "/out.mp3")
+
+        fc = run_calls[1][run_calls[1].index("-filter_complex") + 1]
+        # Ad starts at 0 → the only keep interval is 60 → 600
+        assert "atrim=start=60.0:end=600.0" in fc
+        assert "concat=n=1" in fc
+
+    def test_segment_end_past_eof_is_clamped(self, monkeypatch):
+        import ad_remover
+
+        run_calls = self._patch_ffmpeg(monkeypatch)
+
+        ad_remover.splice_audio("/in.mp3", [{"start": 550.0, "end": 9999.0}], "/out.mp3")
+
+        fc = run_calls[1][run_calls[1].index("-filter_complex") + 1]
+        assert "atrim=start=0.0:end=550.0" in fc
+        assert "concat=n=1" in fc
+
+    def test_all_segments_invalid_raises_value_error(self, monkeypatch):
+        import ad_remover
+
+        self._patch_ffmpeg(monkeypatch)
+
+        with pytest.raises(ValueError, match="No usable ad segments after validation"):
+            ad_remover.splice_audio(
+                "/in.mp3",
+                [{"start": "x", "end": 5.0}, {"start": 7.0, "end": 7.0}],
+                "/out.mp3",
+            )

@@ -71,6 +71,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import ssl
@@ -1554,6 +1555,81 @@ def _split_segments_into_chunks(segments: list[dict], max_chars: int, overlap_se
     return chunks
 
 
+def _coerce_ad_segment(seg: object) -> AdSegment | None:
+    """Return *seg* as a well-formed ad segment, or ``None`` if it is unusable.
+
+    Bedrock output is untrusted: it can contain nulls, strings, NaN, negative
+    offsets, and inverted intervals.  An inverted segment is the dangerous case
+    -- ``{"start": 500, "end": 100}`` yields keep intervals ``(0, 500)`` and
+    ``(100, duration)``, so splice_audio *duplicates* 400 seconds of audio into
+    the published episode instead of removing anything, with no error raised.
+
+    Args:
+        seg: A candidate segment from a parsed model response.
+
+    Returns:
+        ``{"start": float, "end": float}`` with ``0 <= start < end``, or ``None``.
+    """
+    if not isinstance(seg, dict) or "start" not in seg or "end" not in seg:
+        logger.warning("[AdRemover] Ignoring malformed ad segment: %s", seg)
+        return None
+    try:
+        start = float(seg["start"])
+        end = float(seg["end"])
+    except (TypeError, ValueError):
+        logger.warning("[AdRemover] Ignoring ad segment with non-numeric bounds: %s", seg)
+        return None
+    if not (math.isfinite(start) and math.isfinite(end)):
+        logger.warning("[AdRemover] Ignoring ad segment with non-finite bounds: %s", seg)
+        return None
+    if start < 0:
+        logger.warning("[AdRemover] Clamping negative ad segment start %.1f to 0 (%s)", start, seg)
+        start = 0.0
+    if end <= start:
+        logger.warning("[AdRemover] Ignoring inverted or empty ad segment: %s", seg)
+        return None
+    return {"start": start, "end": end}
+
+
+def _clamp_ad_segments(segments: list[AdSegment], total_duration: float) -> list[AdSegment]:
+    """Clamp *segments* to ``[0, total_duration]``, dropping any that fall outside.
+
+    A segment past the end of the file makes ffmpeg's atrim produce an empty
+    stream, which fails the splice or silently truncates the episode.
+
+    Args:
+        segments:       Already-coerced ad segments.
+        total_duration: Probed duration of the audio file in seconds.
+
+    Returns:
+        The subset of *segments* that overlaps the file, with ends clamped.
+    """
+    if total_duration <= 0:
+        return list(segments)
+
+    clamped: list[AdSegment] = []
+    for seg in segments:
+        if seg["start"] >= total_duration:
+            logger.warning(
+                "[AdRemover] Dropping ad segment %.1f-%.1fs — starts past the end of the file (%.1fs)",
+                seg["start"],
+                seg["end"],
+                total_duration,
+            )
+            continue
+        end = min(seg["end"], total_duration)
+        if end <= seg["start"]:
+            continue
+        if end != seg["end"]:
+            logger.warning(
+                "[AdRemover] Clamping ad segment end %.1fs to the file duration %.1fs",
+                seg["end"],
+                total_duration,
+            )
+        clamped.append({"start": seg["start"], "end": end})
+    return clamped
+
+
 def _parse_ad_response(raw: str) -> list[AdSegment]:
     """Extract a JSON array of ad segments from a model response string."""
     end_idx = raw.rfind("]")
@@ -1572,10 +1648,9 @@ def _parse_ad_response(raw: str) -> list[AdSegment]:
             if isinstance(result, list):
                 valid = []
                 for seg in result:
-                    if isinstance(seg, dict) and "start" in seg and "end" in seg:
-                        valid.append({"start": float(seg["start"]), "end": float(seg["end"])})
-                    else:
-                        logger.warning("[AdRemover] Ignoring malformed ad segment: %s", seg)
+                    coerced = _coerce_ad_segment(seg)
+                    if coerced is not None:
+                        valid.append(coerced)
                 return valid
         except json.JSONDecodeError:
             pass
@@ -1777,8 +1852,16 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     except RuntimeError as exc:
         raise RuntimeError(f"All duration-detection methods failed for '{mp3_path}': {exc}") from exc
 
+    # Re-validate here as well as at parse time: segments also arrive from the
+    # S3 ad-segment cache and from music-bookend detection, neither of which
+    # goes through _parse_ad_response.
+    validated = [c for c in (_coerce_ad_segment(seg) for seg in ad_segments) if c is not None]
+    validated = _clamp_ad_segments(validated, total_duration)
+    if not validated:
+        raise ValueError(f"No usable ad segments after validation (from {len(ad_segments)} candidate(s))")
+
     # Sort ad segments and merge overlaps
-    sorted_ads = sorted(ad_segments, key=lambda s: s["start"])
+    sorted_ads = sorted(validated, key=lambda s: s["start"])
     merged_ads: list[AdSegment] = []
     for seg in sorted_ads:
         if merged_ads and seg["start"] <= merged_ads[-1]["end"]:
