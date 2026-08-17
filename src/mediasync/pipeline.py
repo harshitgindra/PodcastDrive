@@ -8,17 +8,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 
 from mediasync.config import Config
 from mediasync.downloader import (
     DownloadError,
-    DownloadResult,
     DurationExceededError,
+    cleanup_results,
     download,
 )
-from mediasync.notion_client import Format, MediaEntry, NotionClient, Status
-from mediasync.storage import StorageBackend, StorageError, create_storage
+from mediasync.notion_client import MediaEntry, NotionClient, Status
+from mediasync.storage import StorageBackend, create_storage
 from mediasync.tagger import tag_file
 
 logger = logging.getLogger(__name__)
@@ -94,7 +93,7 @@ def _process_deletions(notion: NotionClient, storage: StorageBackend) -> int:
                         storage.delete_file(key.strip())
             notion.archive_page(entry.page_id)
             count += 1
-        except (StorageError, Exception) as exc:
+        except Exception as exc:
             logger.error("Failed to delete %s: %s", entry.file_key, exc)
     return count
 
@@ -144,14 +143,13 @@ def _process_entry(
 
             file_key = storage.upload(result.path, remote_folder, filename)
             file_keys.append(file_key)
-    except (StorageError, Exception) as exc:
+    except Exception as exc:
         logger.error("Upload failed: %s — %s", entry.url, exc)
         notion.update_status(entry.page_id, Status.FAILED, error=str(exc))
         return False
     finally:
         # Always clean up temp files
-        for result in results:
-            result.path.unlink(missing_ok=True)
+        cleanup_results(results)
 
     notion.update_status(
         entry.page_id,

@@ -9,6 +9,7 @@ Supports both single videos and playlists.
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
@@ -126,7 +127,55 @@ def download(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) 
     return _download_single(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs)
 
 
-def _download_single(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int) -> list[DownloadResult]:
+def cleanup_results(results: list[DownloadResult]) -> None:
+    """Delete the local files behind *results*, ignoring anything already gone."""
+    for result in results:
+        try:
+            result.path.unlink(missing_ok=True)
+        except OSError as exc:  # pragma: no cover - defensive
+            logger.warning("Could not delete %s: %s", result.path, exc)
+
+
+def _discard_partials(output_dir: str, stem: str) -> None:
+    """Remove any (possibly partial) files yt-dlp wrote for *stem*.
+
+    A failed or interrupted yt-dlp run leaves ``Title.m4a``, ``Title.part``,
+    ``Title.f140.m4a`` and friends behind.  Nothing else ever cleans them up,
+    so the temp directory grew without bound on every download failure.
+    """
+    for leftover in Path(output_dir).glob(f"{glob.escape(stem)}*"):
+        if leftover.is_file():
+            try:
+                leftover.unlink()
+                logger.info("Removed partial download %s", leftover)
+            except OSError as exc:  # pragma: no cover - defensive
+                logger.warning("Could not remove partial download %s: %s", leftover, exc)
+
+
+def _claim_stem(title: str, claimed: set[str]) -> str:
+    """Return a filename stem for *title* that is unique within *claimed*.
+
+    Playlist items frequently share a title ("Intro", "Part 1", or the same
+    track uploaded twice).  Both used to be written to ``{title}.{ext}``, so the
+    second download silently overwrote the first and only one file was uploaded.
+    """
+    stem = title
+    suffix = 1
+    while stem.casefold() in claimed:
+        suffix += 1
+        stem = f"{title} ({suffix})"
+    claimed.add(stem.casefold())
+    return stem
+
+
+def _download_single(
+    url: str,
+    fmt: Format,
+    *,
+    output_dir: str,
+    max_duration_secs: int,
+    claimed_stems: set[str] | None = None,
+) -> list[DownloadResult]:
     """Download a single video."""
     meta = get_metadata(url)
     duration = int(meta.get("duration") or 0)
@@ -145,27 +194,38 @@ def _download_single(url: str, fmt: Format, *, output_dir: str, max_duration_sec
     if fmt in (Format.VIDEO, Format.BOTH):
         formats_to_download.append("video")
 
+    # One stem per video, shared by its audio and video outputs, so that two
+    # playlist items with the same title cannot overwrite each other.
+    stem = _claim_stem(title, claimed_stems) if claimed_stems is not None else title
+
     results: list[DownloadResult] = []
-    for dl_format in formats_to_download:
-        ext = "m4a" if dl_format == "audio" else "mp4"
-        output_path = os.path.join(output_dir, f"{title}.{ext}")
+    try:
+        for dl_format in formats_to_download:
+            ext = "m4a" if dl_format == "audio" else "mp4"
+            output_path = os.path.join(output_dir, f"{stem}.{ext}")
 
-        cmd = _build_cmd(url, dl_format, output_path)
-        logger.info("Downloading %s as %s \u2192 %s", url, dl_format, output_path)
+            cmd = _build_cmd(url, dl_format, output_path)
+            logger.info("Downloading %s as %s \u2192 %s", url, dl_format, output_path)
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-        if proc.returncode != 0:
-            raise DownloadError(f"yt-dlp failed ({dl_format}): {proc.stderr[:500]}")
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            if proc.returncode != 0:
+                raise DownloadError(f"yt-dlp failed ({dl_format}): {proc.stderr[:500]}")
 
-        actual_path = _find_output(Path(output_path))
-        results.append(DownloadResult(
-            path=actual_path,
-            title=title,
-            artist=artist,
-            duration_secs=duration,
-            thumbnail_url=thumbnail,
-            format_type=dl_format,
-        ))
+            actual_path = _find_output(Path(output_path))
+            results.append(DownloadResult(
+                path=actual_path,
+                title=title,
+                artist=artist,
+                duration_secs=duration,
+                thumbnail_url=thumbnail,
+                format_type=dl_format,
+            ))
+    except BaseException:
+        # Never leave half-written media behind: the caller only cleans up
+        # results it was handed, and on failure it is handed nothing.
+        cleanup_results(results)
+        _discard_partials(output_dir, stem)
+        raise
 
     return results
 
@@ -176,6 +236,7 @@ def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_s
     logger.info("Playlist has %d items", len(playlist_meta))
 
     results: list[DownloadResult] = []
+    claimed_stems: set[str] = set()
     for idx, entry in enumerate(playlist_meta, 1):
         video_url = entry.get("url") or entry.get("webpage_url", "")
         if not video_url:
@@ -191,7 +252,11 @@ def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_s
 
         try:
             item_results = _download_single(
-                video_url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs
+                video_url,
+                fmt,
+                output_dir=output_dir,
+                max_duration_secs=max_duration_secs,
+                claimed_stems=claimed_stems,
             )
             results.extend(item_results)
         except DurationExceededError as exc:
@@ -199,6 +264,8 @@ def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_s
             continue
         except DownloadError as exc:
             logger.error("Failed playlist item %d: %s", idx, exc)
+            # The caller never sees `results`, so clean up what we already have.
+            cleanup_results(results)
             raise
 
     if not results:

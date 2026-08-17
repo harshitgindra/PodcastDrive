@@ -1,20 +1,23 @@
 """Tests for mediasync.downloader module."""
 
 import json
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from mediasync.downloader import (
     DownloadError,
     DownloadResult,
     DurationExceededError,
-    download,
-    get_metadata,
     _build_cmd,
+    _discard_partials,
     _find_output,
     _sanitize_title,
+    cleanup_results,
+    download,
+    get_metadata,
 )
 from mediasync.notion_client import Format
 
@@ -415,3 +418,224 @@ class TestDownloadPlaylist:
 
         assert len(results) == 1
         assert results[0].title == "Video"
+
+
+class TestPlaylistFilenameCollisions:
+    """Two playlist items sharing a title must not overwrite each other (Fix #15)."""
+
+    @staticmethod
+    def _mock_run(tmp_path, playlist_entries, metas):
+        """Simulate yt-dlp: metadata from *metas*, downloads write the -o path."""
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            if "--flat-playlist" in cmd:
+                result.stdout = "\n".join(json.dumps(e) for e in playlist_entries)
+            elif "--dump-json" in cmd:
+                vid = cmd[-1].rsplit("=", 1)[-1]
+                result.stdout = json.dumps(metas[vid])
+            else:
+                out = Path(cmd[cmd.index("-o") + 1])
+                out.write_bytes(b"audio for " + out.stem.encode())
+                result.stdout = ""
+            return result
+
+        return mock_run
+
+    def test_same_titled_items_get_distinct_files(self, tmp_path):
+        entries = [{"id": "vid1", "title": "Intro"}, {"id": "vid2", "title": "Intro"}]
+        metas = {
+            "vid1": {"title": "Intro", "duration": 10, "uploader": "A", "thumbnail": ""},
+            "vid2": {"title": "Intro", "duration": 20, "uploader": "A", "thumbnail": ""},
+        }
+
+        with patch("subprocess.run", side_effect=self._mock_run(tmp_path, entries, metas)):
+            results = download(
+                "https://youtube.com/playlist?list=PLxxx",
+                Format.AUDIO,
+                output_dir=str(tmp_path),
+                max_duration_secs=7200,
+            )
+
+        assert len(results) == 2
+        paths = [r.path for r in results]
+        assert paths[0] != paths[1], "second item overwrote the first"
+        assert all(p.exists() for p in paths)
+        # Titles reported to Notion stay human-readable
+        assert [r.title for r in results] == ["Intro", "Intro"]
+
+    def test_three_same_titled_items_are_all_distinct(self, tmp_path):
+        entries = [{"id": f"vid{i}", "title": "Part 1"} for i in range(1, 4)]
+        metas = {
+            f"vid{i}": {"title": "Part 1", "duration": 10, "uploader": "A", "thumbnail": ""} for i in range(1, 4)
+        }
+
+        with patch("subprocess.run", side_effect=self._mock_run(tmp_path, entries, metas)):
+            results = download(
+                "https://youtube.com/playlist?list=PLxxx",
+                Format.AUDIO,
+                output_dir=str(tmp_path),
+                max_duration_secs=7200,
+            )
+
+        assert len({r.path for r in results}) == 3
+
+    def test_audio_and_video_of_one_item_share_a_stem(self, tmp_path):
+        entries = [{"id": "vid1", "title": "Clip"}]
+        metas = {"vid1": {"title": "Clip", "duration": 10, "uploader": "A", "thumbnail": ""}}
+
+        with patch("subprocess.run", side_effect=self._mock_run(tmp_path, entries, metas)):
+            results = download(
+                "https://youtube.com/playlist?list=PLxxx",
+                Format.BOTH,
+                output_dir=str(tmp_path),
+                max_duration_secs=7200,
+            )
+
+        assert {r.path.name for r in results} == {"Clip.m4a", "Clip.mp4"}
+
+    def test_single_video_filename_is_unchanged(self, tmp_path):
+        """Non-playlist downloads keep the plain "{title}.{ext}" name."""
+        meta = {"title": "Solo", "duration": 60, "uploader": "C", "thumbnail": ""}
+
+        with patch(
+            "subprocess.run",
+            side_effect=self._mock_run(tmp_path, [], {"abc": meta}),
+        ):
+            results = download(
+                "https://youtube.com/watch?v=abc",
+                Format.AUDIO,
+                output_dir=str(tmp_path),
+                max_duration_secs=7200,
+            )
+
+        assert results[0].path.name == "Solo.m4a"
+
+
+class TestPartialDownloadCleanup:
+    """A failed download must not leave media behind (Fix #15)."""
+
+    def test_failed_single_download_removes_partials(self, tmp_path):
+        meta = {"title": "Broken", "duration": 60, "uploader": "C", "thumbnail": ""}
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            if "--dump-json" in cmd:
+                result.returncode = 0
+                result.stdout = json.dumps(meta)
+                return result
+            # Simulate yt-dlp writing a partial file, then failing
+            (tmp_path / "Broken.m4a.part").write_bytes(b"half a file")
+            result.returncode = 1
+            result.stderr = "ERROR: 403 Forbidden"
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            with pytest.raises(DownloadError):
+                download(
+                    "https://youtube.com/watch?v=abc",
+                    Format.AUDIO,
+                    output_dir=str(tmp_path),
+                    max_duration_secs=7200,
+                )
+
+        assert list(tmp_path.iterdir()) == [], "partial download was left on disk"
+
+    def test_second_format_failure_removes_the_first_file(self, tmp_path):
+        """Format.BOTH: audio succeeds, video fails — the audio file must go too."""
+        meta = {"title": "Clip", "duration": 60, "uploader": "C", "thumbnail": ""}
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.stderr = ""
+            if "--dump-json" in cmd:
+                result.returncode = 0
+                result.stdout = json.dumps(meta)
+                return result
+            out = Path(cmd[cmd.index("-o") + 1])
+            if out.suffix == ".m4a":
+                out.write_bytes(b"audio")
+                result.returncode = 0
+                return result
+            result.returncode = 1
+            result.stderr = "ERROR: video formats unavailable"
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            with pytest.raises(DownloadError):
+                download(
+                    "https://youtube.com/watch?v=abc",
+                    Format.BOTH,
+                    output_dir=str(tmp_path),
+                    max_duration_secs=7200,
+                )
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_playlist_failure_removes_earlier_items(self, tmp_path):
+        entries = [{"id": "vid1", "title": "Good"}, {"id": "vid2", "title": "Bad"}]
+        metas = {
+            "vid1": {"title": "Good", "duration": 10, "uploader": "A", "thumbnail": ""},
+            "vid2": {"title": "Bad", "duration": 10, "uploader": "A", "thumbnail": ""},
+        }
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.stderr = ""
+            result.returncode = 0
+            if "--flat-playlist" in cmd:
+                result.stdout = "\n".join(json.dumps(e) for e in entries)
+                return result
+            if "--dump-json" in cmd:
+                result.stdout = json.dumps(metas[cmd[-1].rsplit("=", 1)[-1]])
+                return result
+            out = Path(cmd[cmd.index("-o") + 1])
+            if out.stem == "Good":
+                out.write_bytes(b"audio")
+                return result
+            result.returncode = 1
+            result.stderr = "ERROR: 403 Forbidden"
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            with pytest.raises(DownloadError, match="403"):
+                download(
+                    "https://youtube.com/playlist?list=PLxxx",
+                    Format.AUDIO,
+                    output_dir=str(tmp_path),
+                    max_duration_secs=7200,
+                )
+
+        assert list(tmp_path.iterdir()) == [], "earlier playlist items were leaked"
+
+    def test_cleanup_results_tolerates_missing_files(self, tmp_path):
+        present = tmp_path / "here.m4a"
+        present.write_bytes(b"x")
+        results = [
+            DownloadResult(present, "t", "a", 1, "", "audio"),
+            DownloadResult(tmp_path / "gone.m4a", "t", "a", 1, "", "audio"),
+        ]
+
+        cleanup_results(results)
+
+        assert not present.exists()
+
+    def test_discard_partials_only_touches_matching_stem(self, tmp_path):
+        (tmp_path / "Keep.m4a").write_bytes(b"keep")
+        (tmp_path / "Drop.m4a").write_bytes(b"drop")
+        (tmp_path / "Drop.f140.m4a").write_bytes(b"drop")
+
+        _discard_partials(str(tmp_path), "Drop")
+
+        assert {p.name for p in tmp_path.iterdir()} == {"Keep.m4a"}
+
+    def test_discard_partials_treats_stem_literally(self, tmp_path):
+        """Titles containing glob metacharacters must not widen the deletion."""
+        (tmp_path / "Song [live].m4a").write_bytes(b"a")
+        (tmp_path / "Songs.m4a").write_bytes(b"b")
+
+        _discard_partials(str(tmp_path), "Song [live]")
+
+        assert {p.name for p in tmp_path.iterdir()} == {"Songs.m4a"}

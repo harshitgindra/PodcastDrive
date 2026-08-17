@@ -1,20 +1,20 @@
 """Tests for mediasync.pipeline module."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from mediasync.config import Config, Profile
 from mediasync.downloader import DownloadError, DownloadResult, DurationExceededError
-from mediasync.notion_client import Format, MediaEntry, NotionClient, Status
-from mediasync.storage import StorageError
+from mediasync.notion_client import Format, MediaEntry, Status
 from mediasync.pipeline import (
     RunStats,
-    run,
     _is_duplicate,
     _process_deletions,
     _process_entry,
+    run,
 )
+from mediasync.storage import StorageError
 
 
 @pytest.fixture
@@ -347,3 +347,71 @@ class TestReset:
         _reset(config)  # Should not raise
 
         mock_reset.assert_not_called()
+
+
+class TestProcessEntryCleanup:
+    """Temp files are always removed and non-StorageError failures are caught (Fix #15)."""
+
+    @staticmethod
+    def _result(path):
+        return DownloadResult(
+            path=path, title="Song", artist="A", duration_secs=100, thumbnail_url="", format_type="audio"
+        )
+
+    def test_files_removed_after_successful_upload(self, pending_entry, config, tmp_path):
+        audio = tmp_path / "song.m4a"
+        audio.write_bytes(b"audio")
+        storage = MagicMock()
+        storage.upload.return_value = "key"
+
+        with patch("mediasync.pipeline.download", return_value=[self._result(audio)]):
+            with patch("mediasync.pipeline.tag_file"):
+                assert _process_entry(pending_entry, MagicMock(), storage, config) is True
+
+        assert not audio.exists()
+
+    def test_files_removed_after_failed_upload(self, pending_entry, config, tmp_path):
+        audio = tmp_path / "song.m4a"
+        audio.write_bytes(b"audio")
+        storage = MagicMock()
+        storage.upload.side_effect = StorageError("access denied")
+
+        with patch("mediasync.pipeline.download", return_value=[self._result(audio)]):
+            with patch("mediasync.pipeline.tag_file"):
+                assert _process_entry(pending_entry, MagicMock(), storage, config) is False
+
+        assert not audio.exists()
+
+    def test_tagging_error_is_caught_and_files_removed(self, pending_entry, config, tmp_path):
+        """tag_file raises mutagen errors, not StorageError — those must not escape."""
+        audio = tmp_path / "song.m4a"
+        audio.write_bytes(b"audio")
+        notion = MagicMock()
+
+        with patch("mediasync.pipeline.download", return_value=[self._result(audio)]):
+            with patch("mediasync.pipeline.tag_file", side_effect=OSError("corrupt tags")):
+                assert _process_entry(pending_entry, notion, MagicMock(), config) is False
+
+        assert not audio.exists()
+        assert notion.update_status.call_args_list[-1][0][1] == Status.FAILED
+
+    def test_missing_temp_file_does_not_raise(self, pending_entry, config, tmp_path):
+        storage = MagicMock()
+        storage.upload.return_value = "key"
+        ghost = tmp_path / "gone.m4a"
+
+        with patch("mediasync.pipeline.download", return_value=[self._result(ghost)]):
+            with patch("mediasync.pipeline.tag_file"):
+                assert _process_entry(pending_entry, MagicMock(), storage, config) is True
+
+
+class TestProcessDeletionsErrorHandling:
+    def test_non_storage_error_is_caught(self, delete_entry, config):
+        """The old `except (StorageError, Exception)` tuple was a no-op alias for Exception."""
+        notion = MagicMock()
+        notion.get_deletions.return_value = [delete_entry]
+        storage = MagicMock()
+        storage.delete_file.side_effect = RuntimeError("unexpected")
+
+        assert _process_deletions(notion, storage) == 0
+        notion.archive_page.assert_not_called()
