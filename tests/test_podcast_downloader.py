@@ -21,6 +21,7 @@ from podcast_downloader import (
     is_apple_podcasts_url,
     parse_channel_thumbnail,
     parse_episodes,
+    read_capped,
     require_http_url,
     resolve_feed_url,
     search_feed_url_by_name,
@@ -849,3 +850,101 @@ class TestEpisodeIdCollisions:
 
     def test_id_is_deterministic(self):
         assert episode_id_from_guid("ep 1") == episode_id_from_guid("ep 1")
+
+
+# ---------------------------------------------------------------------------
+# Bounded response reads (Fix #16)
+# ---------------------------------------------------------------------------
+
+
+class _StreamingResponse:
+    """A response whose body is generated on demand, like a real socket."""
+
+    def __init__(self, total: int, chunk: bytes = b"x"):
+        self.total = total
+        self.chunk = chunk
+        self.served = 0
+
+    def read(self, amt=None):
+        remaining = self.total - self.served
+        n = remaining if amt is None else min(amt, remaining)
+        self.served += n
+        return self.chunk * n
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestReadCapped:
+    def test_returns_body_under_the_limit(self):
+        resp = _StreamingResponse(100)
+        assert read_capped(resp, 1024, "RSS feed") == b"x" * 100
+
+    def test_body_exactly_at_the_limit_is_accepted(self):
+        resp = _StreamingResponse(1024)
+        assert len(read_capped(resp, 1024, "RSS feed")) == 1024
+
+    def test_oversized_body_raises(self):
+        resp = _StreamingResponse(2048)
+        with pytest.raises(RuntimeError, match="larger than the 1024 byte limit"):
+            read_capped(resp, 1024, "RSS feed")
+
+    def test_never_reads_more_than_limit_plus_one(self):
+        resp = _StreamingResponse(10 * 1024 * 1024)
+        with pytest.raises(RuntimeError):
+            read_capped(resp, 1024, "RSS feed")
+        assert resp.served == 1025, "the whole stream was buffered anyway"
+
+
+class TestFetchFeedXmlSizeLimit:
+    def test_oversized_feed_is_refused(self, monkeypatch):
+        monkeypatch.setenv("MAX_FEED_BYTES", "1000")
+        resp = _StreamingResponse(50_000)
+
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+            with pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
+                fetch_feed_xml("https://feeds.example.com/rss")
+
+        assert resp.served == 1001
+
+    def test_normal_feed_still_fetched(self, monkeypatch):
+        monkeypatch.setenv("MAX_FEED_BYTES", "100000")
+        body = b"<rss><channel></channel></rss>"
+        resp = _StreamingResponse(len(body), b"<rss><channel></channel></rss>"[:1])
+
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+            result = fetch_feed_xml("https://feeds.example.com/rss")
+
+        assert len(result) == len(body)
+
+    def test_malformed_limit_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setenv("MAX_FEED_BYTES", "not-a-number")
+        resp = _StreamingResponse(10)
+
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+            assert fetch_feed_xml("https://feeds.example.com/rss") == b"x" * 10
+
+
+class TestItunesResponseSizeLimit:
+    def test_oversized_lookup_response_is_not_buffered(self, monkeypatch):
+        monkeypatch.setenv("MAX_ITUNES_BYTES", "500")
+        resp = _StreamingResponse(1_000_000)
+
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+            # resolve_feed_url swallows failures and returns the original URL
+            out = resolve_feed_url("https://podcasts.apple.com/us/podcast/x/id123")
+
+        assert out == "https://podcasts.apple.com/us/podcast/x/id123"
+        assert resp.served == 501
+
+    def test_oversized_search_response_is_not_buffered(self, monkeypatch):
+        monkeypatch.setenv("MAX_ITUNES_BYTES", "500")
+        resp = _StreamingResponse(1_000_000)
+
+        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+            assert search_feed_url_by_name("Some Podcast") == ""
+
+        assert resp.served == 501

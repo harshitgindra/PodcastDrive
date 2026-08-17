@@ -26,6 +26,8 @@ from email.utils import parsedate_to_datetime
 import certifi
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from utils import env_int
+
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,35 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 
 _ALLOWED_URL_SCHEMES = ("http", "https")
+
+
+_DEFAULT_MAX_FEED_BYTES = 32 * 1024 * 1024  # 32 MiB — the largest real feeds are ~5 MiB
+_DEFAULT_MAX_JSON_BYTES = 8 * 1024 * 1024  # 8 MiB — iTunes lookup/search responses
+
+
+def read_capped(resp: object, limit: int, what: str) -> bytes:
+    """Read at most *limit* bytes from *resp*, raising if the body is larger.
+
+    ``resp.read()`` with no argument buffers the entire response in memory, so a
+    hostile or misconfigured server could return an endless stream and OOM the
+    machine.  Reading ``limit + 1`` bytes lets us detect the overflow without
+    ever holding more than one extra byte.
+
+    Args:
+        resp:  An open HTTP response.
+        limit: Maximum number of bytes to accept.
+        what:  Human-readable description used in the error message.
+
+    Returns:
+        The response body.
+
+    Raises:
+        RuntimeError: If the body exceeds *limit* bytes.
+    """
+    data = resp.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError(f"{what} is larger than the {limit} byte limit — refusing to buffer it")
+    return data
 
 
 def require_http_url(url: str, what: str) -> str:
@@ -127,7 +158,8 @@ def resolve_feed_url(url: str) -> str:
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            body = read_capped(resp, env_int("MAX_ITUNES_BYTES", _DEFAULT_MAX_JSON_BYTES), "iTunes response")
+        data = json.loads(body.decode("utf-8"))
 
         results = data.get("results", [])
         if not results:
@@ -172,7 +204,8 @@ def search_feed_url_by_name(name: str) -> str:
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            body = read_capped(resp, env_int("MAX_ITUNES_BYTES", _DEFAULT_MAX_JSON_BYTES), "iTunes response")
+        data = json.loads(body.decode("utf-8"))
 
         results = data.get("results", [])
         if not results:
@@ -257,7 +290,7 @@ def fetch_feed_xml(feed_url: str) -> bytes:
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
-            return resp.read()
+            return read_capped(resp, env_int("MAX_FEED_BYTES", _DEFAULT_MAX_FEED_BYTES), "RSS feed")
 
     logger.info("[PodcastDownloader] Fetching RSS feed: %s", feed_url)
     try:
