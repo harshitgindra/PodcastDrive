@@ -415,3 +415,137 @@ class TestProcessDeletionsErrorHandling:
 
         assert _process_deletions(notion, storage) == 0
         notion.archive_page.assert_not_called()
+
+
+class TestChannelGrouping:
+    def test_groups_by_channel_when_enabled(self, config, pending_entry, tmp_path):
+        """When group_by_channel=True, upload path includes channel folder."""
+        from pathlib import Path
+        from mediasync.config import Config, Profile
+
+        cfg = Config(
+            notion_token="token",
+            notion_database_id="db-id",
+            s3_bucket="bucket",
+            profiles=[Profile("Harshit")],
+            max_duration_secs=7200,
+            group_by_channel=True,
+            output_dir=str(tmp_path),
+            herald_enabled=False,
+        )
+
+        result = DownloadResult(
+            path=tmp_path / "song.m4a",
+            title="Song",
+            artist="Cool Channel",
+            duration_secs=120,
+            thumbnail_url="",
+            format_type="audio",
+        )
+        (tmp_path / "song.m4a").write_bytes(b"fake")
+
+        notion = MagicMock()
+        storage = MagicMock()
+        storage.upload.return_value = "MediaSync/Harshit/audio/Cool Channel/song.m4a"
+
+        with patch("mediasync.pipeline.download", return_value=[result]):
+            with patch("mediasync.pipeline.tag_file"):
+                success = _process_entry(pending_entry, notion, storage, cfg)
+
+        assert success is True
+        upload_call = storage.upload.call_args
+        remote_folder = upload_call[0][1]
+        assert "Cool Channel" in remote_folder
+
+    def test_no_grouping_when_disabled(self, config, pending_entry, tmp_path):
+        """When group_by_channel=False, upload path does not include channel."""
+        from mediasync.config import Config, Profile
+
+        cfg = Config(
+            notion_token="token",
+            notion_database_id="db-id",
+            s3_bucket="bucket",
+            profiles=[Profile("Harshit")],
+            max_duration_secs=7200,
+            group_by_channel=False,
+            output_dir=str(tmp_path),
+            herald_enabled=False,
+        )
+
+        result = DownloadResult(
+            path=tmp_path / "song.m4a",
+            title="Song",
+            artist="Cool Channel",
+            duration_secs=120,
+            thumbnail_url="",
+            format_type="audio",
+        )
+        (tmp_path / "song.m4a").write_bytes(b"fake")
+
+        notion = MagicMock()
+        storage = MagicMock()
+        storage.upload.return_value = "MediaSync/Harshit/audio/song.m4a"
+
+        with patch("mediasync.pipeline.download", return_value=[result]):
+            with patch("mediasync.pipeline.tag_file"):
+                success = _process_entry(pending_entry, notion, storage, cfg)
+
+        assert success is True
+        upload_call = storage.upload.call_args
+        remote_folder = upload_call[0][1]
+        assert "Cool Channel" not in remote_folder
+
+    def test_unknown_artist_not_grouped(self, config, pending_entry, tmp_path):
+        """When artist is 'Unknown', don't create a folder for it."""
+        from mediasync.config import Config, Profile
+
+        cfg = Config(
+            notion_token="token",
+            notion_database_id="db-id",
+            s3_bucket="bucket",
+            profiles=[Profile("Harshit")],
+            max_duration_secs=7200,
+            group_by_channel=True,
+            output_dir=str(tmp_path),
+            herald_enabled=False,
+        )
+
+        result = DownloadResult(
+            path=tmp_path / "song.m4a",
+            title="Song",
+            artist="Unknown",
+            duration_secs=120,
+            thumbnail_url="",
+            format_type="audio",
+        )
+        (tmp_path / "song.m4a").write_bytes(b"fake")
+
+        notion = MagicMock()
+        storage = MagicMock()
+        storage.upload.return_value = "MediaSync/Harshit/audio/song.m4a"
+
+        with patch("mediasync.pipeline.download", return_value=[result]):
+            with patch("mediasync.pipeline.tag_file"):
+                success = _process_entry(pending_entry, notion, storage, cfg)
+
+        assert success is True
+        upload_call = storage.upload.call_args
+        remote_folder = upload_call[0][1]
+        assert "Unknown" not in remote_folder
+
+
+class TestSanitizeFolderName:
+    from mediasync.pipeline import _sanitize_folder_name
+
+    def test_removes_unsafe_chars(self):
+        from mediasync.pipeline import _sanitize_folder_name
+        assert _sanitize_folder_name('Artist: "The Best"') == 'Artist The Best'
+
+    def test_truncates_long_names(self):
+        from mediasync.pipeline import _sanitize_folder_name
+        assert len(_sanitize_folder_name("A" * 200)) == 100
+
+    def test_empty_returns_unknown(self):
+        from mediasync.pipeline import _sanitize_folder_name
+        assert _sanitize_folder_name("") == "Unknown"
+        assert _sanitize_folder_name("???") == "Unknown"

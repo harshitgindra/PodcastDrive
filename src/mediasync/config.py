@@ -35,6 +35,7 @@ class Config:
     # General
     max_duration_secs: int = 7200
     max_retries: int = 3
+    group_by_channel: bool = True
     output_dir: str = "/tmp/mediasync"
     herald_enabled: bool = True
     # The job id the Herald listener injects; empty means "send to the
@@ -116,6 +117,7 @@ class Config:
             onedrive_prefix=os.environ.get("MEDIASYNC_ONEDRIVE_PREFIX", "MediaSync"),
             max_duration_secs=env_int("MEDIASYNC_MAX_DURATION_SECS", 7200),
             max_retries=env_int("MEDIASYNC_MAX_RETRIES", 3),
+            group_by_channel=os.environ.get("MEDIASYNC_GROUP_BY_CHANNEL", "true").lower() == "true",
             output_dir=os.environ.get("MEDIASYNC_OUTPUT_DIR", "/tmp/mediasync"),
             herald_enabled=os.environ.get("MEDIASYNC_HERALD_ENABLED", "true").lower() == "true",
             herald_job_id=os.environ.get("HERALD_JOB_ID", "").strip(),

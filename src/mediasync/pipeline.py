@@ -148,7 +148,11 @@ def _process_entry(
             total_duration += result.duration_secs
 
             fmt_folder = "audio" if result.format_type == "audio" else "video"
-            remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
+            if config.group_by_channel and result.artist and result.artist != "Unknown":
+                channel = _sanitize_folder_name(result.artist)
+                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}/{channel}"
+            else:
+                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
             filename = result.path.name
 
             file_key = storage.upload(result.path, remote_folder, filename)
@@ -207,6 +211,17 @@ def _upload_playlist(
         logger.info("Uploaded playlist: %s/%s", playlist_folder, playlist_path.name)
     finally:
         playlist_path.unlink(missing_ok=True)
+
+
+def _sanitize_folder_name(name: str) -> str:
+    """Clean a channel/artist name for use as a folder name."""
+    unsafe = '<>:"/\\|?*'
+    result = name
+    for ch in unsafe:
+        result = result.replace(ch, "")
+    # Collapse whitespace, trim dots/spaces (Windows compat)
+    result = " ".join(result.split()).strip(". ")
+    return result[:100] or "Unknown"
 
 
 def _derive_playlist_title(results: list[DownloadResult]) -> str:
