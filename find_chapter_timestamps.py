@@ -442,7 +442,7 @@ def main() -> None:
 
     # ── Step 4: Write CSV ─────────────────────────────────────────────────────
     write_chapters_csv(chapters, output_csv)
-    print(f"\nNext step:")
+    print("\nNext step:")
     print(f"  python3 split_audiobook.py \"{mp3_path}\" --chapters \"{output_csv}\"")
 
 

@@ -1,8 +1,9 @@
 """Tests for mediasync.config module."""
 
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from mediasync.config import Config, Profile
 

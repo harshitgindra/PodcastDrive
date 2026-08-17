@@ -42,18 +42,21 @@ import logging
 import os
 import re
 import shutil
-import sys
 import ssl
+import sys
 import tempfile
 import urllib.request
-import certifi
 from pathlib import Path
+
+import certifi
 
 # ── path setup ────────────────────────────────────────────────────────────────
 _ROOT = Path(__file__).parent
 sys.path.insert(0, str(_ROOT / "src"))
 
 import yt_dlp
+
+from ad_remover import remove_ads
 from downloader import download_and_convert
 from podcast_downloader import (
     episode_id_from_guid,
@@ -62,7 +65,6 @@ from podcast_downloader import (
     resolve_feed_url,
     search_feed_url_by_name,
 )
-from ad_remover import remove_ads
 
 # ── logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -94,9 +96,7 @@ def _is_playlist_or_channel(source: str) -> bool:
         return True
     if re.match(r"^PL[A-Za-z0-9_-]{10,}", source):
         return True
-    if "youtube.com/playlist" in source or "youtube.com/@" in source:
-        return True
-    return False
+    return "youtube.com/playlist" in source or "youtube.com/@" in source
 
 
 def resolve_youtube_latest(source: str) -> tuple[str, str, str]:
@@ -324,7 +324,7 @@ def main() -> None:
     # ── Summary ───────────────────────────────────────────────────────────────
     print()
     print("═" * W)
-    print(f"  DONE")
+    print("  DONE")
     print(f"  Episode  : {title}")
     print(f"  Removed  : {len(ad_segs)} segment(s), {total_removed:.0f}s total")
     print(f"  Output   : {cleaned_mp3}")

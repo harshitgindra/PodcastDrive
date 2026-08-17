@@ -16,7 +16,6 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-
 AUTHORITY = "https://login.microsoftonline.com/consumers/oauth2/v2.0"
 SCOPES = "Files.ReadWrite offline_access"
 
@@ -64,7 +63,7 @@ def main():
         f"&response_mode=query"
     )
 
-    print(f"\nOpening browser for Microsoft authorization...")
+    print("\nOpening browser for Microsoft authorization...")
     print(f"If browser doesn't open, visit:\n  {auth_url}\n")
     webbrowser.open(auth_url)
 
@@ -128,17 +127,17 @@ def main():
         total_gb = used_gb = 0
 
     print(f"\n{'='*60}")
-    print(f"  SUCCESS! OneDrive OAuth2 tokens obtained.")
+    print("  SUCCESS! OneDrive OAuth2 tokens obtained.")
     print(f"{'='*60}")
     print(f"  Owner:         {owner}")
     print(f"  Storage:       {used_gb:.1f} GB / {total_gb:.1f} GB")
     print(f"  Refresh Token: {refresh_token[:20]}...{refresh_token[-10:]}")
     print(f"{'='*60}")
-    print(f"\nAdd these to your mediasync.env:")
+    print("\nAdd these to your mediasync.env:")
     print(f"  MEDIASYNC_ONEDRIVE_CLIENT_ID={args.client_id}")
     print(f"  MEDIASYNC_ONEDRIVE_CLIENT_SECRET={args.client_secret}")
     print(f"  MEDIASYNC_ONEDRIVE_REFRESH_TOKEN={refresh_token}")
-    print(f"\nThe refresh token auto-renews on use (90-day rolling expiry).")
+    print("\nThe refresh token auto-renews on use (90-day rolling expiry).")
 
 
 if __name__ == "__main__":

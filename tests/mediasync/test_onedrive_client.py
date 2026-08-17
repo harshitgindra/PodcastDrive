@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import json
 import urllib.error
-from pathlib import Path
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mediasync.onedrive_client import (
     CHUNK_SIZE,
-    GRAPH_API,
     SIMPLE_UPLOAD_LIMIT,
-    TOKEN_URL,
     OneDriveClient,
     OneDriveError,
 )

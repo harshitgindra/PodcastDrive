@@ -15,7 +15,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-
 logger = logging.getLogger(__name__)
 
 TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
@@ -111,7 +110,7 @@ class OneDriveClient:
         req.add_header("Authorization", f"Bearer {self._access_token}")
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30):
                 pass
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -154,7 +153,7 @@ class OneDriveClient:
         req.add_header("Content-Type", "application/octet-stream")
 
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=120):
                 pass
         except urllib.error.HTTPError as exc:
             if exc.code == 401:

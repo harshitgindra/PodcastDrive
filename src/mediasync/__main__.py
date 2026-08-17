@@ -1,6 +1,7 @@
 """Allow running as `python -m mediasync`."""
 
-from mediasync.cli import main
 import sys
+
+from mediasync.cli import main
 
 sys.exit(main())

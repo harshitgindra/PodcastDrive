@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from mediasync.config import Config, Profile
 from mediasync.storage import create_storage
@@ -35,7 +31,7 @@ class TestCreateStorage:
     def test_s3_backend(self):
         config = _base_config(storage_backend="s3", s3_bucket="mybucket")
         with patch("mediasync.s3_client.S3Client") as mock_s3:
-            storage = create_storage(config)
+            create_storage(config)
         mock_s3.assert_called_once_with("mybucket", "us-west-2")
 
     def test_onedrive_backend(self):
@@ -46,7 +42,7 @@ class TestCreateStorage:
             onedrive_refresh_token="rt",
         )
         with patch("mediasync.onedrive_client.OneDriveClient") as mock_od:
-            storage = create_storage(config)
+            create_storage(config)
         mock_od.assert_called_once_with(
             client_id="cid", client_secret="cs", refresh_token="rt"
         )

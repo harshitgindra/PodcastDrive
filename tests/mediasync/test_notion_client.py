@@ -1,13 +1,12 @@
 """Tests for mediasync.notion_client module."""
 
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, call
-from datetime import datetime, timezone
 
 from mediasync.notion_client import (
     Format,
-    MediaEntry,
     NotionClient,
     Status,
 )
@@ -224,7 +223,6 @@ class TestHttpMethods:
     """Test _post and _patch with mocked urlopen."""
 
     def test_post_success(self, client):
-        import json
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({"results": [], "has_more": False}).encode()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -242,7 +240,6 @@ class TestHttpMethods:
         assert result is None
 
     def test_patch_success(self, client):
-        import json
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({"id": "page-1"}).encode()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)

@@ -38,7 +38,6 @@ def create_storage(config) -> StorageBackend:
     Returns:
         A StorageBackend implementation (S3Client or OneDriveClient).
     """
-    from mediasync.config import Config
 
     if config.storage_backend == "onedrive":
         from mediasync.onedrive_client import OneDriveClient

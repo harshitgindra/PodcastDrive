@@ -13,7 +13,7 @@ import sys
 import time
 
 from mediasync.config import Config
-from mediasync.pipeline import run, RunStats
+from mediasync.pipeline import RunStats, run
 
 
 def main(argv: list[str] | None = None) -> int:

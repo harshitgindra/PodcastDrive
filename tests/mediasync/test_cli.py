@@ -1,9 +1,10 @@
 """Tests for mediasync.cli module."""
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from mediasync.cli import main, _notify
+import pytest
+
+from mediasync.cli import _notify, main
 from mediasync.config import Config, Profile
 from mediasync.pipeline import RunStats
 
@@ -68,7 +69,7 @@ class TestDryRunOutput:
     @patch("mediasync.notion_client.NotionClient")
     @patch("mediasync.cli.Config.from_env")
     def test_dry_run_with_entries(self, mock_env, MockNotion, mock_config, capsys):
-        from mediasync.notion_client import MediaEntry, Format, Status
+        from mediasync.notion_client import Format, MediaEntry, Status
 
         mock_env.return_value = mock_config
         mock_notion = MockNotion.return_value

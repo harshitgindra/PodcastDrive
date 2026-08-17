@@ -11,7 +11,6 @@ and exchanges the code for a permanent access token.
 import argparse
 import http.server
 import json
-import threading
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -60,7 +59,7 @@ def main():
         f"&redirect_uri={urllib.parse.quote(redirect_uri)}"
     )
 
-    print(f"\nOpening browser for pCloud authorization...")
+    print("\nOpening browser for pCloud authorization...")
     print(f"If browser doesn't open, visit:\n  {auth_url}\n")
     webbrowser.open(auth_url)
 
@@ -98,15 +97,15 @@ def main():
     uid = data.get("uid", "?")
 
     print(f"\n{'='*60}")
-    print(f"  SUCCESS! pCloud OAuth2 token obtained.")
+    print("  SUCCESS! pCloud OAuth2 token obtained.")
     print(f"{'='*60}")
     print(f"  User ID:      {uid}")
     print(f"  API host:     {hostname}")
     print(f"  Access Token: {access_token}")
     print(f"{'='*60}")
-    print(f"\nAdd this to your mediasync.env:")
+    print("\nAdd this to your mediasync.env:")
     print(f"  MEDIASYNC_PCLOUD_TOKEN={access_token}")
-    print(f"\nThis token does not expire unless you revoke the app.")
+    print("\nThis token does not expire unless you revoke the app.")
 
 
 if __name__ == "__main__":
