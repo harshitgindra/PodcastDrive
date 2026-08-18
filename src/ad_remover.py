@@ -76,11 +76,13 @@ import os
 import re
 import ssl
 import subprocess
+import tempfile
 import time
 import uuid
 
 import boto3
 import certifi
+from botocore.exceptions import BotoCoreError, ClientError
 
 import settings
 from utils import retry_aws_call
@@ -740,164 +742,59 @@ def _extract_audio_window(mp3_path: str, start: float, end: float, out_path: str
         raise RuntimeError(f"ffmpeg window extract failed (rc={result.returncode}): {result.stderr[-500:]}")
 
 
-def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") -> list[dict]:
-    """Upload *mp3_path* to S3 and transcribe it with AWS Transcribe.
+_MAX_POLL_ERRORS = 5
 
-    Returns a list of segment dicts, each with keys ``start`` (float),
-    ``end`` (float), and ``text`` (str) derived from the word-level items
-    in the Transcribe output.
 
-    Args:
-        mp3_path: Local path to the audio file.
-        video_id: Episode identifier, used to name the temporary S3 object and
-                  the Transcribe job.
+def _run_transcribe_job(
+    s3_client,
+    transcribe_client,
+    *,
+    bucket: str,
+    local_path: str,
+    clip_id: str,
+    namespace: str,
+    language_code: str,
+    poll_interval: int,
+    max_wait: int,
+    label_suffix: str = "",
+) -> list[dict]:
+    """Transcribe one audio file with AWS Transcribe and return its segments.
+
+    Shared by the full-file and the windowed (``AD_TRANSCRIBE_WINDOWS``) paths.
+    The windowed path used to be a second hand-written copy of this flow that had
+    drifted: it namespaced no S3 keys (so two feeds reusing an episode id raced on
+    ``transcribe-tmp/``) and tolerated no polling errors (so a single throttled
+    ``get_transcription_job`` aborted the whole episode).  Both paths now inherit
+    the fixes from one place.
+
+    The temporary S3 object and the Transcribe job are always deleted, including on
+    failure.  ``local_path`` is never touched — the caller owns it.
 
     Returns:
-        List of segment dicts.  Empty list when Transcribe produces no output.
+        Segment dicts with ``start``/``end``/``text``, timestamps relative to
+        ``local_path``.
 
     Raises:
-        RuntimeError: On any AWS API error or if the Transcribe job fails.
+        RuntimeError: If the job fails, times out, or polling fails repeatedly.
     """
     from botocore.exceptions import ClientError
 
-    bucket = settings.get("S3_BUCKET")
-    if not bucket:
-        raise RuntimeError("S3_BUCKET must be set to use AWS Transcribe")
-
-    region = settings.get("AWS_DEFAULT_REGION")
-    language_code = settings.get("TRANSCRIBE_LANGUAGE_CODE")
-    poll_interval = settings.get("TRANSCRIBE_POLL_INTERVAL")
-    max_wait = settings.get("TRANSCRIBE_MAX_WAIT")
-    cache_enabled = settings.get("TRANSCRIBE_CACHE_ENABLED")
-    # Skip caching for evaluator re-transcriptions (eval- prefix) — those target the cleaned
-    # file and should not overwrite the original episode's cache entry.
-    use_cache = cache_enabled and not video_id.startswith("eval-")
-
-    s3_client = boto3.client("s3", region_name=region)
-    transcribe_client = boto3.client("transcribe", region_name=region)
-
-    # 0. Check transcript cache (skip expensive Transcribe job if already done)
-    if use_cache:
-        cached = _load_transcript_cache(s3_client, bucket, video_id, cache_namespace)
-        if cached is not None:
-            return cached
-
-    # 1a. Selective transcription windows (AD_TRANSCRIBE_WINDOWS)
-    #     If set, only transcribe specified sub-clips to reduce Transcribe cost.
-    windows_raw = settings.get("AD_TRANSCRIBE_WINDOWS").strip()
-    if windows_raw:
-        duration = _get_audio_duration(mp3_path)
-        windows = _parse_transcribe_windows(windows_raw, duration)
-        if windows:
-            import tempfile as _tempfile
-
-            all_segments: list[dict] = []
-            for w_idx, (w_start, w_end) in enumerate(windows):
-                with _tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as w_tmp:
-                    w_tmp_path = w_tmp.name
-                try:
-                    _extract_audio_window(mp3_path, w_start, w_end, w_tmp_path)
-                    w_id = f"{video_id}-w{w_idx}"
-                    w_key = f"transcribe-tmp/{w_id}.mp3"
-                    logger.info(
-                        "[AdRemover] Window %d/%d: uploading %.1f-%.1fs sub-clip for transcription",
-                        w_idx + 1,
-                        len(windows),
-                        w_start,
-                        w_end,
-                    )
-                    retry_aws_call(
-                        lambda k=w_key, p=w_tmp_path: s3_client.upload_file(p, bucket, k),
-                        label=f"s3.upload_file[window-{w_idx}]",
-                    )
-                    w_uri = f"s3://{bucket}/{w_key}"
-                    w_safe = re.sub(r"[^A-Za-z0-9_-]", "-", w_id)[:64].strip("-")
-                    w_job = f"pad-{w_safe}-{uuid.uuid4().hex[:8]}"
-                    retry_aws_call(
-                        lambda j=w_job, u=w_uri: transcribe_client.start_transcription_job(
-                            TranscriptionJobName=j,
-                            Media={"MediaFileUri": u},
-                            MediaFormat="mp3",
-                            LanguageCode=language_code,
-                            Settings={"ShowSpeakerLabels": False, "ChannelIdentification": False},
-                        ),
-                        label=f"transcribe.start[window-{w_idx}]",
-                    )
-                    # Poll until complete
-                    w_elapsed = 0
-                    w_status_resp: dict = {}
-                    while w_elapsed < max_wait:
-                        time.sleep(poll_interval)
-                        w_elapsed += poll_interval
-                        w_status_resp = transcribe_client.get_transcription_job(TranscriptionJobName=w_job)
-                        w_status = w_status_resp["TranscriptionJob"]["TranscriptionJobStatus"]
-                        if w_status == "COMPLETED":
-                            break
-                        if w_status == "FAILED":
-                            raise RuntimeError(
-                                f"Transcribe window job {w_job} failed: "
-                                + w_status_resp["TranscriptionJob"].get("FailureReason", "unknown")
-                            )
-                    else:
-                        raise RuntimeError(f"Transcribe window job {w_job} timed out after {max_wait}s")
-
-                    w_uri_result = w_status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
-                    import urllib.request as _req
-
-                    with _req.urlopen(w_uri_result, context=_SSL_CTX) as r:
-                        w_data = json.loads(r.read())
-                    w_items = w_data.get("results", {}).get("items", [])
-                    w_segs = _items_to_segments(w_items)
-                    # Offset all segment timestamps by the window start
-                    for seg in w_segs:
-                        seg["start"] += w_start
-                        seg["end"] += w_start
-                    all_segments.extend(w_segs)
-                    logger.info(
-                        "[AdRemover] Window %d/%d complete: %d segments (offset +%.1fs)",
-                        w_idx + 1,
-                        len(windows),
-                        len(w_segs),
-                        w_start,
-                    )
-                finally:
-                    with contextlib.suppress(OSError):
-                        os.remove(w_tmp_path)
-                    with contextlib.suppress(Exception):
-                        s3_client.delete_object(Bucket=bucket, Key=w_key)
-                    with contextlib.suppress(Exception):
-                        transcribe_client.delete_transcription_job(TranscriptionJobName=w_job)
-
-            # Sort merged segments by start time
-            all_segments.sort(key=lambda s: s["start"])
-            logger.info(
-                "[AdRemover] Windowed transcription complete: %d total segments from %d window(s)",
-                len(all_segments),
-                len(windows),
-            )
-            if use_cache:
-                _save_transcript_cache(s3_client, bucket, video_id, all_segments, cache_namespace)
-                _save_transcript_text(s3_client, bucket, video_id, all_segments, cache_namespace)
-            return all_segments
-
-    # 1. Upload audio to a temporary S3 key
     # Namespaced so two feeds that reuse an episode id cannot overwrite each
     # other's in-flight Transcribe input while both jobs are running.
-    _tmp_ns = _safe_namespace(cache_namespace)
-    tmp_key = f"transcribe-tmp/{_tmp_ns}/{video_id}.mp3" if _tmp_ns else f"transcribe-tmp/{video_id}.mp3"
-    logger.info("[AdRemover] Uploading %s to s3://%s/%s for transcription", mp3_path, bucket, tmp_key)
+    ns = _safe_namespace(namespace)
+    tmp_key = f"transcribe-tmp/{ns}/{clip_id}.mp3" if ns else f"transcribe-tmp/{clip_id}.mp3"
+    logger.info("[AdRemover] Uploading %s to s3://%s/%s for transcription", local_path, bucket, tmp_key)
     retry_aws_call(
-        lambda: s3_client.upload_file(mp3_path, bucket, tmp_key),
-        label="s3.upload_file[transcribe-tmp]",
+        lambda: s3_client.upload_file(local_path, bucket, tmp_key),
+        label=f"s3.upload_file[transcribe-tmp{label_suffix}]",
     )
 
     media_uri = f"s3://{bucket}/{tmp_key}"
-    # Transcribe job names only allow [A-Za-z0-9_-] — sanitize video_id
-    safe_id = re.sub(r"[^A-Za-z0-9_-]", "-", video_id)[:64].strip("-")
+    # Transcribe job names only allow [A-Za-z0-9_-] — sanitize the clip id
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "-", clip_id)[:64].strip("-")
     job_name = f"pad-{safe_id}-{uuid.uuid4().hex[:8]}"
 
     try:
-        # 2. Start the transcription job
         logger.info("[AdRemover] Starting Transcribe job %s", job_name)
         retry_aws_call(
             lambda: transcribe_client.start_transcription_job(
@@ -907,13 +804,11 @@ def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") ->
                 LanguageCode=language_code,
                 Settings={"ShowSpeakerLabels": False, "ChannelIdentification": False},
             ),
-            label="transcribe.start_transcription_job",
+            label=f"transcribe.start_transcription_job{label_suffix}",
         )
 
-        # 3. Poll until complete
         elapsed = 0
         consecutive_poll_errors = 0
-        _MAX_POLL_ERRORS = 5
         while elapsed < max_wait:
             time.sleep(poll_interval)
             elapsed += poll_interval
@@ -945,7 +840,6 @@ def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") ->
         else:
             raise RuntimeError(f"Transcribe job {job_name} timed out after {max_wait}s")
 
-        # 4. Download and parse the transcript JSON
         transcript_uri = status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
         logger.info("[AdRemover] Downloading transcript from %s", transcript_uri)
 
@@ -957,27 +851,137 @@ def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") ->
         items = transcript_data.get("results", {}).get("items", [])
         segments = _items_to_segments(items)
         logger.info("[AdRemover] Transcription complete: %d segments from %d items", len(segments), len(items))
-
-        # Save to cache so subsequent runs skip the Transcribe job
-        if use_cache:
-            _save_transcript_cache(s3_client, bucket, video_id, segments, cache_namespace)
-            _save_transcript_text(s3_client, bucket, video_id, segments, cache_namespace)
-
         return segments
 
     finally:
-        # 5. Clean up: delete temp S3 object and Transcribe job
         try:
             s3_client.delete_object(Bucket=bucket, Key=tmp_key)
             logger.debug("[AdRemover] Deleted temp S3 object s3://%s/%s", bucket, tmp_key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
             logger.warning("[AdRemover] Could not delete temp S3 object: %s", exc)
 
         try:
             transcribe_client.delete_transcription_job(TranscriptionJobName=job_name)
             logger.debug("[AdRemover] Deleted Transcribe job %s", job_name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
             logger.warning("[AdRemover] Could not delete Transcribe job %s: %s", job_name, exc)
+
+
+def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") -> list[dict]:
+    """Upload *mp3_path* to S3 and transcribe it with AWS Transcribe.
+
+    Returns a list of segment dicts, each with keys ``start`` (float),
+    ``end`` (float), and ``text`` (str) derived from the word-level items
+    in the Transcribe output.
+
+    When ``AD_TRANSCRIBE_WINDOWS`` is set, only the named sub-clips are
+    transcribed (to reduce Transcribe cost) and their timestamps are offset back
+    onto the full-episode timeline.
+
+    Args:
+        mp3_path: Local path to the audio file.
+        video_id: Episode identifier, used to name the temporary S3 object and
+                  the Transcribe job.
+        cache_namespace: Feed-scoped prefix so two feeds reusing an episode id
+                  do not share cache or temp-upload keys.
+
+    Returns:
+        List of segment dicts.  Empty list when Transcribe produces no output.
+
+    Raises:
+        RuntimeError: On any AWS API error or if the Transcribe job fails.
+    """
+    bucket = settings.get("S3_BUCKET")
+    if not bucket:
+        raise RuntimeError("S3_BUCKET must be set to use AWS Transcribe")
+
+    region = settings.get("AWS_DEFAULT_REGION")
+    language_code = settings.get("TRANSCRIBE_LANGUAGE_CODE")
+    poll_interval = settings.get("TRANSCRIBE_POLL_INTERVAL")
+    max_wait = settings.get("TRANSCRIBE_MAX_WAIT")
+    cache_enabled = settings.get("TRANSCRIBE_CACHE_ENABLED")
+    # Skip caching for evaluator re-transcriptions (eval- prefix) — those target the cleaned
+    # file and should not overwrite the original episode's cache entry.
+    use_cache = cache_enabled and not video_id.startswith("eval-")
+
+    s3_client = boto3.client("s3", region_name=region)
+    transcribe_client = boto3.client("transcribe", region_name=region)
+
+    # 0. Check transcript cache (skip expensive Transcribe job if already done)
+    if use_cache:
+        cached = _load_transcript_cache(s3_client, bucket, video_id, cache_namespace)
+        if cached is not None:
+            return cached
+
+    def _run(local_path: str, clip_id: str, label_suffix: str = "") -> list[dict]:
+        return _run_transcribe_job(
+            s3_client,
+            transcribe_client,
+            bucket=bucket,
+            local_path=local_path,
+            clip_id=clip_id,
+            namespace=cache_namespace,
+            language_code=language_code,
+            poll_interval=poll_interval,
+            max_wait=max_wait,
+            label_suffix=label_suffix,
+        )
+
+    def _cache(segments: list[dict]) -> None:
+        if use_cache:
+            _save_transcript_cache(s3_client, bucket, video_id, segments, cache_namespace)
+            _save_transcript_text(s3_client, bucket, video_id, segments, cache_namespace)
+
+    # 1a. Selective transcription windows (AD_TRANSCRIBE_WINDOWS)
+    #     If set, only transcribe specified sub-clips to reduce Transcribe cost.
+    windows_raw = settings.get("AD_TRANSCRIBE_WINDOWS").strip()
+    if windows_raw:
+        duration = _get_audio_duration(mp3_path)
+        windows = _parse_transcribe_windows(windows_raw, duration)
+        if windows:
+            all_segments: list[dict] = []
+            for w_idx, (w_start, w_end) in enumerate(windows):
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as w_tmp:
+                    w_tmp_path = w_tmp.name
+                try:
+                    _extract_audio_window(mp3_path, w_start, w_end, w_tmp_path)
+                    logger.info(
+                        "[AdRemover] Window %d/%d: uploading %.1f-%.1fs sub-clip for transcription",
+                        w_idx + 1,
+                        len(windows),
+                        w_start,
+                        w_end,
+                    )
+                    w_segs = _run(w_tmp_path, f"{video_id}-w{w_idx}", label_suffix=f"[window-{w_idx}]")
+                    # Offset window-relative timestamps back onto the episode timeline
+                    for seg in w_segs:
+                        seg["start"] += w_start
+                        seg["end"] += w_start
+                    all_segments.extend(w_segs)
+                    logger.info(
+                        "[AdRemover] Window %d/%d complete: %d segments (offset +%.1fs)",
+                        w_idx + 1,
+                        len(windows),
+                        len(w_segs),
+                        w_start,
+                    )
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.remove(w_tmp_path)
+
+            all_segments.sort(key=lambda s: s["start"])
+            logger.info(
+                "[AdRemover] Windowed transcription complete: %d total segments from %d window(s)",
+                len(all_segments),
+                len(windows),
+            )
+            _cache(all_segments)
+            return all_segments
+
+    # 1b. Whole-file transcription
+    segments = _run(mp3_path, video_id)
+    _cache(segments)
+    return segments
 
 
 def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[dict]:
@@ -2129,6 +2133,23 @@ def _generate_summary(
     return summary
 
 
+# Failures we expect from the outside world (ffmpeg, AWS, network, malformed
+# responses) and can absorb inside remove_ads() by falling back to the original
+# file.  Anything outside this tuple — TypeError, AttributeError, KeyError and
+# friends — is a bug in this module rather than an outage, and must NOT be quietly
+# downgraded to "published the episode with its ads intact".  Both callers wrap each
+# episode in their own handler, so a real bug surfaces as one failed episode in
+# the run summary instead of a silent, ad-laden upload.
+_OPERATIONAL_ERRORS = (
+    OSError,          # file/IO, and the base of ConnectionError / TimeoutError
+    RuntimeError,     # what this module raises for AWS/ffmpeg failures
+    ValueError,       # includes json.JSONDecodeError
+    subprocess.SubprocessError,
+    BotoCoreError,
+    ClientError,
+)
+
+
 def remove_ads(
     mp3_path: str,
     video_id: str,
@@ -2235,7 +2256,7 @@ def remove_ads(
                         min_intro_secs=_min_intro if _trim_intro else 9999.0,
                         min_outro_secs=_min_outro if _trim_outro else 9999.0,
                     )
-                except Exception as exc:
+                except _OPERATIONAL_ERRORS as exc:
                     logger.warning("[AdRemover] Music detection failed (cached path) for %s: %s", video_id, exc)
 
             all_cached = _merge_overlapping_ads(ad_segments + music_segments)
@@ -2260,7 +2281,7 @@ def remove_ads(
             cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
             try:
                 splice_audio(mp3_path, all_cached, cleaned_path)
-            except Exception as exc:
+            except _OPERATIONAL_ERRORS as exc:
                 logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
                 return (
                     mp3_path,
@@ -2276,13 +2297,13 @@ def remove_ads(
 
     try:
         segments = transcribe_audio(mp3_path, video_id, cache_namespace=cache_namespace)
-    except Exception as exc:
+    except _OPERATIONAL_ERRORS as exc:
         logger.error("[AdRemover] Transcription failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, [], "TRANSCRIBE_FAILED"
 
     try:
         ad_segments = detect_ads(segments, ad_hints=ad_hints)
-    except Exception as exc:
+    except _OPERATIONAL_ERRORS as exc:
         logger.error("[AdRemover] Ad detection failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, [], "DETECT_FAILED"
 
@@ -2296,7 +2317,7 @@ def remove_ads(
     if _need_silence:
         try:
             _silences = detect_silence(mp3_path)
-        except Exception as exc:
+        except _OPERATIONAL_ERRORS as exc:
             logger.warning("[AdRemover] Silence detection failed for %s: %s", video_id, exc)
             _silences = []
 
@@ -2311,7 +2332,7 @@ def remove_ads(
                 min_outro_secs=_min_outro if _trim_outro else 9999.0,
                 silences=_silences,
             )
-        except Exception as exc:
+        except _OPERATIONAL_ERRORS as exc:
             logger.warning(
                 "[AdRemover] Music bookend detection failed for %s: %s — proceeding with ads only", video_id, exc
             )
@@ -2341,7 +2362,7 @@ def remove_ads(
     cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
     try:
         splice_audio(mp3_path, all_segments, cleaned_path)
-    except Exception as exc:
+    except _OPERATIONAL_ERRORS as exc:
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, all_segments, "SPLICE_FAILED"
 

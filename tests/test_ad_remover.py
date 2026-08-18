@@ -562,6 +562,57 @@ class TestRemoveAds:
         monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(side_effect=RuntimeError("ffmpeg gone")))
         assert ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")[0] == "/ep.mp3"
 
+    # remove_ads() used to wrap transcription, detection and splicing in bare
+    # `except Exception`, so a programming error (TypeError, AttributeError, ...)
+    # looked exactly like an AWS outage: the episode was published with its ads
+    # intact and the run reported success.  These tests pin the distinction —
+    # operational failures still fall back to the original file (covered above),
+    # bugs must escape so the caller counts the episode as failed.
+
+    def test_programming_error_in_transcription_is_not_swallowed(self, monkeypatch):
+        monkeypatch.delenv("REMOVE_ADS", raising=False)
+        import ad_remover
+
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(side_effect=TypeError("bad call")))
+        with pytest.raises(TypeError):
+            ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")
+
+    def test_programming_error_in_detection_is_not_swallowed(self, monkeypatch):
+        monkeypatch.delenv("REMOVE_ADS", raising=False)
+        import ad_remover
+
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "x"}])
+        )
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(side_effect=AttributeError("no attr")))
+        with pytest.raises(AttributeError):
+            ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")
+
+    def test_programming_error_in_splice_is_not_swallowed(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("REMOVE_ADS", raising=False)
+        import ad_remover
+
+        monkeypatch.setattr(
+            ad_remover, "transcribe_audio", MagicMock(return_value=[{"start": 0.0, "end": 1.0, "text": "ad"}])
+        )
+        monkeypatch.setattr(ad_remover, "detect_ads", MagicMock(return_value=[{"start": 0.2, "end": 0.8}]))
+        monkeypatch.setattr(ad_remover, "splice_audio", MagicMock(side_effect=TypeError("bad splice call")))
+        with pytest.raises(TypeError):
+            ad_remover.remove_ads("/ep.mp3", "v1", str(tmp_path))
+
+    def test_boto_client_error_still_falls_back(self, monkeypatch):
+        """ClientError is the most common real-world transcription failure and must
+        keep producing the TRANSCRIBE_FAILED fallback rather than propagating."""
+        from botocore.exceptions import ClientError
+
+        monkeypatch.delenv("REMOVE_ADS", raising=False)
+        import ad_remover
+
+        err = ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow"}}, "StartTranscriptionJob")
+        monkeypatch.setattr(ad_remover, "transcribe_audio", MagicMock(side_effect=err))
+        path, segs, summary = ad_remover.remove_ads("/ep.mp3", "v1", "/tmp")
+        assert (path, segs, summary) == ("/ep.mp3", [], "TRANSCRIBE_FAILED")
+
     def test_returns_cleaned_path_on_success(self, monkeypatch, tmp_path):
         monkeypatch.delenv("REMOVE_ADS", raising=False)
         import os
@@ -2045,6 +2096,137 @@ class TestWindowedTranscription:
         # Normal transcription should have uploaded the full file
         s3.upload_file.assert_called()
 
+
+class TestWindowedTranscriptionSharesMainPathBehaviour:
+    """The windowed path used to be a hand-written copy of the Transcribe flow that
+    had drifted from the main one.  These tests pin the two behaviours it was
+    missing so the two paths cannot silently diverge again."""
+
+    @staticmethod
+    def _completed_job():
+        return {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://fake/t.json"},
+            }
+        }
+
+    @staticmethod
+    def _fake_transcript_resp():
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = lambda s: s
+        fake_resp.__exit__ = MagicMock(return_value=False)
+        fake_resp.read.return_value = json.dumps(
+            {
+                "results": {
+                    "items": [
+                        {
+                            "type": "pronunciation",
+                            "start_time": "1.0",
+                            "end_time": "2.0",
+                            "alternatives": [{"content": "Hello"}],
+                        },
+                    ]
+                }
+            }
+        ).encode()
+        return fake_resp
+
+    def test_windowed_temp_key_is_namespaced_by_feed(self, monkeypatch, tmp_path, mock_sleep):
+        """Without a namespace two feeds reusing an episode id would upload to the same
+        transcribe-tmp/ key and clobber each other's in-flight Transcribe input.  The
+        whole-file path has always namespaced; the windowed path did not."""
+        import urllib.request as ur
+
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "0:60")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        tc = MagicMock()
+        tc.get_transcription_job.return_value = self._completed_job()
+        s3 = MagicMock()
+        monkeypatch.setattr(
+            ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc)
+        )
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+        monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=self._fake_transcript_resp()))
+
+        ad_remover.transcribe_audio(str(fake_mp3), "ep1", cache_namespace="feed-a")
+
+        keys = [call.args[2] for call in s3.upload_file.call_args_list]
+        assert keys == ["transcribe-tmp/feed-a/ep1-w0.mp3"]
+
+    def test_windowed_poll_tolerates_transient_errors(self, monkeypatch, tmp_path, mock_sleep):
+        """A single throttled get_transcription_job used to abort the whole episode on the
+        windowed path, while the whole-file path tolerated up to _MAX_POLL_ERRORS."""
+        import urllib.request as ur
+
+        from botocore.exceptions import ClientError
+
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "0:60")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        throttle = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "GetTranscriptionJob"
+        )
+        tc = MagicMock()
+        tc.get_transcription_job.side_effect = [throttle, throttle, self._completed_job()]
+        s3 = MagicMock()
+        monkeypatch.setattr(
+            ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc)
+        )
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+        monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=self._fake_transcript_resp()))
+
+        result = ad_remover.transcribe_audio(str(fake_mp3), "ep_throttled")
+
+        assert len(result) == 1
+        assert tc.get_transcription_job.call_count == 3
+
+    def test_poll_gives_up_after_max_consecutive_errors(self, monkeypatch, tmp_path, mock_sleep):
+        """Tolerance must be bounded: a permanently broken poll has to raise rather than
+        spin until TRANSCRIBE_MAX_WAIT."""
+        from botocore.exceptions import ClientError
+
+        import ad_remover
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AD_TRANSCRIBE_WINDOWS", "0:60")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "false")
+        monkeypatch.setenv("TRANSCRIBE_MAX_WAIT", "3600")
+        monkeypatch.setenv("TRANSCRIBE_POLL_INTERVAL", "1")
+
+        fake_mp3 = tmp_path / "ep.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" * 100)
+
+        tc = MagicMock()
+        tc.get_transcription_job.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "GetTranscriptionJob"
+        )
+        s3 = MagicMock()
+        monkeypatch.setattr(
+            ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc)
+        )
+        monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
+        monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
+
+        with pytest.raises(RuntimeError, match="consecutive times"):
+            ad_remover.transcribe_audio(str(fake_mp3), "ep_broken_poll")
+
+        assert tc.get_transcription_job.call_count == ad_remover._MAX_POLL_ERRORS
 
 class TestDetectMusicBookends:
     """Tests for detect_music_bookends()."""
