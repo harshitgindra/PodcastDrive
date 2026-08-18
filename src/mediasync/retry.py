@@ -1,17 +1,25 @@
-"""Retry utilities for MediaSync.
+"""Retry entry point for MediaSync.
 
-Provides exponential backoff retry for transient failures (network errors,
-HTTP 429/5xx from YouTube, etc.).
+The engine and the transient/permanent classification now live in the
+top-level :mod:`retry` module, shared with the podcast pipeline. This module
+stays as MediaSync's entry point — its call sites and defaults are unchanged —
+but no longer carries its own copy of the loop.
 """
 
 from __future__ import annotations
 
-import logging
-import time
 from collections.abc import Callable
 from typing import TypeVar
 
-logger = logging.getLogger(__name__)
+from retry import is_transient_download_error, retry_call
+
+__all__ = [
+    "DEFAULT_BASE_DELAY",
+    "DEFAULT_MAX_DELAY",
+    "DEFAULT_MAX_RETRIES",
+    "is_transient_download_error",
+    "retry_on_error",
+]
 
 T = TypeVar("T")
 
@@ -34,11 +42,12 @@ def retry_on_error(
 
     Args:
         fn: Zero-arg callable to execute.
-        max_retries: Maximum number of retry attempts (0 = no retries).
+        max_retries: Maximum number of *retries* after the initial attempt
+            (0 = no retries), so the total attempt count is ``max_retries + 1``.
         base_delay: Initial delay in seconds (doubled each retry).
         max_delay: Cap on delay between retries.
         retryable: Predicate that decides if an exception is worth retrying.
-                   Defaults to retrying all exceptions except KeyboardInterrupt.
+                   Defaults to retrying every exception.
         description: Human-readable label for log messages.
 
     Returns:
@@ -47,74 +56,12 @@ def retry_on_error(
     Raises:
         The last exception if all retries are exhausted.
     """
-    if retryable is None:
-        retryable = _default_retryable
-
-    last_exc: Exception | None = None
-    for attempt in range(max_retries + 1):
-        try:
-            return fn()
-        except Exception as exc:
-            last_exc = exc
-            if not retryable(exc) or attempt >= max_retries:
-                raise
-
-            delay = min(base_delay * (2 ** attempt), max_delay)
-            logger.warning(
-                "%s failed (attempt %d/%d), retrying in %.1fs: %s",
-                description, attempt + 1, max_retries + 1, delay, exc,
-            )
-            time.sleep(delay)
-
-    # Should never reach here, but satisfies type checker
-    raise last_exc  # type: ignore[misc]
-
-
-def is_transient_download_error(exc: Exception) -> bool:
-    """Determine if a download error is likely transient and worth retrying.
-
-    Retries on: network errors, HTTP 429/5xx, timeouts, connection resets.
-    Does NOT retry on: video unavailable, age-restricted, geo-blocked, format errors.
-    """
-    msg = str(exc).lower()
-
-    # Definitely transient
-    transient_indicators = [
-        "429",
-        "503",
-        "502",
-        "500",
-        "connection reset",
-        "connection refused",
-        "timed out",
-        "timeout",
-        "temporary failure",
-        "network",
-        "ssl",
-        "eof occurred",
-        "incomplete read",
-        "broken pipe",
-    ]
-    if any(indicator in msg for indicator in transient_indicators):
-        return True
-
-    # Definitely permanent — do not retry
-    permanent_indicators = [
-        "video unavailable",
-        "private video",
-        "removed",
-        "age-restricted",
-        "geo-restricted",
-        "not available",
-        "copyright",
-        "terminated",
-        "sign in",
-        "members-only",
-    ]
-    # Default: retry (assume transient) unless the error is clearly permanent.
-    return not any(indicator in msg for indicator in permanent_indicators)
-
-
-def _default_retryable(exc: Exception) -> bool:
-    """Default predicate: retry everything except KeyboardInterrupt."""
-    return True
+    return retry_call(
+        fn,
+        attempts=max_retries + 1,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        jitter=False,
+        retryable=retryable,  # type: ignore[arg-type]
+        label=description,
+    )

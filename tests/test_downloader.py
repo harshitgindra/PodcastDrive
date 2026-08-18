@@ -381,3 +381,96 @@ class TestFfmpegPathSetup:
                 assert "/opt/bin" in os.environ["PATH"]
             finally:
                 os.environ["PATH"] = original_path
+
+
+class TestOnlyTransientFailuresAreRetried:
+    """Permanent failures must fail on the first attempt.
+
+    The retry predicate used to be `retry_if_exception_type(Exception)`, so a
+    video that could never download (deleted, private, members-only,
+    geo-blocked) still consumed every DOWNLOAD_MAX_RETRIES attempt and every
+    back-off wait in between, only to fail with its original error. With
+    defaults of 3 attempts and a 5s minimum wait that is ~15s burned per
+    permanently-unavailable video.
+    """
+
+    @staticmethod
+    def _mock_ydl(mock_ydl_cls, error_message):
+        mock_ydl = MagicMock()
+        mock_ydl.download.side_effect = Exception(error_message)
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl_cls.return_value = mock_ydl
+        return mock_ydl
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ERROR: [youtube] x: Video unavailable",
+            "ERROR: [youtube] x: Private video. Sign in if you've been granted access",
+            "Join this channel to get access to members-only content",
+            "The uploader has not made this video available in your country",
+            "This video has been removed by the uploader",
+        ],
+    )
+    @patch("downloader._MAX_RETRIES", 4)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_permanent_failure_is_attempted_once(self, mock_ydl_cls, message):
+        mock_ydl = self._mock_ydl(mock_ydl_cls, message)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(DownloadError):
+                download_and_convert("https://youtube.com/watch?v=x", "x", tmp_dir)
+        assert mock_ydl.download.call_count == 1, (
+            f"retried a permanently-failed download: {message!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "HTTP Error 429: Too Many Requests",
+            "HTTP Error 503: Service Unavailable",
+            "Connection reset by peer",
+            "The read operation timed out",
+            "something we have never seen before",
+        ],
+    )
+    @patch("downloader._MAX_RETRIES", 4)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_transient_failure_exhausts_all_attempts(self, mock_ydl_cls, message):
+        mock_ydl = self._mock_ydl(mock_ydl_cls, message)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(DownloadError):
+                download_and_convert("https://youtube.com/watch?v=x", "x", tmp_dir)
+        assert mock_ydl.download.call_count == 4, (
+            f"gave up early on a transient failure: {message!r}"
+        )
+
+    @patch("downloader._MAX_RETRIES", 4)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_partial_files_are_still_cleaned_up_on_a_permanent_failure(self, mock_ydl_cls):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_id = "permclean"
+
+            def failing_download(urls):
+                for ext in ["webm", "mp3"]:
+                    with open(os.path.join(tmp_dir, f"{video_id}.{ext}"), "wb") as f:
+                        f.write(b"partial")
+                raise Exception("ERROR: [youtube] x: Video unavailable")
+
+            mock_ydl = MagicMock()
+            mock_ydl.download.side_effect = failing_download
+            mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+            mock_ydl.__exit__ = MagicMock(return_value=False)
+            mock_ydl_cls.return_value = mock_ydl
+
+            with pytest.raises(DownloadError):
+                download_and_convert("https://youtube.com/watch?v=x", video_id, tmp_dir)
+
+            for ext in ["webm", "mp3"]:
+                assert not os.path.exists(os.path.join(tmp_dir, f"{video_id}.{ext}"))

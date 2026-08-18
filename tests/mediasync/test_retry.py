@@ -20,14 +20,14 @@ class TestRetryOnError:
 
     def test_succeeds_after_retries(self):
         fn = MagicMock(side_effect=[ValueError("fail"), ValueError("fail"), "ok"])
-        with patch("mediasync.retry.time.sleep"):
+        with patch("retry.time.sleep"):
             result = retry_on_error(fn, max_retries=3, description="test")
         assert result == "ok"
         assert fn.call_count == 3
 
     def test_raises_after_exhausting_retries(self):
         fn = MagicMock(side_effect=ValueError("always fails"))
-        with patch("mediasync.retry.time.sleep"):
+        with patch("retry.time.sleep"):
             with pytest.raises(ValueError, match="always fails"):
                 retry_on_error(fn, max_retries=2, description="test")
         assert fn.call_count == 3  # initial + 2 retries
@@ -51,7 +51,7 @@ class TestRetryOnError:
 
     def test_exponential_backoff_delays(self):
         fn = MagicMock(side_effect=[ValueError("1"), ValueError("2"), "ok"])
-        with patch("mediasync.retry.time.sleep") as mock_sleep:
+        with patch("retry.time.sleep") as mock_sleep:
             retry_on_error(fn, max_retries=3, base_delay=1.0, description="test")
         # First retry: 1.0 * 2^0 = 1.0, second: 1.0 * 2^1 = 2.0
         assert mock_sleep.call_count == 2
@@ -60,7 +60,7 @@ class TestRetryOnError:
 
     def test_delay_capped_at_max(self):
         fn = MagicMock(side_effect=[ValueError("1"), ValueError("2"), ValueError("3"), "ok"])
-        with patch("mediasync.retry.time.sleep") as mock_sleep:
+        with patch("retry.time.sleep") as mock_sleep:
             retry_on_error(fn, max_retries=3, base_delay=10.0, max_delay=15.0, description="test")
         # Delays: min(10*2^0,15)=10, min(10*2^1,15)=15, min(10*2^2,15)=15
         assert mock_sleep.call_args_list[0][0][0] == 10.0

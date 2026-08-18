@@ -16,11 +16,12 @@ import yt_dlp
 from tenacity import (
     RetryError,
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
 
+from retry import is_transient_download_error
 from utils import env_int
 from ytdlp_cookies import inject_cookies
 from ytdlp_runtime import inject_remote_components
@@ -66,6 +67,14 @@ def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -
     Wrapped with tenacity so that network errors, rate-limit responses,
     and other transient exceptions are retried with exponential back-off.
 
+    Only *transient* failures are retried. This used to retry every exception,
+    so a permanently unavailable video (deleted, private, members-only,
+    geo-blocked) still consumed all ``DOWNLOAD_MAX_RETRIES`` attempts and every
+    back-off wait between them before failing with the same error it got the
+    first time. The classification is shared with MediaSync via
+    :func:`retry.is_transient_download_error`, so the two download paths cannot
+    disagree about what is worth another attempt.
+
     Args:
         ydl_opts: yt_dlp options dict.
         video_url: YouTube video URL.
@@ -73,11 +82,12 @@ def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -
         video_id: Video ID (used for cleanup on failure).
 
     Raises:
-        DownloadError: After all retries are exhausted.
+        DownloadError: After all retries are exhausted, or immediately for a
+            failure that no retry could fix.
     """
 
     @retry(
-        retry=retry_if_exception_type(Exception),
+        retry=retry_if_exception(is_transient_download_error),
         stop=stop_after_attempt(_MAX_RETRIES),
         wait=wait_exponential(multiplier=1, min=_RETRY_WAIT_MIN, max=_RETRY_WAIT_MAX),
         reraise=False,

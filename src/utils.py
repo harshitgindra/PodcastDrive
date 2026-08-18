@@ -3,11 +3,12 @@
 import logging
 import os
 import re
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TypeVar
 from urllib.parse import parse_qs, urlparse
+
+from retry import RETRYABLE_AWS_CODES, is_transient_aws_error, retry_call
 
 _logger = logging.getLogger(__name__)
 
@@ -15,23 +16,9 @@ _logger = logging.getLogger(__name__)
 # AWS retry helper
 # ---------------------------------------------------------------------------
 
-#: Error codes that indicate a transient AWS service issue and are safe to retry.
-_RETRYABLE_CODES: frozenset[str] = frozenset(
-    {
-        "Throttling",
-        "ThrottlingException",
-        "RequestLimitExceeded",
-        "RequestThrottled",
-        "ProvisionedThroughputExceededException",
-        "TransactionInProgressException",
-        "ServiceUnavailable",
-        "InternalServerError",
-        "InternalFailure",
-        "RequestExpired",
-        "SlowDown",
-        "EC2ThrottledException",
-    }
-)
+#: Backwards-compatible alias. The canonical set now lives in ``retry`` so the
+#: MediaSync and podcast paths cannot disagree about what is transient.
+_RETRYABLE_CODES = RETRYABLE_AWS_CODES
 
 _T = TypeVar("_T")
 
@@ -46,7 +33,11 @@ def retry_aws_call(
 ) -> _T:
     """Call *fn* and retry on transient AWS / network errors with exponential back-off.
 
-    Uses full-jitter exponential back-off: ``sleep = min(max_delay, base_delay * 2**attempt)``.
+    Thin wrapper over :func:`retry.retry_call` with the AWS predicate and
+    jitter enabled; kept as-is because ~23 call sites depend on this signature.
+    Jitter matters here because several of those sites run inside a
+    ``ThreadPoolExecutor``, and un-jittered back-off would resynchronise the
+    workers into the same throttling wall on every attempt.
 
     Args:
         fn:           Zero-argument callable that performs the AWS call.
@@ -61,36 +52,16 @@ def retry_aws_call(
     Raises:
         The last exception if all attempts are exhausted.
     """
-    import random
-
-    from botocore.exceptions import ClientError, EndpointResolutionError
-
-    last_exc: Exception | None = None
-    for attempt in range(max_attempts):
-        try:
-            return fn()
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code not in _RETRYABLE_CODES:
-                raise  # non-transient — propagate immediately
-            last_exc = exc
-        except (ConnectionError, OSError, EndpointResolutionError) as exc:
-            last_exc = exc
-
-        delay = min(max_delay, base_delay * (2**attempt))
-        jitter = random.uniform(0, delay * 0.5)
-        sleep_time = min(max_delay, delay + jitter)
-        _logger.warning(
-            "Transient AWS error on %s (attempt %d/%d): %s — retrying in %.1fs",
-            label or getattr(fn, "__name__", repr(fn)),
-            attempt + 1,
-            max_attempts,
-            last_exc,
-            sleep_time,
-        )
-        time.sleep(sleep_time)
-
-    raise last_exc  # type: ignore[misc]
+    return retry_call(
+        fn,
+        attempts=max_attempts,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        jitter=True,
+        retryable=is_transient_aws_error,
+        label=label,
+        logger=_logger,
+    )
 
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9@._-]+$")
