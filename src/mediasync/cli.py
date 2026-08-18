@@ -16,6 +16,8 @@ import aws
 from mediasync.config import Config
 from mediasync.pipeline import RunStats, run
 
+logger = logging.getLogger(__name__)
+
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for MediaSync CLI."""
@@ -204,12 +206,29 @@ def _dry_run(config: Config) -> int:
 
 
 def _notify(config: Config, stats: RunStats, elapsed_secs: int) -> None:
-    """Send completion notification via Herald (if enabled)."""
+    """Send completion notification via Herald (if enabled).
+
+    Never raises: a missing summary must not fail an otherwise successful run.  It
+    does, however, say so.  Every failure mode here used to be silent, including the
+    one that actually bites: Herald's ``listen.services.<svc>.env.PATH`` *replaces*
+    the child's PATH rather than prepending to it, so if ~/.local/bin is missing
+    from it, ``which("herald")`` returns None and every single summary is dropped
+    with no trace.
+    """
+    import shutil
+    import subprocess
+
     if not config.herald_enabled:
         return
 
-    import shutil
-    if not shutil.which("herald"):
+    herald = shutil.which("herald")
+    if not herald:
+        logger.warning(
+            "herald binary not found on PATH — run summary not sent. "
+            "If this ran under the Herald listener, check that its "
+            "listen.services.<svc>.env.PATH includes the directory herald is "
+            "installed in (it replaces PATH, it does not extend it)."
+        )
         return
 
     mins, secs = divmod(elapsed_secs, 60)
@@ -222,16 +241,27 @@ def _notify(config: Config, stats: RunStats, elapsed_secs: int) -> None:
     ]
     message = "\n".join(lines)
 
-    import subprocess
-    cmd = ["herald", "notify", "--parse-mode", "plain", "--strict", "--message", message]
+    cmd = [herald, "notify", "--parse-mode", "plain", "--strict", "--message", message]
     job_id = config.herald_job_id
     if job_id:
+        # Routes the reply back to the Telegram chat that started this job.
         cmd += ["--job", job_id]
+    else:
+        logger.debug("HERALD_JOB_ID not set — summary goes to the default recipient")
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except Exception:
-        pass
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        logger.warning("Could not run herald notify: %s", exc)
+        return
+
+    # --strict makes herald exit non-zero when nothing was actually delivered.
+    if proc.returncode != 0:
+        logger.warning(
+            "herald notify failed (exit %d): %s",
+            proc.returncode,
+            (proc.stderr or proc.stdout or "").strip()[:500],
+        )
 
 
 if __name__ == "__main__":
