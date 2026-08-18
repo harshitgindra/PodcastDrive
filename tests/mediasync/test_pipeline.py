@@ -17,6 +17,13 @@ from mediasync.pipeline import (
 from mediasync.storage import StorageError
 
 
+@pytest.fixture(autouse=True)
+def _skip_reconciliation():
+    """Skip storage reconciliation in pipeline tests (tested separately)."""
+    with patch("mediasync.pipeline._reconcile_with_storage", return_value=None):
+        yield
+
+
 @pytest.fixture
 def config():
     return Config(

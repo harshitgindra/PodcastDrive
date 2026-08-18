@@ -19,9 +19,11 @@ from mediasync.downloader import (
     DurationExceededError,
     cleanup_results,
     download,
+    get_metadata,
+    get_playlist_metadata,
     is_playlist,
 )
-from mediasync.notion_client import MediaEntry, NotionClient, Status
+from mediasync.notion_client import Format, MediaEntry, NotionClient, Status
 from mediasync.playlist import generate_m3u, make_relative_keys
 from mediasync.playlist_sync import sync_playlists
 from mediasync.standing_playlists import generate_standing_playlists
@@ -126,6 +128,66 @@ def _is_duplicate(notion: NotionClient, entry: MediaEntry) -> bool:
     return any(d.url == entry.url for d in done)
 
 
+def _reconcile_with_storage(
+    url: str,
+    entry: MediaEntry,
+    storage: StorageBackend,
+    config: Config,
+) -> tuple[list[str], int] | None:
+    """Check if expected files already exist on storage.
+
+    Fetches metadata from yt-dlp (no download) to determine the expected
+    remote paths, then checks storage. Skips playlists (too many API calls).
+
+    Returns:
+        (file_keys, total_duration) if all files exist, None otherwise.
+    """
+    if is_playlist(url):
+        return None  # Playlist reconciliation would be too many file_exists calls
+
+    try:
+        meta = get_metadata(url)
+    except DownloadError:
+        return None  # Can't reconcile without metadata; proceed to download
+
+    title = _sanitize_title(meta.get("title", "untitled"))
+    artist = meta.get("uploader") or meta.get("channel") or "Unknown"
+    duration = int(meta.get("duration") or 0)
+
+    formats_to_check: list[str] = []
+    if entry.format in (Format.AUDIO, Format.BOTH):
+        formats_to_check.append("audio")
+    if entry.format in (Format.VIDEO, Format.BOTH):
+        formats_to_check.append("video")
+
+    file_keys: list[str] = []
+    for fmt in formats_to_check:
+        ext = "m4a" if fmt == "audio" else "mp4"
+        fmt_folder = fmt
+        if config.group_by_channel and artist and artist != "Unknown":
+            channel = _sanitize_folder_name(artist)
+            remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}/{channel}"
+        else:
+            remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
+        remote_path = f"{remote_folder}/{title}.{ext}"
+
+        if not storage.file_exists(remote_path):
+            return None  # At least one file missing; need to download
+        file_keys.append(remote_path)
+
+    return file_keys, duration
+
+
+def _sanitize_title(title: str) -> str:
+    """Remove filesystem-unsafe characters from title (mirrors downloader logic)."""
+    unsafe = '<>:"/\\|?*'
+    result = title
+    for ch in unsafe:
+        result = result.replace(ch, "")
+    result = " ".join(result.split())
+    return result[:200]
+
+
 def _process_entry(
     entry: MediaEntry,
     notion: NotionClient,
@@ -133,9 +195,21 @@ def _process_entry(
     config: Config,
 ) -> bool:
     """Download, tag, upload a single entry. Returns True on success."""
-    notion.update_status(entry.page_id, Status.DOWNLOADING)
-
     url = normalize_url(entry.url)
+
+    # Reconcile: check if files already exist on storage (skip download)
+    reconciled = _reconcile_with_storage(url, entry, storage, config)
+    if reconciled:
+        file_keys, duration = reconciled
+        logger.info("Already on storage, skipping download: %s", entry.url)
+        notion.update_status(
+            entry.page_id, Status.DONE,
+            file_key="; ".join(file_keys),
+            duration=duration,
+        )
+        return True
+
+    notion.update_status(entry.page_id, Status.DOWNLOADING)
 
     try:
         results = download(
