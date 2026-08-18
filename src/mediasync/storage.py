@@ -32,6 +32,10 @@ class StorageBackend(Protocol):
         """Delete a remote file. Idempotent (ignores missing)."""
         ...
 
+    def list_folder(self, remote_folder: str) -> set[str]:
+        """List filenames in a remote folder. Returns set of filenames (not full paths)."""
+        ...
+
 
 def create_storage(config) -> StorageBackend:
     """Factory: build the configured storage backend.

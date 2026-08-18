@@ -22,6 +22,20 @@ from mediasync.retry import is_transient_download_error, retry_on_error
 
 logger = logging.getLogger(__name__)
 
+# Module-level metadata cache: avoids re-fetching metadata for items
+# already checked during reconciliation. Keyed by normalized URL.
+_metadata_cache: dict[str, dict] = {}
+
+
+def cache_metadata(url: str, meta: dict) -> None:
+    """Store metadata in the module-level cache."""
+    _metadata_cache[url] = meta
+
+
+def clear_metadata_cache() -> None:
+    """Clear the metadata cache (for testing)."""
+    _metadata_cache.clear()
+
 
 class DownloadError(Exception):
     """Raised when download or conversion fails."""
@@ -51,12 +65,17 @@ def is_playlist(url: str) -> bool:
 def get_metadata(url: str) -> dict:
     """Fetch video metadata without downloading (single video only).
 
+    Checks the module-level cache first; falls back to yt-dlp.
+
     Returns:
         Parsed JSON metadata dict from yt-dlp.
 
     Raises:
         DownloadError: If metadata extraction fails.
     """
+    if url in _metadata_cache:
+        return _metadata_cache[url]
+
     cmd = [
         "yt-dlp",
         "--dump-json",
@@ -70,7 +89,9 @@ def get_metadata(url: str) -> dict:
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise DownloadError(f"Metadata fetch failed: {result.stderr[:500]}")
-    return json.loads(result.stdout)
+    meta = json.loads(result.stdout)
+    _metadata_cache[url] = meta
+    return meta
 
 
 def get_playlist_metadata(url: str) -> list[dict]:
@@ -104,6 +125,47 @@ def get_playlist_metadata(url: str) -> list[dict]:
         raise DownloadError("Playlist is empty or unavailable")
     return entries
 
+
+
+
+def get_full_playlist_metadata(url: str) -> list[dict]:
+    """Fetch FULL metadata for all items in a playlist (single yt-dlp call).
+
+    Unlike get_playlist_metadata (which uses --flat-playlist and only returns
+    id/title), this resolves each video fully — returning uploader, duration,
+    channel, thumbnail, etc. Slower (~30-60s for 100 items) but avoids
+    per-item metadata fetches.
+
+    Returns:
+        List of full metadata dicts (one per video).
+
+    Raises:
+        DownloadError: If metadata extraction fails.
+    """
+    cmd = [
+        "yt-dlp",
+        "--dump-json",
+        "--no-download",
+    ]
+    cookies = _cookies_path()
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+    cmd.append(url)
+    # Full resolution is slower; allow up to 10 minutes for large playlists
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        raise DownloadError(f"Full playlist metadata fetch failed: {result.stderr[:500]}")
+
+    entries = []
+    for line in result.stdout.strip().splitlines():
+        if line.strip():
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    if not entries:
+        raise DownloadError("Playlist is empty or unavailable")
+    return entries
 
 def download(
     url: str,

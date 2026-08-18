@@ -174,6 +174,40 @@ class OneDriveClient:
         except Exception:
             return False
 
+    def list_folder(self, remote_folder: str) -> set[str]:
+        """List filenames in a remote folder on OneDrive.
+
+        Returns:
+            Set of filenames (not full paths) in the folder.
+            Returns empty set if the folder doesn't exist or on error.
+        """
+        encoded_path = urllib.parse.quote(remote_folder)
+        url: str | None = (
+            f"{GRAPH_API}/me/drive/root:/{encoded_path}:/children"
+            "?$select=name&$top=1000"
+        )
+        filenames: set[str] = set()
+
+        while url:
+            req = urllib.request.Request(url)
+            req.add_header("Authorization", f"Bearer {self._access_token}")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read())
+                    for item in data.get("value", []):
+                        if "folder" not in item:  # Skip subfolders
+                            filenames.add(item["name"])
+                    url = data.get("@odata.nextLink")
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401:
+                    self._access_token = self._refresh_access_token()
+                    return self.list_folder(remote_folder)
+                return filenames
+            except Exception:
+                return filenames
+
+        return filenames
+
     def upload(self, local_path: Path, remote_folder: str, filename: str) -> str:
         """Upload a file to OneDrive.
 

@@ -50,6 +50,28 @@ class S3Client:
                 return False
             return False
 
+    def list_folder(self, remote_folder: str) -> set[str]:
+        """List filenames (object name suffixes) in a remote S3 prefix.
+
+        Returns:
+            Set of filenames (last path component) under the prefix.
+            Returns empty set on error.
+        """
+        prefix = remote_folder.rstrip('/') + '/'
+        filenames: set[str] = set()
+        try:
+            paginator = self._client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    # Extract filename (last component after prefix)
+                    name = key[len(prefix):]
+                    if name and '/' not in name:  # Skip nested objects
+                        filenames.add(name)
+        except ClientError:
+            pass
+        return filenames
+
     def upload(self, local_path: Path, remote_folder: str, filename: str) -> str:
         """Upload a file to S3.
 

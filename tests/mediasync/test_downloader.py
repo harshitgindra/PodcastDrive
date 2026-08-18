@@ -16,10 +16,19 @@ from mediasync.downloader import (
     _find_output,
     _sanitize_title,
     cleanup_results,
+    clear_metadata_cache,
     download,
     get_metadata,
 )
 from mediasync.notion_client import Format
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    """Ensure metadata cache doesn't leak between tests."""
+    clear_metadata_cache()
+    yield
+    clear_metadata_cache()
 
 
 class TestGetMetadata:

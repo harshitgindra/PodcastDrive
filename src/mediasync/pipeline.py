@@ -13,12 +13,16 @@ from dataclasses import dataclass
 from mediasync.artwork import download_thumbnail
 from mediasync.config import Config
 from mediasync.url_handler import normalize_url
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from mediasync.downloader import (
     DownloadError,
     DownloadResult,
     DurationExceededError,
+    cache_metadata,
     cleanup_results,
     download,
+    get_full_playlist_metadata,
     get_metadata,
     get_playlist_metadata,
     is_playlist,
@@ -187,19 +191,21 @@ def _reconcile_playlist_with_storage(
 ) -> tuple[list[str], int] | None:
     """Check if all playlist items already exist on storage.
 
-    Fetches flat playlist metadata to enumerate items, then full metadata
-    per item to determine exact remote paths. If ALL items exist on storage,
-    returns the full file_keys list; otherwise returns None (download needed).
+    Optimizations over naive per-item approach:
+    1. Single yt-dlp call for full metadata (avoids N subprocess spawns)
+    2. Folder listing (1-2 API calls) instead of per-file existence checks
+    3. Caches metadata so subsequent download skips re-fetching
+    4. Falls back to parallel per-item metadata if full extraction fails
+
+    Returns:
+        (file_keys, total_duration) if ALL items exist, None otherwise.
     """
-    try:
-        playlist_items = get_playlist_metadata(url)
-    except DownloadError:
+    # Resolve full metadata for all playlist items
+    items_meta = _fetch_playlist_items_metadata(url)
+    if items_meta is None:
         return None
 
-    if not playlist_items:
-        return None
-
-    logger.info("Reconciling playlist (%d items) against storage...", len(playlist_items))
+    logger.info("Reconciling playlist (%d items) against storage...", len(items_meta))
 
     formats_to_check: list[str] = []
     if entry.format in (Format.AUDIO, Format.BOTH):
@@ -207,23 +213,13 @@ def _reconcile_playlist_with_storage(
     if entry.format in (Format.VIDEO, Format.BOTH):
         formats_to_check.append("video")
 
+    # Pre-fetch folder listings (1 API call per unique folder vs N file_exists calls)
+    folder_contents: dict[str, set[str]] = {}
+
     file_keys: list[str] = []
     total_duration = 0
 
-    for idx, item in enumerate(playlist_items, 1):
-        video_url = item.get("url") or item.get("webpage_url", "")
-        if not video_url:
-            video_id = item.get("id", "")
-            if not video_id:
-                return None  # Can't identify item; fall through to download
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-        try:
-            meta = get_metadata(video_url)
-        except DownloadError:
-            logger.debug("Reconciliation failed at item %d: metadata error", idx)
-            return None
-
+    for idx, meta in enumerate(items_meta, 1):
         title = _sanitize_title(meta.get("title", "untitled"))
         artist = meta.get("uploader") or meta.get("channel") or "Unknown"
         duration = int(meta.get("duration") or 0)
@@ -237,21 +233,102 @@ def _reconcile_playlist_with_storage(
                 remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}/{channel}"
             else:
                 remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
-            remote_path = f"{remote_folder}/{title}.{ext}"
 
-            if not storage.file_exists(remote_path):
+            # Lazy-load folder listing
+            if remote_folder not in folder_contents:
+                try:
+                    folder_contents[remote_folder] = storage.list_folder(remote_folder)
+                except Exception:
+                    folder_contents[remote_folder] = set()
+
+            filename = f"{title}.{ext}"
+            if filename not in folder_contents[remote_folder]:
                 logger.info(
                     "Playlist item %d/%d not on storage: %s",
-                    idx, len(playlist_items), title,
+                    idx, len(items_meta), title,
                 )
-                return None  # At least one item missing; need to download
-            file_keys.append(remote_path)
+                return None  # At least one item missing; need full download
+            file_keys.append(f"{remote_folder}/{filename}")
 
-        if idx % 10 == 0:
-            logger.info("Reconciliation progress: %d/%d items verified", idx, len(playlist_items))
+        if idx % 25 == 0:
+            logger.info("Reconciliation progress: %d/%d items verified", idx, len(items_meta))
 
-    logger.info("All %d playlist items already on storage", len(playlist_items))
+    logger.info("All %d playlist items already on storage", len(items_meta))
     return file_keys, total_duration
+
+
+def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
+    """Get full metadata for all playlist items, with caching.
+
+    Strategy:
+    1. Try single yt-dlp call (get_full_playlist_metadata) — fastest for large playlists
+    2. Fall back to flat metadata + parallel per-item fetches if full extraction fails
+
+    Caches each item's metadata for reuse during download.
+    """
+    # Strategy 1: single yt-dlp invocation for full metadata
+    try:
+        items = get_full_playlist_metadata(url)
+        # Cache each item for potential later download
+        for item in items:
+            video_url = item.get("webpage_url") or item.get("url", "")
+            if video_url:
+                cache_metadata(video_url, item)
+        return items
+    except DownloadError:
+        logger.debug("Full playlist metadata failed, falling back to parallel per-item")
+
+    # Strategy 2: flat metadata (fast) + parallel per-item resolution
+    try:
+        flat_items = get_playlist_metadata(url)
+    except DownloadError:
+        return None
+
+    if not flat_items:
+        return None
+
+    # Build video URLs from flat metadata
+    video_urls: list[str] = []
+    for item in flat_items:
+        video_url = item.get("url") or item.get("webpage_url", "")
+        if not video_url:
+            video_id = item.get("id", "")
+            if not video_id:
+                return None
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+        video_urls.append(video_url)
+
+    # Parallel metadata fetches (8 workers: balances speed vs rate limits)
+    results_meta: list[dict | None] = [None] * len(video_urls)
+
+    def _fetch_one(idx_url: tuple[int, str]) -> tuple[int, dict]:
+        idx, vurl = idx_url
+        meta = get_metadata(vurl)  # Uses cache if available
+        return idx, meta
+
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(_fetch_one, (i, u)): i
+                for i, u in enumerate(video_urls)
+            }
+            for future in as_completed(futures):
+                try:
+                    idx, meta = future.result()
+                    results_meta[idx] = meta
+                    # Cache for later download
+                    cache_metadata(video_urls[idx], meta)
+                except DownloadError:
+                    # One item failed; abort reconciliation
+                    return None
+    except Exception:
+        return None
+
+    # Filter out any None entries (shouldn't happen if we return None above)
+    final = [m for m in results_meta if m is not None]
+    if len(final) != len(video_urls):
+        return None
+    return final
 
 
 def _sanitize_title(title: str) -> str:
