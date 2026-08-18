@@ -158,7 +158,57 @@ class TestReconcileWithStorage:
 
         assert result is None
 
-    def test_skips_playlist_urls(self, audio_entry, config):
+    @patch("mediasync.pipeline.get_playlist_metadata")
+    @patch("mediasync.pipeline.get_metadata")
+    def test_reconciles_playlist_all_exist(self, mock_meta, mock_playlist_meta, audio_entry, config):
+        """Playlist reconciliation returns file_keys when all items exist on storage."""
+        mock_playlist_meta.return_value = [
+            {"id": "vid1", "title": "Song 1"},
+            {"id": "vid2", "title": "Song 2"},
+        ]
+        mock_meta.side_effect = [
+            {"title": "Song 1", "uploader": "Artist A", "duration": 180},
+            {"title": "Song 2", "uploader": "Artist B", "duration": 240},
+        ]
+        mock_storage = MagicMock()
+        mock_storage.file_exists.return_value = True
+
+        result = _reconcile_with_storage(
+            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
+        )
+
+        assert result is not None
+        file_keys, duration = result
+        assert len(file_keys) == 2
+        assert duration == 420
+
+    @patch("mediasync.pipeline.get_playlist_metadata")
+    @patch("mediasync.pipeline.get_metadata")
+    def test_reconciles_playlist_item_missing(self, mock_meta, mock_playlist_meta, audio_entry, config):
+        """Playlist reconciliation returns None when an item is missing from storage."""
+        mock_playlist_meta.return_value = [
+            {"id": "vid1", "title": "Song 1"},
+            {"id": "vid2", "title": "Song 2"},
+        ]
+        mock_meta.side_effect = [
+            {"title": "Song 1", "uploader": "Artist A", "duration": 180},
+            {"title": "Song 2", "uploader": "Artist B", "duration": 240},
+        ]
+        mock_storage = MagicMock()
+        # First item exists, second does not
+        mock_storage.file_exists.side_effect = [True, False]
+
+        result = _reconcile_with_storage(
+            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
+        )
+
+        assert result is None
+
+    @patch("mediasync.pipeline.get_playlist_metadata")
+    def test_reconciles_playlist_metadata_failure(self, mock_playlist_meta, audio_entry, config):
+        """Playlist reconciliation returns None when playlist metadata fetch fails."""
+        from mediasync.downloader import DownloadError
+        mock_playlist_meta.side_effect = DownloadError("unavailable")
         mock_storage = MagicMock()
 
         result = _reconcile_with_storage(
@@ -166,7 +216,6 @@ class TestReconcileWithStorage:
         )
 
         assert result is None
-        mock_storage.file_exists.assert_not_called()
 
     @patch("mediasync.pipeline.get_metadata")
     def test_returns_none_on_metadata_failure(self, mock_meta, audio_entry, config):

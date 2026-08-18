@@ -137,13 +137,14 @@ def _reconcile_with_storage(
     """Check if expected files already exist on storage.
 
     Fetches metadata from yt-dlp (no download) to determine the expected
-    remote paths, then checks storage. Skips playlists (too many API calls).
+    remote paths, then checks storage. For playlists, checks each item
+    individually (fetches full metadata per item).
 
     Returns:
         (file_keys, total_duration) if all files exist, None otherwise.
     """
     if is_playlist(url):
-        return None  # Playlist reconciliation would be too many file_exists calls
+        return _reconcile_playlist_with_storage(url, entry, storage, config)
 
     try:
         meta = get_metadata(url)
@@ -176,6 +177,81 @@ def _reconcile_with_storage(
         file_keys.append(remote_path)
 
     return file_keys, duration
+
+
+def _reconcile_playlist_with_storage(
+    url: str,
+    entry: MediaEntry,
+    storage: StorageBackend,
+    config: Config,
+) -> tuple[list[str], int] | None:
+    """Check if all playlist items already exist on storage.
+
+    Fetches flat playlist metadata to enumerate items, then full metadata
+    per item to determine exact remote paths. If ALL items exist on storage,
+    returns the full file_keys list; otherwise returns None (download needed).
+    """
+    try:
+        playlist_items = get_playlist_metadata(url)
+    except DownloadError:
+        return None
+
+    if not playlist_items:
+        return None
+
+    logger.info("Reconciling playlist (%d items) against storage...", len(playlist_items))
+
+    formats_to_check: list[str] = []
+    if entry.format in (Format.AUDIO, Format.BOTH):
+        formats_to_check.append("audio")
+    if entry.format in (Format.VIDEO, Format.BOTH):
+        formats_to_check.append("video")
+
+    file_keys: list[str] = []
+    total_duration = 0
+
+    for idx, item in enumerate(playlist_items, 1):
+        video_url = item.get("url") or item.get("webpage_url", "")
+        if not video_url:
+            video_id = item.get("id", "")
+            if not video_id:
+                return None  # Can't identify item; fall through to download
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        try:
+            meta = get_metadata(video_url)
+        except DownloadError:
+            logger.debug("Reconciliation failed at item %d: metadata error", idx)
+            return None
+
+        title = _sanitize_title(meta.get("title", "untitled"))
+        artist = meta.get("uploader") or meta.get("channel") or "Unknown"
+        duration = int(meta.get("duration") or 0)
+        total_duration += duration
+
+        for fmt in formats_to_check:
+            ext = "m4a" if fmt == "audio" else "mp4"
+            fmt_folder = fmt
+            if config.group_by_channel and artist and artist != "Unknown":
+                channel = _sanitize_folder_name(artist)
+                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}/{channel}"
+            else:
+                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
+            remote_path = f"{remote_folder}/{title}.{ext}"
+
+            if not storage.file_exists(remote_path):
+                logger.info(
+                    "Playlist item %d/%d not on storage: %s",
+                    idx, len(playlist_items), title,
+                )
+                return None  # At least one item missing; need to download
+            file_keys.append(remote_path)
+
+        if idx % 10 == 0:
+            logger.info("Reconciliation progress: %d/%d items verified", idx, len(playlist_items))
+
+    logger.info("All %d playlist items already on storage", len(playlist_items))
+    return file_keys, total_duration
 
 
 def _sanitize_title(title: str) -> str:
