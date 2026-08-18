@@ -104,24 +104,98 @@ class TestResumability:
         mock_proc.assert_called_once()
 
 
-class TestGetPendingPriorityFallback:
-    """get_pending falls back to created_time sort if Priority property does not exist."""
+class TestGetPendingPrioritySort:
+    """get_pending only sends the Priority sort when the database has that column.
 
-    def test_fallback_on_first_query_failure(self):
+    It used to send it unconditionally and retry after Notion answered 400, so a
+    database without the (optional) Priority column logged an ERROR and made a
+    wasted API call on every single run.
+    """
+
+    @staticmethod
+    def _schema(properties):
+        return {"properties": properties}
+
+    def test_priority_sort_omitted_when_column_absent(self):
         client = NotionClient("token", "db-id")
         response = {"results": [], "has_more": False, "next_cursor": None}
 
-        with patch.object(client, "_post", side_effect=[None, response]) as mock_post:
+        with (
+            patch.object(client, "_get", return_value=self._schema({"Status": {"type": "select"}})) as mock_get,
+            patch.object(client, "_post", return_value=response) as mock_post,
+        ):
             entries = client.get_pending()
 
         assert entries == []
-        assert mock_post.call_count == 2
-        second_payload = mock_post.call_args_list[1][0][1]
-        sorts = second_payload["sorts"]
-        assert len(sorts) == 1
-        assert sorts[0] == {"timestamp": "created_time", "direction": "ascending"}
+        # One query, not a failed one plus a retry.
+        assert mock_post.call_count == 1
+        assert mock_get.call_count == 1
+        assert mock_post.call_args[0][1]["sorts"] == [
+            {"timestamp": "created_time", "direction": "ascending"}
+        ]
 
-    def test_no_fallback_when_first_query_succeeds(self):
+    def test_priority_sort_sent_when_column_present(self):
+        client = NotionClient("token", "db-id")
+        response = {"results": [], "has_more": False, "next_cursor": None}
+
+        with (
+            patch.object(client, "_get", return_value=self._schema({"Priority": {"type": "number"}})),
+            patch.object(client, "_post", return_value=response) as mock_post,
+        ):
+            client.get_pending()
+
+        assert mock_post.call_args[0][1]["sorts"] == [
+            {"property": "Priority", "direction": "ascending"},
+            {"timestamp": "created_time", "direction": "ascending"},
+        ]
+
+    def test_priority_sort_omitted_when_column_is_not_a_number(self):
+        """A Priority column of the wrong type is not sortable the way we ask, so
+        sending the sort would 400 exactly as before."""
+        client = NotionClient("token", "db-id")
+        response = {"results": [], "has_more": False, "next_cursor": None}
+
+        with (
+            patch.object(client, "_get", return_value=self._schema({"Priority": {"type": "rich_text"}})),
+            patch.object(client, "_post", return_value=response) as mock_post,
+        ):
+            client.get_pending()
+
+        assert mock_post.call_args[0][1]["sorts"] == [
+            {"timestamp": "created_time", "direction": "ascending"}
+        ]
+
+    def test_schema_read_once_per_client(self):
+        """The schema cannot change mid-run, and a run calls get_pending repeatedly."""
+        client = NotionClient("token", "db-id")
+        response = {"results": [], "has_more": False, "next_cursor": None}
+
+        with (
+            patch.object(client, "_get", return_value=self._schema({"Priority": {"type": "number"}})) as mock_get,
+            patch.object(client, "_post", return_value=response),
+        ):
+            client.get_pending()
+            client.get_pending()
+
+        assert mock_get.call_count == 1
+
+    def test_unreadable_schema_still_queries(self):
+        """Losing the schema read must cost ordering, never the whole query."""
+        client = NotionClient("token", "db-id")
+        response = {"results": [], "has_more": False, "next_cursor": None}
+
+        with (
+            patch.object(client, "_get", return_value=None),
+            patch.object(client, "_post", return_value=response) as mock_post,
+        ):
+            client.get_pending()
+
+        assert mock_post.call_count == 1
+        assert mock_post.call_args[0][1]["sorts"] == [
+            {"timestamp": "created_time", "direction": "ascending"}
+        ]
+
+    def test_entries_are_parsed(self):
         client = NotionClient("token", "db-id")
         page = {
             "id": "page-1",
@@ -136,7 +210,10 @@ class TestGetPendingPriorityFallback:
         }
         response = {"results": [page], "has_more": False, "next_cursor": None}
 
-        with patch.object(client, "_post", return_value=response) as mock_post:
+        with (
+            patch.object(client, "_get", return_value={"properties": {}}),
+            patch.object(client, "_post", return_value=response) as mock_post,
+        ):
             entries = client.get_pending()
 
         assert len(entries) == 1

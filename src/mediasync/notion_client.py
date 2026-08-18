@@ -75,12 +75,20 @@ class NotionClient:
             "Content-Type": "application/json",
         }
         self._ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        # Resolved lazily by _has_priority_column(); None means "not looked up yet".
+        self._priority_sortable: bool | None = None
 
     def get_pending(self) -> list[MediaEntry]:
         """Fetch rows with Status=pending (or empty) and Delete=false.
 
-        Sort order: Priority ascending (nulls last), then created_time ascending.
-        Falls back to created_time only if Priority property doesn't exist.
+        Sort order: Priority ascending when the database actually has a Priority
+        number column, then created_time ascending.
+
+        Priority is an optional column (see the README).  This used to be handled
+        by always sending the sort and retrying without it when Notion answered
+        400 — which meant every run on a database without the column logged an
+        ERROR and burned a wasted API call.  We now read the schema once per
+        client and only send a sort Notion will accept.
         """
         filter_obj = {
             "and": [
@@ -92,21 +100,26 @@ class NotionClient:
                 {"property": "Delete", "checkbox": {"equals": False}},
             ]
         }
-        result = self._query(
-            filter_obj=filter_obj,
-            sorts=[
-                {"property": "Priority", "direction": "ascending"},
-                {"timestamp": "created_time", "direction": "ascending"},
-            ],
-        )
-        if result is not None:
-            return result
-        # Priority property may not exist; retry without it
-        logger.info("Retrying get_pending without Priority sort")
-        return self._query(
-            filter_obj=filter_obj,
-            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
-        ) or []
+        sorts: list[dict[str, str]] = []
+        if self._has_priority_column():
+            sorts.append({"property": "Priority", "direction": "ascending"})
+        sorts.append({"timestamp": "created_time", "direction": "ascending"})
+        return self._query(filter_obj=filter_obj, sorts=sorts) or []
+
+    def _has_priority_column(self) -> bool:
+        """True when the database has a sortable Priority number column.
+
+        Cached for the client's lifetime: the schema cannot change mid-run, and a
+        run does several get_pending() calls.  On any failure to read the schema we
+        answer False, which costs correct ordering but never breaks the query.
+        """
+        if self._priority_sortable is None:
+            schema = self._get(f"{NOTION_API}/databases/{self._db_id}")
+            prop = (schema or {}).get("properties", {}).get("Priority", {})
+            self._priority_sortable = prop.get("type") == "number"
+            if not self._priority_sortable:
+                logger.debug("No Priority number column on this database — sorting by created_time only")
+        return self._priority_sortable
 
     def get_deletions(self) -> list[MediaEntry]:
         """Fetch rows marked for deletion that have been processed."""
@@ -326,6 +339,16 @@ class NotionClient:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             logger.error("Notion POST %s failed: %s", url, exc)
+            return None
+
+    def _get(self, url: str) -> dict[str, Any] | None:
+        """Make a GET request to Notion API."""
+        req = urllib.request.Request(url, headers=self._headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=30, context=self._ssl_ctx) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.warning("Notion GET %s failed: %s", url, exc)
             return None
 
     def _patch(self, url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
