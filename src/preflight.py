@@ -15,6 +15,8 @@ from pathlib import Path
 import boto3
 import botocore.exceptions
 
+import aws
+
 # Imported at module scope on purpose: an installed ``ytdlp_plugins.extractor``
 # package shadows this project's ``extractor`` module once yt-dlp has loaded its
 # plugins, so a late in-function import can resolve to the wrong module (which
@@ -488,6 +490,10 @@ def run_preflight(dry_run: bool = False) -> None:
     Args:
         dry_run: When True, skips write-access checks (S3 put/delete).
     """
+    # Install the shared AWS session before any client is built, so the checks
+    # exercise the same timeouts and retry mode the real run will use.
+    aws.configure()
+
     print(f"\n{_BOLD}{'=' * 52}{_RESET}")
     print(f"{_BOLD}  PodcastDrive — Preflight checks{_RESET}")
     if dry_run:

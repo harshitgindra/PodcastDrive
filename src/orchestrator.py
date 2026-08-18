@@ -351,9 +351,11 @@ def main(argv: list[str] | None = None) -> int:
     the notify payload), while a provider-level failure exits 1 so that
     run.sh marks the run a partial_failure.
     """
+    import aws
     from logger_config import setup_logging
 
     setup_logging()
+    aws.configure()
 
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:

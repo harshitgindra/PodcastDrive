@@ -12,6 +12,7 @@ import logging
 import sys
 import time
 
+import aws
 from mediasync.config import Config
 from mediasync.pipeline import RunStats, run
 
@@ -59,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    aws.configure()
 
     try:
         config = Config.from_env()
