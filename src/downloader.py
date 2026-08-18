@@ -21,8 +21,8 @@ from tenacity import (
     wait_exponential,
 )
 
+import settings
 from retry import is_transient_download_error
-from utils import env_int
 from ytdlp_cookies import inject_cookies
 from ytdlp_runtime import inject_remote_components
 
@@ -54,11 +54,11 @@ def _cleanup_intermediate_files(tmp_dir: str, video_id: str) -> None:
 
 
 #: Number of download attempts before giving up.
-_MAX_RETRIES = env_int("DOWNLOAD_MAX_RETRIES", 3)
+_MAX_RETRIES = settings.get("DOWNLOAD_MAX_RETRIES")
 
 #: Initial wait in seconds between retries (doubles each attempt).
-_RETRY_WAIT_MIN = env_int("DOWNLOAD_RETRY_WAIT_MIN", 5)
-_RETRY_WAIT_MAX = env_int("DOWNLOAD_RETRY_WAIT_MAX", 60)
+_RETRY_WAIT_MIN = settings.get("DOWNLOAD_RETRY_WAIT_MIN")
+_RETRY_WAIT_MAX = settings.get("DOWNLOAD_RETRY_WAIT_MAX")
 
 
 def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -> None:
@@ -142,7 +142,7 @@ def download_and_convert(
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
-                "preferredquality": str(env_int("MP3_QUALITY", 192)),
+                "preferredquality": str(settings.get("MP3_QUALITY")),
             }
         ],
     }

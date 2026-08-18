@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.dom.minidom import parseString
 
+import settings
 from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
 from config_provider import PodcastConfig
 from podcast_downloader import (
@@ -46,7 +47,6 @@ from podcast_downloader import (
 )
 from rss_generator import xml_safe
 from s3_manager import S3Manager
-from utils import env_int
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -142,7 +142,7 @@ def _splice_attempts_for_cdn(cdn: str) -> int:
     """Resolve the max fresh-download splice-retry attempts for a CDN tag."""
     if cdn in CDN_RETRY_OVERRIDES:
         return CDN_RETRY_OVERRIDES[cdn]
-    return env_int("SPLICE_MAX_ATTEMPTS_PER_RUN", 2)
+    return settings.get("SPLICE_MAX_ATTEMPTS_PER_RUN")
 
 
 def _build_podcast_feed_xml(
@@ -187,7 +187,7 @@ def _build_podcast_feed_xml(
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
 
-    suffix = os.environ.get("FEED_TITLE_SUFFIX", " ✂️")
+    suffix = settings.get("FEED_TITLE_SUFFIX")
     ET.SubElement(channel, "title").text = xml_safe(podcast.name + suffix)
     ET.SubElement(channel, "link").text = xml_safe(podcast.url)
     ET.SubElement(channel, "description").text = xml_safe(podcast.description or podcast.name)
@@ -206,7 +206,7 @@ def _build_podcast_feed_xml(
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}author").text = xml_safe(podcast.name)
     ET.SubElement(channel, f"{{{_ITUNES_NS}}}explicit").text = "no"
 
-    subtitle = os.environ.get("FEED_SUBTITLE", "Ad-free · PodcastDrive")
+    subtitle = settings.get("FEED_SUBTITLE")
     if subtitle:
         ET.SubElement(channel, f"{{{_ITUNES_NS}}}subtitle").text = xml_safe(subtitle)
 
@@ -215,7 +215,7 @@ def _build_podcast_feed_xml(
         img_el = ET.SubElement(channel, f"{{{_ITUNES_NS}}}image")
         img_el.set("href", xml_safe(artwork_url))
 
-    ep_ad_suffix = os.environ.get("EPISODE_AD_REMOVED_SUFFIX", " ✂️")
+    ep_ad_suffix = settings.get("EPISODE_AD_REMOVED_SUFFIX")
 
     for ep, ep_id in zip(episodes, episode_ids, strict=True):
         item = ET.SubElement(channel, "item")
@@ -290,20 +290,20 @@ def process_podcast_feed(
     Returns:
         dict with keys: ``slug``, ``new_episodes``, ``skipped``, ``failed``.
     """
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         raise ValueError("S3_BUCKET environment variable must be set")
-    cloudfront_base = os.environ.get("CLOUDFRONT_BASE", "")
+    cloudfront_base = settings.get("CLOUDFRONT_BASE")
     if not cloudfront_base:
         raise ValueError("CLOUDFRONT_BASE environment variable must be set")
 
     max_age_days = podcast.max_age_days
     if max_age_days is None:
-        max_age_days = env_int("MAX_AGE_DAYS", 0) or None
+        max_age_days = settings.get("MAX_AGE_DAYS", default=0) or None
 
     max_episodes = podcast.max_downloads
     if max_episodes is None:
-        max_episodes = env_int("PODCAST_MAX_EPISODES", 5)  # conservative default
+        max_episodes = settings.get("PODCAST_MAX_EPISODES")
 
     slug = _podcast_slug(podcast.name)
     tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{slug}-")
@@ -384,7 +384,7 @@ def process_podcast_feed(
         # Retries are capped at MAX_SPLICE_RETRIES (default 3) to avoid downloading
         # and transcribing a persistently-broken episode on every run indefinitely.
         manifest = s3.load_manifest()
-        _max_splice_retries = env_int("MAX_SPLICE_RETRIES", 3)
+        _max_splice_retries = settings.get("MAX_SPLICE_RETRIES")
         splice_retry_ids = {
             k
             for k, v in manifest.items()
@@ -637,7 +637,7 @@ def process_podcast_feed(
                             os.remove(p)
                 return {"ok": False, "ep_id": ep_id, "error": exc}
 
-        workers = env_int("PODCAST_EPISODE_WORKERS", 1)
+        workers = settings.get("PODCAST_EPISODE_WORKERS")
         workers = max(1, min(workers, len(candidates)))  # clamp to [1, n_candidates]
         logger.info("[PodcastSync] Processing %d candidate(s) with %d worker(s)", len(candidates), workers)
 

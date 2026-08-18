@@ -82,7 +82,8 @@ import uuid
 import boto3
 import certifi
 
-from utils import env_float, env_int, retry_aws_call
+import settings
+from utils import retry_aws_call
 
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
@@ -119,9 +120,9 @@ REMOVE_ADS_ERROR_CODES: frozenset[str] = frozenset(
 # existing retry logic picks the episode up on a later run.
 
 
-def _ffmpeg_timeout(name: str, default: float) -> float:
+def _ffmpeg_timeout(name: str) -> float:
     """Return the configured timeout in seconds for an ffmpeg/ffprobe stage."""
-    return env_float(name, default)
+    return settings.get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +162,7 @@ def detect_silence(
             cmd,
             capture_output=True,
             text=True,
-            timeout=_ffmpeg_timeout("FFMPEG_SILENCEDETECT_TIMEOUT_SECS", 1800.0),
+            timeout=_ffmpeg_timeout("FFMPEG_SILENCEDETECT_TIMEOUT_SECS"),
         )
     except FileNotFoundError:
         logger.warning("[AdRemover] ffmpeg not found — silence detection skipped")
@@ -404,7 +405,7 @@ def _cache_key(video_id: str, suffix: str, namespace: str = "") -> str:
     Returns:
         The S3 object key.
     """
-    prefix = os.environ.get("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache")
+    prefix = settings.get("TRANSCRIBE_CACHE_PREFIX")
     ns = _safe_namespace(namespace)
     if ns:
         return f"{prefix}/{ns}/{video_id}{suffix}"
@@ -759,15 +760,15 @@ def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") ->
     """
     from botocore.exceptions import ClientError
 
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         raise RuntimeError("S3_BUCKET must be set to use AWS Transcribe")
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    language_code = os.environ.get("TRANSCRIBE_LANGUAGE_CODE", "en-US")
-    poll_interval = env_int("TRANSCRIBE_POLL_INTERVAL", 10)
-    max_wait = env_int("TRANSCRIBE_MAX_WAIT", 3600)
-    cache_enabled = os.environ.get("TRANSCRIBE_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
+    region = settings.get("AWS_DEFAULT_REGION")
+    language_code = settings.get("TRANSCRIBE_LANGUAGE_CODE")
+    poll_interval = settings.get("TRANSCRIBE_POLL_INTERVAL")
+    max_wait = settings.get("TRANSCRIBE_MAX_WAIT")
+    cache_enabled = settings.get("TRANSCRIBE_CACHE_ENABLED")
     # Skip caching for evaluator re-transcriptions (eval- prefix) — those target the cleaned
     # file and should not overwrite the original episode's cache entry.
     use_cache = cache_enabled and not video_id.startswith("eval-")
@@ -783,7 +784,7 @@ def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") ->
 
     # 1a. Selective transcription windows (AD_TRANSCRIBE_WINDOWS)
     #     If set, only transcribe specified sub-clips to reduce Transcribe cost.
-    windows_raw = os.environ.get("AD_TRANSCRIBE_WINDOWS", "").strip()
+    windows_raw = settings.get("AD_TRANSCRIBE_WINDOWS").strip()
     if windows_raw:
         duration = _get_audio_duration(mp3_path)
         windows = _parse_transcribe_windows(windows_raw, duration)
@@ -1364,13 +1365,13 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
         logger.info("[AdRemover] No transcript segments — skipping ad detection.")
         return []
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    region = settings.get("AWS_DEFAULT_REGION")
     # BEDROCK_DETECT_MODEL_ID overrides BEDROCK_MODEL_ID for detection (first-pass).
     # Use a cheaper model here (e.g. Haiku) and keep Sonnet for verification.
-    _default_model = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
-    model_id = os.environ.get("BEDROCK_DETECT_MODEL_ID", _default_model)
-    max_chars = env_int("AD_DETECT_MAX_CHARS", 60000)
-    overlap_secs = env_float("AD_DETECT_OVERLAP_SECS", 60.0)
+    _verify_model = settings.get("BEDROCK_MODEL_ID")
+    model_id = settings.get("BEDROCK_DETECT_MODEL_ID") or _verify_model
+    max_chars = settings.get("AD_DETECT_MAX_CHARS")
+    overlap_secs = settings.get("AD_DETECT_OVERLAP_SECS")
 
     chunks = _split_segments_into_chunks(segments, max_chars, overlap_secs)
     logger.info(
@@ -1432,9 +1433,9 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
     merged = _merge_overlapping_ads(all_ads)
 
     # Fix #2: guard rails on duration — ads almost never exceed 5 min
-    _MIN_AD_SECONDS = env_float("MIN_AD_SEGMENT_SECS", 5.0)
-    max_ad_secs = env_float("MAX_AD_SEGMENT_SECS", 300.0)
-    verify_threshold = env_float("AD_VERIFY_THRESHOLD_SECS", 90.0)
+    _MIN_AD_SECONDS = settings.get("MIN_AD_SEGMENT_SECS")
+    max_ad_secs = settings.get("MAX_AD_SEGMENT_SECS")
+    verify_threshold = settings.get("AD_VERIFY_THRESHOLD_SECS")
 
     valid = []
     for seg in merged:
@@ -1450,7 +1451,7 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
             continue
         if duration > max_ad_secs:
             # Instead of discarding, ask Bedrock to narrow boundaries
-            narrowed = _narrow_oversized_segment(seg, segments, bedrock, _default_model)
+            narrowed = _narrow_oversized_segment(seg, segments, bedrock, _verify_model)
             if narrowed:
                 for ns in narrowed:
                     ns_dur = ns["end"] - ns["start"]
@@ -1489,7 +1490,7 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
                     duration,
                     verify_threshold,
                 )
-                if _verify_ad_segment(seg, segments, bedrock, _default_model):
+                if _verify_ad_segment(seg, segments, bedrock, _verify_model):
                     confirmed.append(seg)
                 # If rejected, it is simply dropped (logged inside _verify_ad_segment)
             else:
@@ -1665,7 +1666,7 @@ def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
     if not ads:
         return []
 
-    merge_gap = env_float("AD_MERGE_GAP_SECS", 2.0)
+    merge_gap = settings.get("AD_MERGE_GAP_SECS")
     sorted_ads = sorted(ads, key=lambda s: s["start"])
     merged: list[AdSegment] = [{"start": sorted_ads[0]["start"], "end": sorted_ads[0]["end"]}]
 
@@ -1700,7 +1701,7 @@ def _ffprobe_duration(path: str, force_format: str | None = None) -> float:
         capture_output=True,
         text=True,
         check=True,
-        timeout=_ffmpeg_timeout("FFPROBE_TIMEOUT_SECS", 60.0),
+        timeout=_ffmpeg_timeout("FFPROBE_TIMEOUT_SECS"),
     )
     if result.stderr.strip():
         logger.debug("[AdRemover] ffprobe stderr (non-fatal): %s", result.stderr.strip())
@@ -1887,7 +1888,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     # Build ffmpeg atrim + concat + optional loudnorm filter_complex.
     # loudnorm (EBU R128) equalises loudness across all keep intervals so that
     # volume discontinuities at cut points are inaudible.
-    loudnorm = os.environ.get("SPLICE_LOUDNORM", "true").lower() not in ("false", "0", "no")
+    loudnorm = settings.get("SPLICE_LOUDNORM")
     filter_parts = [
         f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{i}]" for i, (start, end) in enumerate(keep)
     ]
@@ -1924,7 +1925,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
             capture_output=True,
             text=True,
             check=True,
-            timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0),
+            timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS"),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"ffmpeg splice timed out after {exc.timeout}s for {mp3_path}") from exc
@@ -1997,7 +1998,7 @@ def _splice_concat_demuxer(
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=_ffmpeg_timeout("FFMPEG_SEGMENT_TIMEOUT_SECS", 600.0),
+                    timeout=_ffmpeg_timeout("FFMPEG_SEGMENT_TIMEOUT_SECS"),
                 )
             except subprocess.TimeoutExpired as exc:
                 raise RuntimeError(f"ffmpeg segment {i} extraction timed out after {exc.timeout}s") from exc
@@ -2030,7 +2031,7 @@ def _splice_concat_demuxer(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0),
+                timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS"),
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"ffmpeg concat-demuxer join timed out after {exc.timeout}s") from exc
@@ -2086,22 +2087,16 @@ def _generate_summary(
     Returns:
         AI-generated summary string, or ``""`` when skipped or on any failure.
     """
-    if os.environ.get("GENERATE_SUMMARIES", "false").lower() not in ("true", "1", "yes"):
+    if not settings.get("GENERATE_SUMMARIES"):
         return ""
     if not segments:
         return ""
 
     # Duration guard — skip episodes longer than the configured threshold.
     # SUMMARY_MAX_DURATION_SECS=0 disables the guard (summarise any length).
-    _raw_max = os.environ.get("SUMMARY_MAX_DURATION_SECS", "1800")
-    try:
-        max_secs = float(_raw_max)
-    except ValueError:
-        logger.warning(
-            "[AdRemover] SUMMARY_MAX_DURATION_SECS=%r is not a valid number — using default 1800 s",
-            _raw_max,
-        )
-        max_secs = 1800.0
+    # A malformed value warns and falls back to the declared default inside
+    # settings.get(), so no local try/except is needed.
+    max_secs = float(settings.get("SUMMARY_MAX_DURATION_SECS"))
     if max_secs > 0 and duration_secs is not None and duration_secs > max_secs:
         logger.info(
             "[AdRemover] Skipping summary for %s — duration %.0fs exceeds SUMMARY_MAX_DURATION_SECS=%.0fs",
@@ -2111,8 +2106,8 @@ def _generate_summary(
         )
         return ""
 
-    bucket = os.environ.get("S3_BUCKET", "")
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    bucket = settings.get("S3_BUCKET")
+    region = settings.get("AWS_DEFAULT_REGION")
     if not bucket:
         return ""
 
@@ -2184,36 +2179,36 @@ def remove_ads(
         *summary* is an AI-generated episode summary (empty string if disabled,
         skipped by the duration guard, or failed).
     """
-    if os.environ.get("REMOVE_ADS", "true").lower() in ("false", "0", "no"):
+    if not settings.get("REMOVE_ADS"):
         logger.info("[AdRemover] REMOVE_ADS=false — skipping ad removal for %s", video_id)
         return mp3_path, [], ""
 
-    dry_run = os.environ.get("REMOVE_ADS_DRY_RUN", "false").lower() in ("true", "1", "yes")
+    dry_run = settings.get("REMOVE_ADS_DRY_RUN")
     if dry_run:
         logger.info("[AdRemover] REMOVE_ADS_DRY_RUN=true — will detect ads but skip splicing for %s", video_id)
 
     # Resolve music trimming flags (kwargs override env vars)
-    _trim_intro = trim_music_intro or os.environ.get("TRIM_MUSIC_INTRO", "false").lower() in ("true", "1", "yes")
-    _trim_outro = trim_music_outro or os.environ.get("TRIM_MUSIC_OUTRO", "false").lower() in ("true", "1", "yes")
+    _trim_intro = trim_music_intro or settings.get("TRIM_MUSIC_INTRO")
+    _trim_outro = trim_music_outro or settings.get("TRIM_MUSIC_OUTRO")
     _min_intro = (
-        min_music_intro_secs if min_music_intro_secs != 8.0 else env_float("MUSIC_INTRO_MIN_SECS", 8.0)
+        min_music_intro_secs if min_music_intro_secs != 8.0 else settings.get("MUSIC_INTRO_MIN_SECS")
     )
     _min_outro = (
-        min_music_outro_secs if min_music_outro_secs != 5.0 else env_float("MUSIC_OUTRO_MIN_SECS", 5.0)
+        min_music_outro_secs if min_music_outro_secs != 5.0 else settings.get("MUSIC_OUTRO_MIN_SECS")
     )
 
     logger.info("[AdRemover] Starting ad removal for %s", video_id)
 
     # Check ad-segments cache first (requires transcript cache to be enabled too).
     # If both transcript and ad-segments are cached, skip Transcribe + Bedrock entirely.
-    cache_enabled = os.environ.get("TRANSCRIBE_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
+    cache_enabled = settings.get("TRANSCRIBE_CACHE_ENABLED")
     use_cache = cache_enabled and not video_id.startswith("eval-")
     ad_segments: list[AdSegment] = []
     segments: list[dict] = []
 
     # Create S3 client once for all cache operations in this function
-    _bucket = os.environ.get("S3_BUCKET", "")
-    _region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    _bucket = settings.get("S3_BUCKET")
+    _region = settings.get("AWS_DEFAULT_REGION")
     _s3 = boto3.client("s3", region_name=_region) if _bucket else None
 
     if use_cache and _bucket and _s3:
@@ -2227,9 +2222,7 @@ def remove_ads(
             # generation — a single S3 read serves both consumers.
             music_segments: list[AdSegment] = []
             _cached_transcript: list[dict] = []
-            _want_cached_transcript = (_trim_intro or _trim_outro) or os.environ.get(
-                "GENERATE_SUMMARIES", "false"
-            ).lower() in ("true", "1", "yes")
+            _want_cached_transcript = (_trim_intro or _trim_outro) or settings.get("GENERATE_SUMMARIES")
             if _want_cached_transcript:
                 _loaded_transcript = _load_transcript_cache(_s3, _bucket, video_id, cache_namespace)
                 if _loaded_transcript:
@@ -2253,7 +2246,7 @@ def remove_ads(
                     [],
                     _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
                 )
-            if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
+            if settings.get("AD_SNAP_TO_SILENCE"):
                 all_cached = snap_ad_boundaries(all_cached, mp3_path)
             if dry_run:
                 total_ad_secs = sum(s["end"] - s["start"] for s in all_cached)
@@ -2299,11 +2292,7 @@ def remove_ads(
 
     # Detect silence once for reuse in both music detection and boundary snapping
     _silences: list[dict] | None = None
-    _need_silence = (_trim_intro or _trim_outro) or os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in (
-        "false",
-        "0",
-        "no",
-    )
+    _need_silence = (_trim_intro or _trim_outro) or settings.get("AD_SNAP_TO_SILENCE")
     if _need_silence:
         try:
             _silences = detect_silence(mp3_path)
@@ -2336,7 +2325,7 @@ def remove_ads(
         return mp3_path, [], summary
 
     # Fix #5: snap boundaries to silence gaps for cleaner cuts
-    if os.environ.get("AD_SNAP_TO_SILENCE", "true").lower() not in ("false", "0", "no"):
+    if settings.get("AD_SNAP_TO_SILENCE"):
         all_segments = snap_ad_boundaries(all_segments, mp3_path, silences=_silences)
 
     if dry_run:

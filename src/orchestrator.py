@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from collections.abc import Callable
 from typing import Any
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def append_notify_entry(entry: dict[str, Any], notify_file: str | None = None) -
     a sync that has already done real work. The heredocs achieved this by
     accident (the whole block ran under ``|| true``); here it is explicit.
     """
-    path = notify_file if notify_file is not None else os.environ.get("NOTIFY_RESULTS", "")
+    path = notify_file if notify_file is not None else settings.get("NOTIFY_RESULTS")
     if not path:
         return
     try:
@@ -56,7 +57,7 @@ def append_notify_entry(entry: dict[str, Any], notify_file: str | None = None) -
 
 def feed_url_for(identifier: str) -> str:
     """Build the public feed URL for *identifier* (playlist id or slug)."""
-    cloudfront_base = os.environ.get("CLOUDFRONT_BASE", "")
+    cloudfront_base = settings.get("CLOUDFRONT_BASE")
     if not identifier or not cloudfront_base:
         return ""
     return f"{cloudfront_base}/{identifier}/feed.xml"
@@ -363,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     mode, rest = args[0], args[1:]
-    dry_run = os.environ.get("PODCAST_DRY_RUN", "false") == "true"
+    dry_run = settings.get("PODCAST_DRY_RUN")
 
     if mode == "urls":
         if not rest:

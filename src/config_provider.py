@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC
 
+import settings
+
 logger = logging.getLogger(__name__)
 
 #: Hard cap on Notion query pages (100 rows each).  Purely a runaway-loop guard:
@@ -149,8 +151,8 @@ class NotionConfigProvider(ConfigProvider):
         Raises:
             ValueError: If ``NOTION_API_KEY`` or ``NOTION_DATABASE_ID`` is not set.
         """
-        self.api_key = os.environ.get("NOTION_API_KEY", "")
-        self.database_id = os.environ.get("NOTION_DATABASE_ID", "")
+        self.api_key = settings.get("NOTION_API_KEY")
+        self.database_id = settings.get("NOTION_DATABASE_ID")
         self._cache: list[PodcastConfig] | None = None
 
         if not self.api_key or not self.database_id:
@@ -421,7 +423,7 @@ class NotionConfigProvider(ConfigProvider):
         }
 
         now = datetime.now(UTC).isoformat()
-        runner = os.environ.get("RUNNER", "")
+        runner = settings.get("RUNNER")
 
         properties = {
             "LastUpdated": {
@@ -647,12 +649,12 @@ def get_config_provider() -> ConfigProvider:
     - "yaml" (default): reads from podcasts.yaml
     - "notion": reads from a Notion database
     """
-    provider_type = os.environ.get("CONFIG_PROVIDER", "yaml").lower()
+    provider_type = settings.get("CONFIG_PROVIDER").lower()
 
     if provider_type == "notion":
         return NotionConfigProvider()
     else:
-        yaml_path = os.environ.get("PODCASTS_YAML", "podcasts.yaml")
+        yaml_path = settings.get("PODCASTS_YAML")
         return YamlConfigProvider(path=yaml_path)
 
 
@@ -667,10 +669,10 @@ def get_podcast_config_provider() -> "NotionPodcastConfigProvider | ConfigProvid
         otherwise a :class:`YamlConfigProvider` (which returns no RSS podcast
         entries by default — callers should check for an empty list).
     """
-    provider_type = os.environ.get("CONFIG_PROVIDER", "yaml").lower()
+    provider_type = settings.get("CONFIG_PROVIDER").lower()
 
     if provider_type == "notion":
         return NotionPodcastConfigProvider()
     else:
-        yaml_path = os.environ.get("PODCASTS_YAML", "podcasts.yaml")
+        yaml_path = settings.get("PODCASTS_YAML")
         return YamlPodcastConfigProvider(path=yaml_path)

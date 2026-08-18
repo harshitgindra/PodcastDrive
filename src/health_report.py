@@ -13,13 +13,14 @@ Usage:
 import argparse
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 
 import boto3
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +380,7 @@ def _maybe_send_alert(report: dict) -> None:
     Args:
         report: The structured report dict produced by ``_analyze``.
     """
-    alert_url = os.environ.get("HEALTH_ALERT_URL", "").strip()
+    alert_url = settings.get("HEALTH_ALERT_URL").strip()
     if not alert_url:
         return
 
@@ -417,7 +418,7 @@ def generate_health_report(days: int = 7, output_format: str = "md") -> str:
     Returns:
         Formatted report string.
     """
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         return "ERROR: S3_BUCKET not set"
 

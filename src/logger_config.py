@@ -16,10 +16,10 @@ import os
 from datetime import UTC, datetime
 from logging.handlers import TimedRotatingFileHandler
 
-from utils import env_int
+import settings
 
 # Detect Lambda environment — file logging is skipped there.
-_IS_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+_IS_LAMBDA = bool(settings.get("AWS_LAMBDA_FUNCTION_NAME"))
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-5s] [%(name)s] [%(runner)s] %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -29,7 +29,7 @@ class _RunnerFilter(logging.Filter):
     """Inject RUNNER env var into every log record."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.runner = os.environ.get("RUNNER", "-")
+        record.runner = settings.get("RUNNER", default="-")
         return True
 
 
@@ -110,10 +110,10 @@ def setup_logging(
                     Defaults to human-readable text.
     """
     # Allow env-var overrides so cron / launchd jobs can tune without code changes.
-    log_level = os.environ.get("LOG_LEVEL", log_level).upper()
-    retention_days = env_int("LOG_RETENTION_DAYS", retention_days)
-    log_dir = os.environ.get("LOG_DIR", log_dir)
-    use_json = os.environ.get("LOG_FORMAT", "").lower() == "json"
+    log_level = settings.get("LOG_LEVEL", default=log_level).upper()
+    retention_days = settings.get("LOG_RETENTION_DAYS", default=retention_days)
+    log_dir = settings.get("LOG_DIR", default=log_dir)
+    use_json = settings.get("LOG_FORMAT").lower() == "json"
 
     numeric_level = getattr(logging, log_level, logging.INFO)
 

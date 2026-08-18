@@ -12,10 +12,11 @@ Requires: Herald >= 0.5.2 (for --message, --parse-mode, --job and --strict)
 from __future__ import annotations
 
 import logging
-import os
 import platform
 import shutil
 import subprocess
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ def _format_message(
     status: str = "success",
 ) -> str:
     """Build the notification message text."""
-    runner = os.environ.get("RUNNER", platform.node() or "unknown")
+    runner = settings.get("RUNNER", default=platform.node() or "unknown")
     mins, secs = divmod(elapsed_secs, 60)
 
     # Plain text, no markdown: podcast names are user data and a stray "*" or
@@ -188,7 +189,7 @@ def _send_via_herald(message: str) -> bool:
 
     # Herald also reads HERALD_JOB_ID itself, but passing it explicitly keeps
     # the routing visible here instead of hiding in an inherited env var.
-    job_id = os.environ.get("HERALD_JOB_ID", "").strip()
+    job_id = settings.get("HERALD_JOB_ID").strip()
     if job_id:
         argv += ["--job", job_id]
 

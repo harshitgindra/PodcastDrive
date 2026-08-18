@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError
 
+import settings
+
 logger = logging.getLogger(__name__)
 
 LOCK_KEY = "_meta/run.lock"
@@ -45,10 +47,10 @@ class S3Lock:
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
         lock_key: str = LOCK_KEY,
     ):
-        self.bucket = bucket or os.environ.get("S3_BUCKET", "")
+        self.bucket = bucket or settings.get("S3_BUCKET")
         self.ttl_seconds = ttl_seconds
         self.lock_key = lock_key
-        self.runner = os.environ.get("RUNNER", "unknown")
+        self.runner = settings.get("RUNNER", default="unknown")
         self._s3 = boto3.client("s3")
         self._acquired = False
 

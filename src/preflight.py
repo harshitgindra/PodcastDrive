@@ -16,6 +16,7 @@ import boto3
 import botocore.exceptions
 
 import aws
+import settings
 
 # Imported at module scope on purpose: an installed ``ytdlp_plugins.extractor``
 # package shadows this project's ``extractor`` module once yt-dlp has loaded its
@@ -58,11 +59,7 @@ def _check_env_vars() -> None:
     """Check required environment variables are set."""
     _section("Environment variables")
 
-    required = {
-        "S3_BUCKET": os.environ.get("S3_BUCKET", ""),
-        "CLOUDFRONT_BASE": os.environ.get("CLOUDFRONT_BASE", ""),
-        "CLOUDFRONT_DISTRIBUTION_ID": os.environ.get("CLOUDFRONT_DISTRIBUTION_ID", ""),
-    }
+    required = {name: settings.get(name) for name in ("S3_BUCKET", "CLOUDFRONT_BASE", "CLOUDFRONT_DISTRIBUTION_ID")}
 
     for name, value in required.items():
         if not value:
@@ -70,7 +67,7 @@ def _check_env_vars() -> None:
         _ok(f"{name} = {value}")
 
     # AWS region — warn only, defaults to us-west-2
-    region = os.environ.get("AWS_DEFAULT_REGION", "")
+    region = settings.get("AWS_DEFAULT_REGION", default="")
     if not region:
         _warn("AWS_DEFAULT_REGION not set — defaulting to us-west-2")
         os.environ["AWS_DEFAULT_REGION"] = "us-west-2"
@@ -89,7 +86,7 @@ def _check_aws_credentials() -> str:
         account = identity.get("Account", "unknown")
         _ok(f"AWS credentials valid (account: {account})")
 
-        region = session.region_name or os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
+        region = session.region_name or settings.get("AWS_DEFAULT_REGION")
         # Rough sanity-check: AWS regions look like "us-west-2", "eu-central-1", etc.
         if not region or len(region) < 5 or region.count("-") < 1:
             _warn(f"AWS region '{region}' looks unusual — double-check AWS_DEFAULT_REGION")
@@ -113,7 +110,7 @@ def _check_s3_bucket(region: str, dry_run: bool) -> None:
     """Verify the S3 bucket exists and is accessible."""
     _section("S3 bucket")
 
-    bucket = os.environ["S3_BUCKET"]
+    bucket = settings.get("S3_BUCKET")
     s3 = boto3.client("s3", region_name=region)
 
     try:
@@ -141,7 +138,7 @@ def _check_cloudfront(region: str) -> None:
     """Verify the CloudFront distribution exists and is deployed."""
     _section("CloudFront distribution")
 
-    dist_id = os.environ.get("CLOUDFRONT_DISTRIBUTION_ID", "")
+    dist_id = settings.get("CLOUDFRONT_DISTRIBUTION_ID")
     if not dist_id:
         # Already caught in _check_env_vars — shouldn't reach here
         _fail("CLOUDFRONT_DISTRIBUTION_ID is not set")
@@ -326,8 +323,8 @@ def _check_notion() -> None:
     """Verify Notion credentials when CONFIG_PROVIDER=notion."""
     _section("Notion (config provider)")
 
-    api_key = os.environ.get("NOTION_API_KEY", "")
-    db_id = os.environ.get("NOTION_DATABASE_ID", "")
+    api_key = settings.get("NOTION_API_KEY")
+    db_id = settings.get("NOTION_DATABASE_ID")
 
     if not api_key:
         _fail("NOTION_API_KEY is not set — add it to config.env")
@@ -386,7 +383,7 @@ def _check_cookies() -> None:
     """
     _section("Cookie freshness")
 
-    cookies_path = os.environ.get("COOKIES_FILE", "cookies.txt")
+    cookies_path = settings.get("COOKIES_FILE")
     if not os.path.isabs(cookies_path):
         # Resolve relative to the project root (where run.sh lives)
         cookies_path = os.path.join(os.getcwd(), cookies_path)
@@ -511,12 +508,11 @@ def run_preflight(dry_run: bool = False) -> None:
 
     _check_disk_space()
 
-    config_provider = os.environ.get("CONFIG_PROVIDER", "yaml")
+    config_provider = settings.get("CONFIG_PROVIDER")
     if config_provider == "notion":
         _check_notion()
 
-    remove_ads = os.environ.get("REMOVE_ADS", "true").lower()
-    if remove_ads not in ("false", "0", "no"):
+    if settings.get("REMOVE_ADS"):
         _check_transcribe(region)
         _check_bedrock(region)
 

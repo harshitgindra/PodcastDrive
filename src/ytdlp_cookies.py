@@ -12,8 +12,9 @@ ordered most- to least-specific.
 """
 
 import logging
-import os
 from pathlib import Path
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def get_cookies_path() -> str | None:
     Otherwise the first candidate that exists and is at least
     :data:`MIN_COOKIE_BYTES` long wins.
     """
-    override = os.environ.get(COOKIES_ENV)
+    override = settings.get(COOKIES_ENV)
     if override:
         path = Path(override)
         if path.is_file():

@@ -5,13 +5,13 @@ information, using CloudFront URLs for audio enclosures.
 """
 
 import logging
-import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.dom.minidom import parseString
 
+import settings
 from models import EpisodeMeta, PlaylistMeta, VideoEntry
 from s3_manager import S3Manager
 from utils import parse_upload_date
@@ -177,7 +177,7 @@ def _add_channel_metadata(
         playlist_id: Playlist ID (unused here, kept for symmetry).
     """
     channel_link = meta.webpage_url or meta.channel_url
-    suffix = os.environ.get("FEED_TITLE_SUFFIX", " ✂️")
+    suffix = settings.get("FEED_TITLE_SUFFIX")
 
     channel_title = xml_safe(meta.title) + suffix
     channel_description = xml_safe(meta.description) or xml_safe(meta.title)
@@ -208,7 +208,7 @@ def _add_channel_metadata(
     ET.SubElement(channel, f"{{{ITUNES_NS}}}summary").text = channel_description
     ET.SubElement(channel, f"{{{ITUNES_NS}}}explicit").text = "no"
 
-    subtitle = os.environ.get("FEED_SUBTITLE", "Ad-free · PodcastDrive")
+    subtitle = settings.get("FEED_SUBTITLE")
     if subtitle:
         ET.SubElement(channel, f"{{{ITUNES_NS}}}subtitle").text = xml_safe(subtitle)
 
@@ -244,7 +244,7 @@ def _add_item(
 
     ep_title = xml_safe(episode.title)
     if episode.ads_removed:
-        ep_ad_suffix = os.environ.get("EPISODE_AD_REMOVED_SUFFIX", " ✂️")
+        ep_ad_suffix = settings.get("EPISODE_AD_REMOVED_SUFFIX")
         if ep_ad_suffix:
             ep_title += ep_ad_suffix
     ET.SubElement(item, "title").text = ep_title

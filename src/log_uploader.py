@@ -9,12 +9,13 @@ making it easy to parse, filter, and aggregate across runs.
 
 import json
 import logging
-import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -56,18 +57,18 @@ def upload_run_log(
     Returns:
         S3 key of the uploaded log, or None on failure.
     """
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         return None
 
-    log_dir = log_dir or os.environ.get("LOG_DIR", "./logs")
+    log_dir = log_dir or settings.get("LOG_DIR")
     log_file = Path(log_dir) / "playlist_downloader.log"
 
     if not log_file.exists():
         logger.debug("No log file found at %s", log_file)
         return None
 
-    runner = os.environ.get("RUNNER", "unknown")
+    runner = settings.get("RUNNER", default="unknown")
     now = datetime.now(UTC)
     date_prefix = now.strftime("%Y-%m-%d")
     timestamp = now.strftime("%H%M%S")
@@ -121,7 +122,7 @@ def upload_run_log(
             {
                 "type": "run_header",
                 "runner": runner,
-                "trigger": os.environ.get("TRIGGER", "manual"),
+                "trigger": settings.get("TRIGGER"),
                 "date": date_prefix,
                 "timestamp": now.isoformat(),
                 "total_lines": len(jsonl_lines),

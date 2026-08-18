@@ -172,6 +172,12 @@ def env_int(name: str, default: int) -> int:
 
     Returns:
         The parsed integer, or *default*.
+
+    Note:
+        New podcast-pipeline settings belong in :mod:`settings`, which declares a
+        name, type, default and documentation once and renders
+        ``config.env.example``.  These helpers remain for :mod:`src.mediasync`,
+        which keeps its own typed ``Config`` and ``mediasync.env.example``.
     """
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
@@ -199,6 +205,12 @@ def env_float(name: str, default: float) -> float:
 
     Returns:
         The parsed float, or *default*.
+
+    Note:
+        New podcast-pipeline settings belong in :mod:`settings`, which declares a
+        name, type, default and documentation once and renders
+        ``config.env.example``.  These helpers remain for :mod:`src.mediasync`,
+        which keeps its own typed ``Config`` and ``mediasync.env.example``.
     """
     raw = os.environ.get(name)
     if raw is None or not raw.strip():

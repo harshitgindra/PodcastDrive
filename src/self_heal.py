@@ -16,12 +16,13 @@ Usage:
 import argparse
 import json
 import logging
-import os
 import sys
 from collections import defaultdict
 from datetime import UTC, datetime
 
 import boto3
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ def heal_manifest_backfill(s3, bucket: str, dry_run: bool = False) -> dict:
 
 def run_all_healers(dry_run: bool = False) -> list[dict]:
     """Run all self-healing actions."""
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         logger.error("S3_BUCKET not set")
         return []
@@ -306,7 +307,7 @@ def main():
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         print("ERROR: S3_BUCKET not set", file=sys.stderr)
         sys.exit(1)

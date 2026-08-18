@@ -18,23 +18,24 @@ Entry points call :func:`configure` once at startup; it is idempotent.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 
 import boto3
 from botocore.config import Config
+
+import settings
 
 logger = logging.getLogger(__name__)
 
 #: Seconds to wait for a TCP connection. botocore defaults to 60, which turns a
 #: blackholed network into a minute of silence per attempt. A connection that
 #: has not been established in 10s is not going to be.
-DEFAULT_CONNECT_TIMEOUT = 10.0
+DEFAULT_CONNECT_TIMEOUT = settings.REGISTRY["AWS_CONNECT_TIMEOUT"].default
 
 #: Seconds to wait for data on an established connection. Left at botocore's
 #: default on purpose: Bedrock ad detection and Transcribe polling both run
 #: close to it, so *raising* this is safe but lowering it would break them.
-DEFAULT_READ_TIMEOUT = 60.0
+DEFAULT_READ_TIMEOUT = settings.REGISTRY["AWS_READ_TIMEOUT"].default
 
 #: Total attempts botocore makes internally, before any application-level
 #: retry. ``standard`` mode classifies far more transient errors as retryable
@@ -50,22 +51,11 @@ _lock = threading.Lock()
 _configured = False
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning("%s=%r is not a number — using %s", name, raw, default)
-        return default
-
-
 def default_config() -> Config:
     """Build the botocore config shared by every client in the process."""
     return Config(
-        connect_timeout=_env_float(_ENV_CONNECT_TIMEOUT, DEFAULT_CONNECT_TIMEOUT),
-        read_timeout=_env_float(_ENV_READ_TIMEOUT, DEFAULT_READ_TIMEOUT),
+        connect_timeout=settings.get(_ENV_CONNECT_TIMEOUT),
+        read_timeout=settings.get(_ENV_READ_TIMEOUT),
         retries={
             "max_attempts": DEFAULT_MAX_ATTEMPTS,
             "mode": DEFAULT_RETRY_MODE,
@@ -99,8 +89,8 @@ def configure(*, force: bool = False) -> boto3.Session:
         logger.debug(
             "AWS clients configured: connect_timeout=%.1fs read_timeout=%.1fs "
             "retries=%s/%d attempts",
-            _env_float(_ENV_CONNECT_TIMEOUT, DEFAULT_CONNECT_TIMEOUT),
-            _env_float(_ENV_READ_TIMEOUT, DEFAULT_READ_TIMEOUT),
+            settings.get(_ENV_CONNECT_TIMEOUT),
+            settings.get(_ENV_READ_TIMEOUT),
             DEFAULT_RETRY_MODE,
             DEFAULT_MAX_ATTEMPTS,
         )

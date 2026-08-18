@@ -20,6 +20,8 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+import settings
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -208,7 +210,7 @@ def evaluate_ad_removal(
         ``total_removed_seconds``, ``residual_seconds``, ``proposals``.
         Returns ``{"skipped": True}`` when evaluation is disabled.
     """
-    if os.environ.get("EVALUATE_AD_REMOVAL", "false").lower() not in ("true", "1", "yes"):
+    if not settings.get("EVALUATE_AD_REMOVAL"):
         logger.debug("[AdEvaluator] EVALUATE_AD_REMOVAL not set — skipping evaluation for %s", episode_id)
         return {"skipped": True}
 
@@ -216,7 +218,7 @@ def evaluate_ad_removal(
         original_ad_segments = []
 
     if reports_dir is None:
-        reports_dir = os.environ.get("EVAL_REPORTS_DIR", "reports")
+        reports_dir = settings.get("EVAL_REPORTS_DIR")
 
     logger.info("[AdEvaluator] Evaluating ad removal quality for %s", episode_id)
 

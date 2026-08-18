@@ -59,11 +59,12 @@ class TestDefaultConfig:
         assert getattr(aws.default_config(), attr) == value
 
     def test_unparseable_env_falls_back_with_a_warning(self, monkeypatch, caplog):
+        # Coercion lives in settings.get(), so the warning is logged there.
         monkeypatch.setenv("AWS_CONNECT_TIMEOUT", "soon")
-        with caplog.at_level(logging.WARNING, logger="aws"):
+        with caplog.at_level(logging.WARNING, logger="settings"):
             cfg = aws.default_config()
         assert cfg.connect_timeout == aws.DEFAULT_CONNECT_TIMEOUT
-        assert "is not a number" in caplog.text
+        assert "expected a number" in caplog.text
 
     def test_empty_env_falls_back_silently(self, monkeypatch):
         monkeypatch.setenv("AWS_READ_TIMEOUT", "")

@@ -4045,13 +4045,13 @@ class TestFfmpegTimeouts:
         import ad_remover
 
         monkeypatch.setenv("FFMPEG_SPLICE_TIMEOUT_SECS", "42")
-        assert ad_remover._ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0) == 42.0
+        assert ad_remover._ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS") == 42.0
 
     def test_malformed_timeout_falls_back_to_the_default(self, monkeypatch):
         import ad_remover
 
         monkeypatch.setenv("FFMPEG_SPLICE_TIMEOUT_SECS", "forever")
-        assert ad_remover._ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS", 3600.0) == 3600.0
+        assert ad_remover._ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS") == 3600.0
 
 
 # ---------------------------------------------------------------------------

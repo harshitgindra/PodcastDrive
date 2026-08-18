@@ -26,7 +26,7 @@ from email.utils import parsedate_to_datetime
 import certifi
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from utils import env_int
+import settings
 
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
@@ -158,7 +158,7 @@ def resolve_feed_url(url: str) -> str:
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-            body = read_capped(resp, env_int("MAX_ITUNES_BYTES", _DEFAULT_MAX_JSON_BYTES), "iTunes response")
+            body = read_capped(resp, settings.get("MAX_ITUNES_BYTES"), "iTunes response")
         data = json.loads(body.decode("utf-8"))
 
         results = data.get("results", [])
@@ -204,7 +204,7 @@ def search_feed_url_by_name(name: str) -> str:
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-            body = read_capped(resp, env_int("MAX_ITUNES_BYTES", _DEFAULT_MAX_JSON_BYTES), "iTunes response")
+            body = read_capped(resp, settings.get("MAX_ITUNES_BYTES"), "iTunes response")
         data = json.loads(body.decode("utf-8"))
 
         results = data.get("results", [])
@@ -290,7 +290,7 @@ def fetch_feed_xml(feed_url: str) -> bytes:
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
         with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
-            return read_capped(resp, env_int("MAX_FEED_BYTES", _DEFAULT_MAX_FEED_BYTES), "RSS feed")
+            return read_capped(resp, settings.get("MAX_FEED_BYTES"), "RSS feed")
 
     logger.info("[PodcastDownloader] Fetching RSS feed: %s", feed_url)
     try:

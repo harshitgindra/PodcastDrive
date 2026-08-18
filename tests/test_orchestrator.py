@@ -635,8 +635,12 @@ class TestMain:
         monkeypatch.setattr(orchestrator, "run_url_target", lambda url, dry_run: False)
         assert orchestrator.main(["urls", "a"]) == 0
 
-    def test_dry_run_env_is_honoured(self, monkeypatch):
-        monkeypatch.setenv("PODCAST_DRY_RUN", "true")
+    @pytest.mark.parametrize("value", ["true", "True", "1", "yes", "on"])
+    def test_dry_run_env_is_honoured(self, monkeypatch, value):
+        # run.sh exports "true"; the other spellings come from settings.get()'s
+        # single boolean dialect. Widening only ever suppresses writes, so the
+        # error direction is safe.
+        monkeypatch.setenv("PODCAST_DRY_RUN", value)
         seen = []
         monkeypatch.setattr(
             orchestrator, "run_url_target", lambda url, dry_run: seen.append(dry_run) or True
@@ -644,8 +648,8 @@ class TestMain:
         orchestrator.main(["urls", "a"])
         assert seen == [True]
 
-    @pytest.mark.parametrize("value", ["false", "", "1", "True", "yes"])
-    def test_only_literal_true_enables_dry_run(self, monkeypatch, value):
+    @pytest.mark.parametrize("value", ["false", "", "no", "off", "0"])
+    def test_falsey_values_do_not_enable_dry_run(self, monkeypatch, value):
         monkeypatch.setenv("PODCAST_DRY_RUN", value)
         seen = []
         monkeypatch.setattr(

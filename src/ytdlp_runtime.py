@@ -14,7 +14,8 @@ video, so the components are enabled by default here.
 """
 
 import logging
-import os
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,7 @@ def get_remote_components() -> list[str]:
     Returns:
         List of component names, possibly empty.
     """
-    raw = os.environ.get(REMOTE_COMPONENTS_ENV)
-    if raw is None:
-        raw = DEFAULT_REMOTE_COMPONENTS
+    raw = settings.get(REMOTE_COMPONENTS_ENV)
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 

@@ -1,4 +1,4 @@
-.PHONY: install-hooks protect test coverage help e2e-test e2e-test-full e2e-update-gt lint format fix
+.PHONY: install-hooks protect test coverage help e2e-test e2e-test-full e2e-update-gt lint format fix config-example
 
 # Always use the project venv interpreter. A bare `python3` resolves to a uv
 # shim on some dev machines, which recreates/destroys .venv as a side effect.
@@ -54,3 +54,7 @@ format:
 ## fix: Auto-fix linting issues
 fix:
 	$(PYTHON) -m ruff check --fix src/ tests/
+
+## config-example: Regenerate config.env.example from the settings registry
+config-example:
+	cd src && ../$(PYTHON) -m settings --write

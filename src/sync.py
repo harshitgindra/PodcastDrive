@@ -11,13 +11,14 @@ import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 
+import settings
 from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads
 from downloader import download_and_convert
 from extractor import BotDetectedError, ExtractionError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
 from s3_manager import S3Manager
-from utils import env_float, env_int, extract_playlist_id, parse_upload_date
+from utils import extract_playlist_id, parse_upload_date
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -50,18 +51,18 @@ def process_playlist(
         dict with playlist_id, new_episodes, skipped_old, failed, total_episodes.
     """
     # --- Configuration: per-podcast overrides > env vars > defaults ---
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         raise ValueError("S3_BUCKET environment variable must be set")
-    cloudfront_base = os.environ.get("CLOUDFRONT_BASE", "")
+    cloudfront_base = settings.get("CLOUDFRONT_BASE")
     if not cloudfront_base:
         raise ValueError("CLOUDFRONT_BASE environment variable must be set")
     if max_downloads is None:
-        max_downloads = env_int("MAX_DOWNLOADS_PER_RUN", 10)
+        max_downloads = settings.get("MAX_DOWNLOADS_PER_RUN")
     if max_age_days is None:
-        max_age_days = env_int("MAX_AGE_DAYS", 7)
+        max_age_days = settings.get("MAX_AGE_DAYS")
     if sleep_between is None:
-        sleep_between = env_int("SLEEP_BETWEEN_DOWNLOADS", 5)
+        sleep_between = settings.get("SLEEP_BETWEEN_DOWNLOADS")
 
     # Ensure int types (Notion returns floats for numbers)
     max_downloads = int(max_downloads)
@@ -429,8 +430,8 @@ def _orphan_deletion_is_safe(
         )
         return False
 
-    min_orphans = env_int("RECONCILE_MIN_ORPHANS", 3)
-    max_ratio = env_float("RECONCILE_MAX_ORPHAN_RATIO", 0.5)
+    min_orphans = settings.get("RECONCILE_MIN_ORPHANS")
+    max_ratio = settings.get("RECONCILE_MAX_ORPHAN_RATIO")
     ratio = len(orphaned_files) / len(s3_keys) if s3_keys else 0.0
 
     if len(orphaned_files) >= min_orphans and ratio > max_ratio:

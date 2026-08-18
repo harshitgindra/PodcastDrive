@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 
 import boto3
 
+import settings
+
 logger = logging.getLogger(__name__)
 
 HISTORY_KEY = "_meta/runs.jsonl"
@@ -24,9 +26,9 @@ def record_run_start() -> dict:
     """Create a run record dict (call at start of run)."""
     return {
         "run_id": f"{int(time.time())}_{os.getpid()}",
-        "runner": os.environ.get("RUNNER", "unknown"),
+        "runner": settings.get("RUNNER", default="unknown"),
         "hostname": platform.node(),
-        "trigger": os.environ.get("TRIGGER", "manual"),
+        "trigger": settings.get("TRIGGER"),
         "started_at": datetime.now(timezone.utc).isoformat(),
         "finished_at": None,
         "duration_secs": None,
@@ -70,7 +72,7 @@ def save_run_history(record: dict) -> None:
     concurrent runners never conflict. The legacy JSONL file is updated
     best-effort for backwards compatibility.
     """
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         logger.debug("S3_BUCKET not set, skipping run history write")
         return

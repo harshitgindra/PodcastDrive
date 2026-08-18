@@ -14,9 +14,10 @@ Usage (via run.sh):
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sys
+
+import settings
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def run_reset(force: bool = False) -> int:
     Returns:
         Exit code — ``0`` on success, ``1`` if aborted or a fatal error occurs.
     """
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = settings.get("S3_BUCKET")
     if not bucket:
         print("ERROR: S3_BUCKET environment variable must be set.", file=sys.stderr)
         return 1

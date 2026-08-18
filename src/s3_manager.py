@@ -2,12 +2,12 @@
 
 import json
 import logging
-import os
 import time
 
 import boto3
 from botocore.exceptions import ClientError
 
+import settings
 from utils import retry_aws_call
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class S3Manager:
         self.playlist_id = playlist_id
         self.s3_client = boto3.client("s3")
         self._cf_client = None
-        self._distribution_id = os.environ.get("CLOUDFRONT_DISTRIBUTION_ID", "")
+        self._distribution_id = settings.get("CLOUDFRONT_DISTRIBUTION_ID")
         self._lifecycle_days_set: int | None = None  # cache to skip redundant PUTs
         # Note: bucket name should come from the S3_BUCKET environment variable,
         # not be hardcoded. See config.env.example for configuration.
@@ -414,7 +414,7 @@ class S3Manager:
         Retries once on HTTP 429 (rate-limited) with a 5-second delay.
         All other failures are logged as warnings and swallowed.
         """
-        cloudfront_base = os.environ.get("CLOUDFRONT_BASE", "")
+        cloudfront_base = settings.get("CLOUDFRONT_BASE")
         if not cloudfront_base:
             logger.debug("No CLOUDFRONT_BASE set, skipping Overcast ping")
             return

@@ -1,10 +1,10 @@
 """Generate a short episode summary from a transcript using AWS Bedrock."""
 
 import logging
-import os
 
 import boto3
 
+import settings
 from utils import retry_aws_call
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def generate_episode_summary(
         return ""
 
     if model_id is None:
-        model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+        model_id = settings.get("BEDROCK_MODEL_ID")
 
     full_text = " ".join(s["text"] for s in segments)
     # Truncate to 40,000 chars to stay within context limits
@@ -45,7 +45,7 @@ def generate_episode_summary(
     )
 
     try:
-        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        region = settings.get("AWS_DEFAULT_REGION")
         client = boto3.client("bedrock-runtime", region_name=region)
 
         response = retry_aws_call(
