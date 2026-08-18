@@ -402,14 +402,148 @@ class TestProcessEntryCleanup:
         assert not audio.exists()
         assert notion.update_status.call_args_list[-1][0][1] == Status.FAILED
 
-    def test_missing_temp_file_does_not_raise(self, pending_entry, config, tmp_path):
+    def test_missing_temp_file_is_reported_not_silently_uploaded(self, pending_entry, config, tmp_path):
+        """A file that vanished between download and upload used to sail through
+        (mutagen and the storage backend were both happy to be handed a ghost path,
+        so the row was marked done and nothing was actually stored).  It must now
+        fail loudly, naming the path."""
         storage = MagicMock()
         storage.upload.return_value = "key"
         ghost = tmp_path / "gone.m4a"
+        notion = MagicMock()
 
         with patch("mediasync.pipeline.download", return_value=[self._result(ghost)]):
             with patch("mediasync.pipeline.tag_file"):
-                assert _process_entry(pending_entry, MagicMock(), storage, config) is True
+                assert _process_entry(pending_entry, notion, storage, config) is False
+
+        storage.upload.assert_not_called()
+        last = notion.update_status.call_args_list[-1]
+        assert last[0][1] == Status.FAILED
+        assert "gone.m4a" in last[1]["error"]
+
+
+class TestProcessEntryPartialFailure:
+    """One bad item in a playlist used to discard the whole entry: the exception
+    escaped the upload loop, the row was marked failed with a bare exception
+    string, and the items that had already uploaded were never recorded anywhere.
+    """
+
+    @staticmethod
+    def _result(path, title):
+        return DownloadResult(
+            path=path, title=title, artist="A", duration_secs=100, thumbnail_url="", format_type="audio"
+        )
+
+    def _three_items(self, tmp_path):
+        results = []
+        for name in ("one", "two", "three"):
+            f = tmp_path / f"{name}.m4a"
+            f.write_bytes(b"audio")
+            results.append(self._result(f, name))
+        return results
+
+    def test_successful_items_are_still_uploaded_and_recorded(self, pending_entry, config, tmp_path):
+        results = self._three_items(tmp_path)
+        notion = MagicMock()
+        storage = MagicMock()
+        # Middle item fails; the other two must still be uploaded.
+        storage.upload.side_effect = ["key-one", RuntimeError("network blip"), "key-three"]
+
+        with patch("mediasync.pipeline.download", return_value=results):
+            with patch("mediasync.pipeline.tag_file"):
+                ok = _process_entry(pending_entry, notion, storage, config)
+
+        assert ok is False  # the entry is not complete
+        assert storage.upload.call_count == 3
+        last = notion.update_status.call_args_list[-1]
+        assert last[0][1] == Status.FAILED
+        assert last[1]["file_key"] == "key-one; key-three"
+        assert last[1]["duration"] == 200  # only the two that uploaded
+        assert "uploaded 2 of 3" in last[1]["error"]
+        assert "two: network blip" in last[1]["error"]
+
+    def test_all_items_failing_is_reported_as_a_total_failure(self, pending_entry, config, tmp_path):
+        results = self._three_items(tmp_path)
+        notion = MagicMock()
+        storage = MagicMock()
+        storage.upload.side_effect = RuntimeError("bucket gone")
+
+        with patch("mediasync.pipeline.download", return_value=results):
+            with patch("mediasync.pipeline.tag_file"):
+                assert _process_entry(pending_entry, notion, storage, config) is False
+
+        last = notion.update_status.call_args_list[-1]
+        assert last[0][1] == Status.FAILED
+        assert "all 3 item(s) failed" in last[1]["error"]
+        assert "file_key" not in last[1]
+
+    def test_temp_files_are_cleaned_up_even_after_a_partial_failure(self, pending_entry, config, tmp_path):
+        results = self._three_items(tmp_path)
+        storage = MagicMock()
+        storage.upload.side_effect = ["k1", RuntimeError("blip"), "k3"]
+
+        with patch("mediasync.pipeline.download", return_value=results):
+            with patch("mediasync.pipeline.tag_file"):
+                _process_entry(pending_entry, MagicMock(), storage, config)
+
+        assert [r.path.exists() for r in results] == [False, False, False]
+
+    def test_playlist_m3u_only_references_items_that_uploaded(self, pending_entry, config, tmp_path):
+        """An M3U built from all results would point at keys that were never stored."""
+        results = self._three_items(tmp_path)
+        storage = MagicMock()
+        storage.upload.side_effect = ["key-one", RuntimeError("blip"), "key-three"]
+
+        with (
+            patch("mediasync.pipeline.download", return_value=results),
+            patch("mediasync.pipeline.tag_file"),
+            patch("mediasync.pipeline.is_playlist", return_value=True),
+            patch("mediasync.pipeline._upload_playlist") as mock_playlist,
+        ):
+            _process_entry(pending_entry, MagicMock(), storage, config)
+
+        passed_results, passed_keys = mock_playlist.call_args[0][0], mock_playlist.call_args[0][1]
+        assert [r.title for r in passed_results] == ["one", "three"]
+        assert passed_keys == ["key-one", "key-three"]
+
+    def test_playlist_upload_failure_does_not_fail_the_entry(self, pending_entry, config, tmp_path):
+        """The media is already stored; losing the convenience M3U must not undo that."""
+        results = self._three_items(tmp_path)
+        notion = MagicMock()
+        storage = MagicMock()
+        storage.upload.return_value = "key"
+
+        with (
+            patch("mediasync.pipeline.download", return_value=results),
+            patch("mediasync.pipeline.tag_file"),
+            patch("mediasync.pipeline.is_playlist", return_value=True),
+            patch("mediasync.pipeline._upload_playlist", side_effect=RuntimeError("m3u boom")),
+        ):
+            assert _process_entry(pending_entry, notion, storage, config) is True
+
+        assert notion.update_status.call_args_list[-1][0][1] == Status.DONE
+
+    def test_vanished_file_logs_path_and_directory_contents(self, pending_entry, config, tmp_path, caplog):
+        """The original mystery failure was a bare ENOENT with no context about which
+        item it was or what else was in the directory."""
+        present = tmp_path / "kept.m4a"
+        present.write_bytes(b"audio")
+        ghost = tmp_path / "vanished.m4a"
+        storage = MagicMock()
+        storage.upload.return_value = "key"
+
+        results = [self._result(present, "kept"), self._result(ghost, "vanished")]
+        with (
+            caplog.at_level("ERROR", logger="mediasync.pipeline"),
+            patch("mediasync.pipeline.download", return_value=results),
+            patch("mediasync.pipeline.tag_file"),
+        ):
+            _process_entry(pending_entry, MagicMock(), storage, config)
+
+        text = caplog.text
+        assert str(ghost) in text
+        assert "kept.m4a" in text  # directory listing
+        assert "free=" in text
 
 
 class TestProcessDeletionsErrorHandling:

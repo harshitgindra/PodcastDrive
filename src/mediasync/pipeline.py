@@ -6,8 +6,10 @@ updates Notion. Safe to run from any machine.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
@@ -17,6 +19,7 @@ from mediasync.downloader import (
     DownloadError,
     DownloadResult,
     DurationExceededError,
+    MissingDownloadError,
     cache_metadata,
     cleanup_results,
     download,
@@ -380,8 +383,11 @@ def _process_entry(
         notion.update_status(entry.page_id, Status.FAILED, error=str(exc))
         return False
 
-    # Tag and upload
-    file_keys: list[str] = []
+    # Tag and upload.  Each item is handled independently: a 100-item playlist
+    # used to lose all 99 successful uploads because one file was missing, and the
+    # row was marked failed with no record of what had already been stored.
+    uploaded: list[tuple[DownloadResult, str]] = []
+    failures: list[str] = []
     total_duration = 0
     total_items = len(results)
     try:
@@ -392,39 +398,59 @@ def _process_entry(
                     entry.page_id, Status.DOWNLOADING,
                     error=f"Uploading {idx}/{total_items}: {result.title}",
                 )
-
-            tag_file(result.path, result.title, result.artist)
+            try:
+                file_key = _tag_and_upload(result, entry, storage, config)
+            except Exception as exc:
+                logger.error(
+                    "Item %d/%d failed for %s — %r at %s: %s",
+                    idx, total_items, entry.url, result.title, result.path, exc,
+                    exc_info=True,
+                )
+                failures.append(f"{result.title}: {exc}")
+                continue
+            uploaded.append((result, file_key))
             total_duration += result.duration_secs
 
-            fmt_folder = "audio" if result.format_type == "audio" else "video"
-            if config.group_by_channel and result.artist and result.artist != "Unknown":
-                channel = _sanitize_folder_name(result.artist)
-                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}/{channel}"
-            else:
-                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
-            filename = result.path.name
-
-            file_key = storage.upload(result.path, remote_folder, filename)
-            file_keys.append(file_key)
-
-            # Upload folder artwork (once per unique remote_folder)
-            if result.thumbnail_url and remote_folder not in _uploaded_artwork:
-                _upload_folder_artwork(
-                    result.thumbnail_url, remote_folder, storage, config.output_dir
+        # Generate and upload M3U playlist for playlist URLs with multiple items.
+        # Built from the items that actually uploaded, so a partial run still gets
+        # a playable playlist instead of one referencing keys that do not exist.
+        if is_playlist(url) and len(uploaded) > 1:
+            try:
+                _upload_playlist(
+                    [r for r, _ in uploaded], [k for _, k in uploaded], entry, storage, config
                 )
-                _uploaded_artwork.add(remote_folder)
-
-        # Generate and upload M3U playlist for playlist URLs with multiple items
-        if is_playlist(url) and len(results) > 1:
-            _upload_playlist(results, file_keys, entry, storage, config)
-
-    except Exception as exc:
-        logger.error("Upload failed: %s — %s", entry.url, exc)
-        notion.update_status(entry.page_id, Status.FAILED, error=str(exc))
-        return False
+            except Exception as exc:
+                # The M3U is a convenience; the media is already stored.
+                logger.warning("Playlist upload failed for %s (non-fatal): %s", entry.url, exc)
     finally:
         # Always clean up temp files
         cleanup_results(results)
+
+    file_keys = [k for _, k in uploaded]
+    if not uploaded:
+        summary = f"all {total_items} item(s) failed: " + "; ".join(failures)
+        logger.error("Upload failed: %s — %s", entry.url, summary)
+        notion.update_status(entry.page_id, Status.FAILED, error=summary)
+        return False
+
+    if failures:
+        # Partial: record the keys that did land so the work is not lost, but do
+        # not claim the entry is done.  Status stays FAILED rather than a new
+        # "partial" option because get_pending()/get_processed() filter on the
+        # existing values, and an unknown status would orphan the row.
+        summary = (
+            f"uploaded {len(uploaded)} of {total_items} item(s); "
+            f"{len(failures)} failed: " + "; ".join(failures)
+        )
+        logger.error("Partial upload for %s — %s", entry.url, summary)
+        notion.update_status(
+            entry.page_id,
+            Status.FAILED,
+            file_key="; ".join(file_keys),
+            duration=total_duration,
+            error=summary,
+        )
+        return False
 
     notion.update_status(
         entry.page_id,
@@ -433,6 +459,64 @@ def _process_entry(
         duration=total_duration,
     )
     return True
+
+
+def _tag_and_upload(
+    result: DownloadResult,
+    entry: MediaEntry,
+    storage: StorageBackend,
+    config: Config,
+) -> str:
+    """Tag one downloaded file and upload it, returning its remote key."""
+    _assert_present(result)
+
+    tag_file(result.path, result.title, result.artist)
+
+    fmt_folder = "audio" if result.format_type == "audio" else "video"
+    if config.group_by_channel and result.artist and result.artist != "Unknown":
+        channel = _sanitize_folder_name(result.artist)
+        remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}/{channel}"
+    else:
+        remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
+
+    file_key = storage.upload(result.path, remote_folder, result.path.name)
+
+    # Upload folder artwork (once per unique remote_folder)
+    if result.thumbnail_url and remote_folder not in _uploaded_artwork:
+        _upload_folder_artwork(result.thumbnail_url, remote_folder, storage, config.output_dir)
+        _uploaded_artwork.add(remote_folder)
+
+    return file_key
+
+
+def _assert_present(result: DownloadResult) -> None:
+    """Raise a diagnosable error when a downloaded file is gone before upload.
+
+    A file that existed at download time and is missing at upload time produced a
+    bare ``FileNotFoundError`` from mutagen, which said nothing about which item it
+    was or what else was in the directory.  Capture that context here so the next
+    occurrence is a diagnosis instead of a mystery.
+    """
+    if result.path.exists():
+        return
+
+    # List the directory the file was actually written to, not the configured
+    # output_dir: they are normally the same, and when they are not, this is the
+    # one that matters.
+    directory = result.path.parent
+    listing = "<unreadable>"
+    with contextlib.suppress(OSError):
+        listing = ", ".join(sorted(p.name for p in directory.iterdir())) or "<empty>"
+    free = "unknown"
+    with contextlib.suppress(OSError):
+        free = f"{shutil.disk_usage(directory).free / 1e9:.2f} GB"
+
+    logger.error(
+        "Downloaded file vanished before upload: %s (title=%r)\n"
+        "  dir=%s free=%s\n  contents: %s",
+        result.path, result.title, directory, free, listing,
+    )
+    raise MissingDownloadError(f"downloaded file vanished before upload: {result.path}")
 
 
 def _upload_playlist(

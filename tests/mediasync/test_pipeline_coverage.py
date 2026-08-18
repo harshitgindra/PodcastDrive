@@ -458,6 +458,8 @@ class TestProcessEntryUploadFailure:
 
         assert result is False
         # Check it was marked as failed
+        # The summary now names the item and the totals, because one failed item in a
+        # 100-item playlist used to be reported as a bare exception string.
         notion.update_status.assert_any_call(
-            "page-1", Status.FAILED, error="S3 access denied"
+            "page-1", Status.FAILED, error="all 1 item(s) failed: Song: S3 access denied"
         )
