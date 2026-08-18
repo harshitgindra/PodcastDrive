@@ -232,7 +232,6 @@ class TestReconcileWithStorage:
     @patch("mediasync.pipeline.get_metadata")
     def test_no_group_by_channel(self, mock_meta, audio_entry):
         """Without group_by_channel, path has no channel folder."""
-        from dataclasses import replace
         from mediasync.config import Config, Profile
         config = Config(
             notion_token="token",

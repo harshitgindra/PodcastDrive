@@ -7,7 +7,6 @@ can handle. For non-YouTube URLs, uses yt-dlp'\''s built-in search/extractors.
 from __future__ import annotations
 
 import logging
-import re
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -84,6 +83,4 @@ def is_supported_url(url: str) -> bool:
     if url.startswith("http://") or url.startswith("https://"):
         return True
     # Allow search-style queries (will be prefixed with ytsearch:)
-    if len(url) > 3 and not url.startswith("/"):
-        return True
-    return False
+    return len(url) > 3 and not url.startswith("/")

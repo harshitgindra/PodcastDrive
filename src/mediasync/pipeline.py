@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from mediasync.artwork import download_thumbnail
 from mediasync.config import Config
-from mediasync.url_handler import normalize_url
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 from mediasync.downloader import (
     DownloadError,
     DownloadResult,
@@ -33,6 +31,7 @@ from mediasync.playlist_sync import sync_playlists
 from mediasync.standing_playlists import generate_standing_playlists
 from mediasync.storage import StorageBackend, create_storage
 from mediasync.tagger import tag_file
+from mediasync.url_handler import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +449,10 @@ def _upload_playlist(
     relative_keys = make_relative_keys(playlist_folder, file_keys)
 
     items = []
-    for result, rel_key in zip(results, relative_keys):
+    # strict=True: relative_keys is built 1:1 from file_keys, which is appended
+    # once per result. A length mismatch means a real bug, not something to
+    # silently truncate.
+    for result, rel_key in zip(results, relative_keys, strict=True):
         items.append({
             "remote_key": rel_key,
             "title": result.title,

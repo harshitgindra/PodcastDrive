@@ -1,13 +1,27 @@
-"""Configure pytest to find src/ modules."""
+"""Shared pytest configuration.
+
+This is the *single* place that puts the project source on ``sys.path``.
+The root conftest is imported before any test module is collected, so every
+test — including those under ``tests/mediasync/`` — inherits it. Individual
+test modules must not re-insert the path.
+"""
 
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-# Add src/ to the path so test files can import from it
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+_ROOT = Path(__file__).resolve().parent.parent
+
+# `src` holds both the flat top-level modules (ad_remover, sync, ...) and the
+# `mediasync` package; `eval` holds the evaluation harness exercised by
+# tests/test_run_eval.py.
+for _path in (_ROOT / "src", _ROOT / "eval"):
+    _entry = str(_path)
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
 # ---------------------------------------------------------------------------
 # Ensure boto3/botocore never tries to resolve a real AWS profile during tests.

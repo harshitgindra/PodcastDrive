@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from mediasync.notion_client import Format, MediaEntry, Status
 from mediasync.playlist_sync import (
     _build_known_set,

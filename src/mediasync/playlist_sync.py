@@ -12,7 +12,7 @@ import logging
 import re
 
 from mediasync.downloader import DownloadError, get_playlist_metadata, is_playlist
-from mediasync.notion_client import Format, MediaEntry, NotionClient
+from mediasync.notion_client import MediaEntry, NotionClient
 
 logger = logging.getLogger(__name__)
 

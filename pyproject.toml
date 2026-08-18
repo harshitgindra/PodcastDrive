@@ -1,3 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "podcastdrive"
+version = "0.1.0"
+description = "YouTube/RSS to private podcast feed with AI ad removal, plus on-demand media sync"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.35.24,<2",
+    "certifi>=2024.0",
+    "mutagen>=1.47,<2",
+    "pyyaml>=6.0,<7",
+    "tenacity>=8.2,<10",
+    "yt-dlp>=2024.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis>=6.0,<7",
+    "moto[s3]>=5.0,<6",
+    "pytest>=7.0,<9",
+    "pytest-cov>=4.0,<6",
+    "pytest-mock>=3.0,<4",
+    "ruff>=0.6",
+]
+
+# `src` holds the flat top-level modules (ad_remover, sync, utils, ...) plus the
+# `mediasync` package. Mapping it as the package root keeps every existing
+# import (`from ad_remover import ...`, `from mediasync.pipeline import ...`)
+# working unchanged, so `pip install -e .` replaces the sys.path/PYTHONPATH
+# juggling without a repo-wide import rewrite.
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120

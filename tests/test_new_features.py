@@ -16,9 +16,6 @@ import tempfile
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-
 # ---------------------------------------------------------------------------
 # Fix 1: Audio format selector + MP3_QUALITY
 # ---------------------------------------------------------------------------

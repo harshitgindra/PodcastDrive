@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import os
-import sys
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from config_provider import PodcastConfig
 from podcast_downloader import EpisodeMeta

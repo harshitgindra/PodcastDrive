@@ -5,13 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from podcast_downloader import (
     _parse_duration,

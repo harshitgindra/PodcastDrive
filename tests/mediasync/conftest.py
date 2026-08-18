@@ -1,12 +1,9 @@
-"""Ensure src/ is on path for mediasync tests."""
+"""MediaSync-specific test fixtures.
 
-import os
-import sys
-from unittest.mock import patch
+Path setup lives in the root ``tests/conftest.py``.
+"""
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 
 @pytest.fixture(autouse=True)

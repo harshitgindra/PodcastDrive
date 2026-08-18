@@ -228,7 +228,10 @@ export MAX_AGE_DAYS="${MAX_AGE_DAYS:-7}"
 export SLEEP_BETWEEN_DOWNLOADS="${SLEEP_BETWEEN_DOWNLOADS:-5}"
 export CONFIG_PROVIDER="${CONFIG_PROVIDER:-yaml}"
 export PODCASTS_YAML="${PODCASTS_YAML:-${SCRIPT_DIR}/podcasts.yaml}"
-export PYTHONPATH="${SCRIPT_DIR}/src"
+# Appended, not assigned, so an inherited PYTHONPATH survives. Kept even
+# though `pip install -e .` is now supported: run.sh must work standalone on a
+# fresh machine without an install step.
+export PYTHONPATH="${SCRIPT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # --- Runner identification ---
 # Auto-detect: hostname + trigger source (cron/webhook/manual)

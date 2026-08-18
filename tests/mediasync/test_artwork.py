@@ -1,7 +1,7 @@
 """Tests for mediasync.artwork module."""
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from mediasync.artwork import download_thumbnail
 

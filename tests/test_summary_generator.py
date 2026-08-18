@@ -7,10 +7,7 @@ model selection, and failure handling.  All AWS calls are mocked.
 from __future__ import annotations
 
 import os
-import sys
 from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from summary_generator import generate_episode_summary
 

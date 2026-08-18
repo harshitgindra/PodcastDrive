@@ -1,6 +1,5 @@
 """Tests for mediasync.playlist module."""
 
-from pathlib import Path
 
 from mediasync.playlist import (
     _relative_posix,

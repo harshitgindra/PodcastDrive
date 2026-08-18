@@ -21,7 +21,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Ensure src/ is on the path (conftest.py usually handles this, but be explicit)
-sys.path.insert(0, "src")
 
 
 # ---------------------------------------------------------------------------

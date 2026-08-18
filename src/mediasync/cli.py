@@ -104,7 +104,7 @@ def _run_migration(config: Config, *, dry_run: bool = False) -> int:
 
     stats = migrate(config, dry_run=dry_run)
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Moved:     {stats['moved']}")
     print(f"  Skipped:   {stats['skipped']}")
     print(f"  Failed:    {stats['failed']}")
@@ -124,7 +124,6 @@ def _run_regenerate_playlists(config: Config) -> int:
 
 def _check_health(config: Config) -> int:
     """Validate storage connection health."""
-    from mediasync.storage import create_storage
 
     print(f"Storage backend: {config.storage_backend}")
 
@@ -149,7 +148,7 @@ def _check_health(config: Config) -> int:
             print("FAIL: OneDrive health check failed")
             return 1
     elif config.storage_backend == "s3":
-        from mediasync.s3_client import S3Client, S3Error
+        from mediasync.s3_client import S3Client
         try:
             client = S3Client(config.s3_bucket, config.s3_region)
             # Verify bucket access with a HEAD request

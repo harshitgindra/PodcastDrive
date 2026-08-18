@@ -347,14 +347,21 @@ def _download_single(
 
             attempt_count = [0]
 
-            def _run_download() -> subprocess.CompletedProcess:
+            # Loop variables are bound as defaults rather than captured: the
+            # closure is only invoked within this iteration today, but a late
+            # binding here would silently retry the *wrong* format.
+            def _run_download(
+                _cmd: list[str] = cmd,
+                _dl_format: str = dl_format,
+                _attempts: list[int] = attempt_count,
+            ) -> subprocess.CompletedProcess:
                 # Clean up partials from a previous failed attempt (not first try)
-                if attempt_count[0] > 0:
+                if _attempts[0] > 0:
                     _discard_partials(output_dir, stem)
-                attempt_count[0] += 1
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+                _attempts[0] += 1
+                proc = subprocess.run(_cmd, capture_output=True, text=True, timeout=3600)
                 if proc.returncode != 0:
-                    raise DownloadError(f"yt-dlp failed ({dl_format}): {proc.stderr[:500]}")
+                    raise DownloadError(f"yt-dlp failed ({_dl_format}): {proc.stderr[:500]}")
                 return proc
 
             retry_on_error(

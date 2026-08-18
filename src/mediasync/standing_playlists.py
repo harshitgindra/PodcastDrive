@@ -8,12 +8,11 @@ import these for quick access without browsing folders.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from mediasync.config import Config
-from mediasync.notion_client import NotionClient, Status
+from mediasync.notion_client import NotionClient
 from mediasync.playlist import generate_m3u, make_relative_keys
-from mediasync.storage import StorageBackend, create_storage
+from mediasync.storage import StorageBackend
 
 logger = logging.getLogger(__name__)
 

@@ -70,9 +70,6 @@ def cloudfront_base():
 @pytest.fixture(scope="module")
 def s3_manager(s3_bucket):
     """Return an S3Manager wired to the test bucket + a fixed test playlist ID."""
-    import sys
-
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
     from s3_manager import S3Manager
 
     return S3Manager(bucket=s3_bucket, playlist_id="integration-test-playlist")
@@ -140,9 +137,6 @@ class TestExtractorIntegration:
 
     def test_extract_playlist_returns_entries(self):
         """extract_playlist should return a PlaylistMeta and at least one VideoEntry."""
-        import sys
-
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from extractor import extract_playlist
 
         playlist_meta, entries = extract_playlist(TEST_PLAYLIST_URL)
@@ -152,9 +146,6 @@ class TestExtractorIntegration:
 
     def test_extract_video_metadata_returns_dict(self):
         """extract_video_metadata should return a dict with expected keys for a valid video."""
-        import sys
-
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from extractor import extract_playlist, extract_video_metadata
 
         _, entries = extract_playlist(TEST_PLAYLIST_URL)
@@ -176,9 +167,6 @@ class TestRssGeneratorIntegration:
 
     def test_generate_rss_from_s3_episodes(self, s3_manager, cloudfront_base):
         """generate_rss should produce parseable XML from real S3 episode keys."""
-        import sys
-
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from extractor import extract_playlist
         from rss_generator import build_episode_metadata, generate_rss
 
@@ -211,9 +199,6 @@ class TestProcessPlaylistIntegration:
 
     def test_dry_run_returns_expected_keys(self, s3_bucket, cloudfront_base):
         """process_playlist(dry_run=True) should return a dict with all expected keys."""
-        import sys
-
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from sync import process_playlist
 
         os.environ["S3_BUCKET"] = s3_bucket
@@ -241,9 +226,6 @@ class TestProcessPlaylistIntegration:
 
     def test_dry_run_does_not_modify_s3(self, s3_manager, s3_bucket, cloudfront_base):
         """process_playlist(dry_run=True) must leave S3 state unchanged."""
-        import sys
-
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
         from sync import process_playlist
 
         os.environ["S3_BUCKET"] = s3_bucket

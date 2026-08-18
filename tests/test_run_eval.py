@@ -14,7 +14,6 @@ from unittest.mock import patch
 import pytest
 
 # Add eval/ to path so we can import run_eval
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "eval"))
 
 
 def _seg(start: float, end: float, label: str = "ad") -> dict:

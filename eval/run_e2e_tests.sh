@@ -65,7 +65,7 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
     fail "Virtual environment not found at $PROJECT_DIR/.venv — run ./run.sh once to create it"
     exit 2
 fi
-export PYTHONPATH="$PROJECT_DIR/src"
+export PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── Pre-flight: check fixtures exist ──────────────────────────────────────────
 echo ""

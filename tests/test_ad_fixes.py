@@ -14,14 +14,9 @@ observed in production eval reports.
 from __future__ import annotations
 
 import json
-import os
 
 # Ensure src/ is importable
-import sys
 from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 
 # ---------------------------------------------------------------------------
 # Helpers shared across tests

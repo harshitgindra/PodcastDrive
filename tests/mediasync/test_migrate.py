@@ -1,12 +1,10 @@
 """Tests for mediasync.migrate module."""
 
-from pathlib import PurePosixPath
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mediasync.config import Config, Profile
-from mediasync.notion_client import Format, MediaEntry, Status
 from mediasync.migrate import (
     _get_channel_for_url,
     _migrate_entry,
@@ -14,6 +12,7 @@ from mediasync.migrate import (
     migrate,
     regenerate_playlists,
 )
+from mediasync.notion_client import Format, MediaEntry, Status
 
 
 @pytest.fixture
@@ -181,8 +180,8 @@ class TestMigrate:
 
 class TestRegeneratePlaylists:
     def test_calls_generate_standing_playlists(self, config):
-        with patch("mediasync.migrate.NotionClient") as MockNotion:
-            with patch("mediasync.migrate.create_storage") as MockStorage:
+        with patch("mediasync.migrate.NotionClient"):
+            with patch("mediasync.migrate.create_storage"):
                 with patch("mediasync.migrate.generate_standing_playlists", return_value=4) as mock_gen:
                     count = regenerate_playlists(config)
 

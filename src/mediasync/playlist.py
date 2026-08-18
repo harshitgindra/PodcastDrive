@@ -95,7 +95,8 @@ def _relative_posix(target: PurePosixPath, base: PurePosixPath) -> PurePosixPath
     base_parts = list(base.parts)
 
     common = 0
-    for a, b in zip(target_parts, base_parts):
+    # strict=False is intentional: the common prefix ends at the shorter path.
+    for a, b in zip(target_parts, base_parts, strict=False):
         if a == b:
             common += 1
         else:

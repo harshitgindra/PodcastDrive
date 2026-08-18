@@ -1,13 +1,12 @@
 """Tests for resumability and playlist sync integration."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from mediasync.config import Config, Profile
-from mediasync.downloader import DownloadError
 from mediasync.notion_client import Format, MediaEntry, NotionClient, Status
-from mediasync.pipeline import run, RunStats
+from mediasync.pipeline import run
 
 
 @pytest.fixture

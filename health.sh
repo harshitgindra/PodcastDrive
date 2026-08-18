@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python3"
-export PYTHONPATH="${SCRIPT_DIR}/src"
+export PYTHONPATH="${SCRIPT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # Load config for S3_BUCKET and AWS_DEFAULT_REGION
 if [ -f "${SCRIPT_DIR}/config.env" ]; then

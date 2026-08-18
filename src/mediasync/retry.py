@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +111,8 @@ def is_transient_download_error(exc: Exception) -> bool:
         "sign in",
         "members-only",
     ]
-    if any(indicator in msg for indicator in permanent_indicators):
-        return False
-
-    # Default: retry (assume transient)
-    return True
+    # Default: retry (assume transient) unless the error is clearly permanent.
+    return not any(indicator in msg for indicator in permanent_indicators)
 
 
 def _default_retryable(exc: Exception) -> bool:

@@ -1,12 +1,11 @@
 """Tests for OneDrive health check and token rotation."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mediasync.onedrive_client import OneDriveClient, OneDriveError
+from mediasync.onedrive_client import OneDriveClient
 
 
 @pytest.fixture
@@ -107,7 +106,8 @@ class TestPersistRotatedToken:
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
 
-        client = OneDriveClient("id", "secret", "old_token")
+        # Constructed for its token-rotation side effect on the env file.
+        OneDriveClient("id", "secret", "old_token")
 
         content = env_file.read_text()
         assert "MEDIASYNC_ONEDRIVE_REFRESH_TOKEN=brand_new_token" in content

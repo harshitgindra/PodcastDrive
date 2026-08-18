@@ -8,11 +8,7 @@ All external I/O is mocked:
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, "src")
-
 
 # ---------------------------------------------------------------------------
 # Helpers

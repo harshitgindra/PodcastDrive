@@ -427,7 +427,6 @@ class TestProcessDeletionsErrorHandling:
 class TestChannelGrouping:
     def test_groups_by_channel_when_enabled(self, config, pending_entry, tmp_path):
         """When group_by_channel=True, upload path includes channel folder."""
-        from pathlib import Path
         from mediasync.config import Config, Profile
 
         cfg = Config(

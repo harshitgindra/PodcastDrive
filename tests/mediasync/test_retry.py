@@ -1,17 +1,14 @@
 """Tests for mediasync.retry module."""
 
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from mediasync.downloader import DownloadError
 from mediasync.retry import (
-    DEFAULT_BASE_DELAY,
-    DEFAULT_MAX_RETRIES,
     is_transient_download_error,
     retry_on_error,
 )
-from mediasync.downloader import DownloadError
 
 
 class TestRetryOnError:

@@ -22,9 +22,16 @@ else
     PYTHON="python3"
 fi
 
-echo "🔍  Running test suite before push (use --no-verify to skip)..."
+echo "🔍  Running lint + test suite before push (use --no-verify to skip)..."
 echo "    Python: $PYTHON"
 echo ""
+
+# Mirror the CI lint gate so a push cannot fail on something checkable locally.
+if "$PYTHON" -m ruff --version >/dev/null 2>&1; then
+    "$PYTHON" -m ruff check src/ tests/
+else
+    echo "⚠️   ruff not installed in the venv — skipping lint (CI will still check)."
+fi
 
 "$PYTHON" -m pytest tests/ \
     --tb=short \
