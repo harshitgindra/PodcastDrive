@@ -68,3 +68,22 @@ def inject_remote_components(ydl_opts: dict) -> dict:
             REMOTE_COMPONENTS_ENV,
         )
     return ydl_opts
+
+
+def remote_component_args() -> list[str]:
+    """Return the ``--remote-components`` CLI flags for subprocess yt-dlp calls.
+
+    The library-based callers use :func:`inject_remote_components`; anything
+    shelling out to the ``yt-dlp`` binary needs the equivalent as argv. Returns
+    an empty list when remote fetching is disabled, so the caller can splice it
+    unconditionally.
+    """
+    components = get_remote_components()
+    if not components:
+        logger.warning(
+            "yt-dlp remote components disabled via %s — YouTube n-challenge solving "
+            "will fail and downloads may report 'Requested format is not available'",
+            REMOTE_COMPONENTS_ENV,
+        )
+        return []
+    return ["--remote-components", ",".join(components)]

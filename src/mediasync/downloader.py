@@ -20,6 +20,15 @@ from pathlib import Path
 from mediasync.notion_client import Format
 from mediasync.retry import is_transient_download_error, retry_on_error
 
+# Shared yt-dlp runtime wiring, deliberately imported from the top-level
+# package. MediaSync otherwise has no dependency on the podcast pipeline, but
+# duplicating these two leaf modules is what let MediaSync drift: it searched
+# different cookie locations and never passed --remote-components, so its
+# downloads silently degraded to storyboard-only formats on any host whose
+# challenge-solver cache had not already been warmed by the podcast pipeline.
+from ytdlp_cookies import cookie_args
+from ytdlp_runtime import remote_component_args
+
 logger = logging.getLogger(__name__)
 
 # Module-level metadata cache: avoids re-fetching metadata for items
@@ -86,9 +95,8 @@ def get_metadata(url: str) -> dict:
         "--no-download",
         "--no-playlist",
     ]
-    cookies = _cookies_path()
-    if cookies:
-        cmd += ["--cookies", str(cookies)]
+    cmd += cookie_args()
+    cmd += remote_component_args()
     cmd.append(url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
@@ -113,9 +121,8 @@ def get_playlist_metadata(url: str) -> list[dict]:
         "--no-download",
         "--flat-playlist",
     ]
-    cookies = _cookies_path()
-    if cookies:
-        cmd += ["--cookies", str(cookies)]
+    cmd += cookie_args()
+    cmd += remote_component_args()
     cmd.append(url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
@@ -151,9 +158,8 @@ def get_full_playlist_metadata(url: str) -> list[dict]:
         "--dump-json",
         "--no-download",
     ]
-    cookies = _cookies_path()
-    if cookies:
-        cmd += ["--cookies", str(cookies)]
+    cmd += cookie_args()
+    cmd += remote_component_args()
     cmd.append(url)
     # Full resolution is slower; allow up to 10 minutes for large playlists
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -435,26 +441,12 @@ def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_s
     return results
 
 
-def _cookies_path() -> Path | None:
-    """Find cookies.txt in project root or home directory."""
-    candidates = [
-        Path.cwd() / "cookies.txt",
-        Path.home() / "cookies.txt",
-        Path.home() / ".config" / "yt-dlp" / "cookies.txt",
-    ]
-    for p in candidates:
-        if p.is_file() and p.stat().st_size > 0:
-            return p
-    return None
-
-
 def _build_cmd(url: str, fmt: str, output: str) -> list[str]:
     """Build yt-dlp command for the given format."""
     cmd = ["yt-dlp", "--no-playlist"]
 
-    cookies = _cookies_path()
-    if cookies:
-        cmd += ["--cookies", str(cookies)]
+    cmd += cookie_args()
+    cmd += remote_component_args()
 
     # Embed YouTube thumbnail as cover art and metadata (title, artist, etc.)
     cmd += ["--embed-thumbnail", "--embed-metadata"]
