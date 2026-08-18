@@ -1,4 +1,8 @@
-.PHONY: install-hooks protect test coverage help
+.PHONY: install-hooks protect test coverage help e2e-test e2e-test-full e2e-update-gt lint format fix
+
+# Always use the project venv interpreter. A bare `python3` resolves to a uv
+# shim on some dev machines, which recreates/destroys .venv as a side effect.
+PYTHON ?= .venv/bin/python3
 
 ## install-hooks: Install the pre-push git hook (blocks pushes that would fail CI)
 install-hooks:
@@ -13,11 +17,11 @@ protect:
 
 ## test: Run the full test suite
 test:
-	python3 -m pytest tests/ --tb=short
+	$(PYTHON) -m pytest tests/ --tb=short
 
 ## coverage: Run tests with coverage report (fails if < 95%)
 coverage:
-	python3 -m pytest tests/ \
+	$(PYTHON) -m pytest tests/ \
 		--tb=short \
 		--cov=src \
 		--cov-report=term-missing \
@@ -41,12 +45,12 @@ e2e-update-gt:
 
 ## lint: Run ruff linter
 lint:
-	python3 -m ruff check src/ tests/
+	$(PYTHON) -m ruff check src/ tests/
 
 ## format: Auto-format code with ruff
 format:
-	python3 -m ruff format src/ tests/
+	$(PYTHON) -m ruff format src/ tests/
 
 ## fix: Auto-fix linting issues
 fix:
-	python3 -m ruff check --fix src/ tests/
+	$(PYTHON) -m ruff check --fix src/ tests/

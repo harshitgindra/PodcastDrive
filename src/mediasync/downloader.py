@@ -9,10 +9,10 @@ Supports both single videos and playlists.
 
 from __future__ import annotations
 
-import glob
 import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +39,10 @@ def clear_metadata_cache() -> None:
 
 class DownloadError(Exception):
     """Raised when download or conversion fails."""
+
+
+class MissingDownloadError(DownloadError):
+    """A file that was downloaded successfully is no longer on disk."""
 
 
 class DurationExceededError(DownloadError):
@@ -194,8 +198,27 @@ def download(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     if is_playlist(url):
-        return _download_playlist(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
-    return _download_single(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
+        results = _download_playlist(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
+    else:
+        results = _download_single(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
+    _assert_results_present(results)
+    return results
+
+
+def _assert_results_present(results: list[DownloadResult]) -> None:
+    """Fail fast if a result points at a file that is no longer on disk.
+
+    Without this the caller only discovers the loss at the tag/upload step,
+    surfacing as a bare ``FileNotFoundError`` with no indication of which
+    item vanished or why — which is exactly how the sibling-deletion bug in
+    ``_discard_partials`` stayed unexplained.
+    """
+    missing = [r for r in results if not r.path.exists()]
+    if missing:
+        detail = ", ".join(f"{r.title!r} -> {r.path}" for r in missing)
+        raise MissingDownloadError(
+            f"{len(missing)} of {len(results)} downloaded file(s) disappeared before upload: {detail}"
+        )
 
 
 def cleanup_results(results: list[DownloadResult]) -> None:
@@ -207,20 +230,63 @@ def cleanup_results(results: list[DownloadResult]) -> None:
             logger.warning("Could not delete %s: %s", result.path, exc)
 
 
+#: Extensions yt-dlp may leave behind for a given output stem: final media
+#: containers, per-format streams, in-progress temp files, and thumbnails.
+_LEFTOVER_EXTS = frozenset(
+    {
+        # media containers
+        "m4a", "mp3", "opus", "webm", "mp4", "mkv", "aac", "ogg", "flac", "wav",
+        # in-progress / auxiliary
+        "part", "ytdl", "temp", "jpg", "jpeg", "png", "webp",
+    }
+)
+
+#: Per-format stream suffix yt-dlp injects, e.g. ``Title.f140.m4a``.
+_FORMAT_ID_RE = re.compile(r"^f\d+$")
+
+
+def _is_leftover_for_stem(name: str, stem: str) -> bool:
+    """Is *name* a file yt-dlp would have written for exactly *stem*?
+
+    The match is anchored on ``{stem}.`` and every remaining dot-separated
+    token must be a known extension or a yt-dlp format id.  A bare prefix
+    test is *not* safe here: ``_claim_stem`` hands sibling playlist items
+    stems like ``Song`` and ``Song (2)``, and a title may legitimately be a
+    prefix of another (``Intro`` / ``Intro Part 1``).  Globbing ``Song*``
+    therefore deleted a *different*, already-completed item mid-run, whose
+    DownloadResult then failed with ENOENT at the tag/upload step.
+    """
+    prefix = f"{stem}."
+    if not name.startswith(prefix):
+        return False
+    remainder = name[len(prefix):]
+    if not remainder:
+        return False
+    tokens = remainder.split(".")
+    return all(tok.lower() in _LEFTOVER_EXTS or _FORMAT_ID_RE.match(tok) for tok in tokens)
+
+
 def _discard_partials(output_dir: str, stem: str) -> None:
     """Remove any (possibly partial) files yt-dlp wrote for *stem*.
 
     A failed or interrupted yt-dlp run leaves ``Title.m4a``, ``Title.part``,
     ``Title.f140.m4a`` and friends behind.  Nothing else ever cleans them up,
     so the temp directory grew without bound on every download failure.
+
+    Only files belonging to *stem* itself are removed — never those of a
+    sibling item whose title merely starts with the same text.
     """
-    for leftover in Path(output_dir).glob(f"{glob.escape(stem)}*"):
-        if leftover.is_file():
-            try:
-                leftover.unlink()
-                logger.info("Removed partial download %s", leftover)
-            except OSError as exc:  # pragma: no cover - defensive
-                logger.warning("Could not remove partial download %s: %s", leftover, exc)
+    directory = Path(output_dir)
+    if not directory.is_dir():
+        return
+    for leftover in directory.iterdir():
+        if not leftover.is_file() or not _is_leftover_for_stem(leftover.name, stem):
+            continue
+        try:
+            leftover.unlink()
+            logger.info("Removed partial download %s", leftover)
+        except OSError as exc:  # pragma: no cover - defensive
+            logger.warning("Could not remove partial download %s: %s", leftover, exc)
 
 
 def _claim_stem(title: str, claimed: set[str]) -> str:
@@ -403,13 +469,27 @@ def _build_cmd(url: str, fmt: str, output: str) -> list[str]:
 
 
 def _find_output(expected: Path) -> Path:
-    """Find the actual output file (yt-dlp may adjust extension)."""
+    """Find the actual output file (yt-dlp may adjust extension).
+
+    Uses an explicit prefix comparison rather than ``glob`` so that titles
+    containing glob metacharacters (``Song [live]``) still match their own
+    file instead of being read as a character class and reported missing.
+    """
     if expected.exists():
         return expected
-    # Search for alternatives with same stem
-    for alt in expected.parent.glob(f"{expected.stem}.*"):
-        if alt.suffix in (".m4a", ".mp3", ".opus", ".webm", ".mp4", ".mkv"):
+    _MEDIA = (".m4a", ".mp3", ".opus", ".webm", ".mp4", ".mkv")
+    prefix = f"{expected.stem}."
+    fallback: Path | None = None
+    for alt in sorted(expected.parent.iterdir()):
+        if not alt.is_file() or not alt.name.startswith(prefix) or alt.suffix not in _MEDIA:
+            continue
+        # `Title.m4a` wins over a per-format leftover like `Title.f140.m4a`.
+        if alt.stem == expected.stem:
             return alt
+        if fallback is None:
+            fallback = alt
+    if fallback is not None:
+        return fallback
     raise DownloadError(f"Output file not found: {expected}")
 
 

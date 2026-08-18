@@ -11,6 +11,7 @@ from mediasync.downloader import (
     DownloadError,
     DownloadResult,
     DurationExceededError,
+    MissingDownloadError,
     _build_cmd,
     _discard_partials,
     _find_output,
@@ -648,3 +649,100 @@ class TestPartialDownloadCleanup:
         _discard_partials(str(tmp_path), "Song [live]")
 
         assert {p.name for p in tmp_path.iterdir()} == {"Songs.m4a"}
+
+    def test_discard_partials_spares_sibling_with_stem_as_prefix(self, tmp_path):
+        """Regression: a retry must not delete another item's finished file.
+
+        ``_claim_stem`` gives duplicate titles stems like ``Song`` and
+        ``Song (2)``, and unrelated items may share a prefix (``Intro`` /
+        ``Intro Part 1``).  A prefix glob deleted those siblings, after which
+        the retry succeeded and the pipeline hit ENOENT at the tag/upload step.
+        """
+        (tmp_path / "Song.m4a").write_bytes(b"failing item")
+        (tmp_path / "Song.part").write_bytes(b"failing item partial")
+        (tmp_path / "Song (2).m4a").write_bytes(b"sibling, already done")
+        (tmp_path / "Intro Part 1.m4a").write_bytes(b"unrelated, already done")
+
+        _discard_partials(str(tmp_path), "Song")
+
+        assert {p.name for p in tmp_path.iterdir()} == {
+            "Song (2).m4a",
+            "Intro Part 1.m4a",
+        }
+
+    def test_discard_partials_removes_format_and_temp_variants(self, tmp_path):
+        for name in (
+            "Song.m4a",
+            "Song.part",
+            "Song.ytdl",
+            "Song.f140.m4a",
+            "Song.m4a.part",
+            "Song.webp",
+        ):
+            (tmp_path / name).write_bytes(b"x")
+        (tmp_path / "Song.Live Session.m4a").write_bytes(b"different title")
+
+        _discard_partials(str(tmp_path), "Song")
+
+        assert {p.name for p in tmp_path.iterdir()} == {"Song.Live Session.m4a"}
+
+    def test_discard_partials_missing_dir_is_noop(self, tmp_path):
+        _discard_partials(str(tmp_path / "nope"), "Song")
+
+    def test_find_output_matches_title_with_glob_metacharacters(self, tmp_path):
+        """Regression: an unescaped glob made bracketed titles look missing."""
+        actual = tmp_path / "Song [live].opus"
+        actual.write_bytes(b"x")
+
+        assert _find_output(tmp_path / "Song [live].m4a") == actual
+
+    def test_download_raises_when_result_file_vanished(self, tmp_path):
+        """A file deleted between download and upload must fail loudly."""
+        ghost = DownloadResult(
+            path=tmp_path / "gone.m4a",
+            title="Gone",
+            artist="A",
+            duration_secs=10,
+            thumbnail_url="",
+            format_type="audio",
+        )
+        with patch("mediasync.downloader.is_playlist", return_value=False), patch(
+            "mediasync.downloader._download_single", return_value=[ghost]
+        ):
+            with pytest.raises(MissingDownloadError) as exc:
+                download(
+                    "https://youtu.be/x",
+                    Format.AUDIO,
+                    output_dir=str(tmp_path),
+                    max_duration_secs=99999,
+                )
+        assert "Gone" in str(exc.value)
+        assert "gone.m4a" in str(exc.value)
+
+    def test_download_passes_through_when_files_present(self, tmp_path):
+        real = tmp_path / "here.m4a"
+        real.write_bytes(b"x")
+        ok = DownloadResult(
+            path=real,
+            title="Here",
+            artist="A",
+            duration_secs=10,
+            thumbnail_url="",
+            format_type="audio",
+        )
+        with patch("mediasync.downloader.is_playlist", return_value=False), patch(
+            "mediasync.downloader._download_single", return_value=[ok]
+        ):
+            assert download(
+                "https://youtu.be/x",
+                Format.AUDIO,
+                output_dir=str(tmp_path),
+                max_duration_secs=99999,
+            ) == [ok]
+
+    def test_find_output_prefers_exact_extension_over_format_leftover(self, tmp_path):
+        (tmp_path / "Song.f140.m4a").write_bytes(b"leftover")
+        real = tmp_path / "Song.opus"
+        real.write_bytes(b"real")
+
+        assert _find_output(tmp_path / "Song.m4a") == real

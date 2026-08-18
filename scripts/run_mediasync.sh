@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
-# Run the MediaSync pipeline (OneDrive backend)
+# Thin forwarder to the canonical runner at the repository root.
+#
+# Kept because the Herald `mediasync` service invokes this exact path.
+# All logic — env validation, venv checks, PYTHONPATH, logging — lives in
+# ../run_mediasync.sh so the two entry points cannot drift apart again.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Load env
-set -a
-source "$PROJECT_DIR/mediasync.env"
-set +a
-
-# yt-dlp lives in .venv/bin
-export PATH="$PROJECT_DIR/.venv/bin:$PATH"
-
-# mediasync lives under src/ and is not pip-installed, so nothing but the test
-# conftest puts it on the path. Without this, `python -m mediasync` fails with
-# "No module named mediasync" regardless of the working directory.
-export PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-
-exec "$PROJECT_DIR/.venv/bin/python" -m mediasync "$@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$(cd "$SCRIPT_DIR/.." && pwd)/run_mediasync.sh" "$@"
