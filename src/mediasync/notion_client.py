@@ -80,23 +80,33 @@ class NotionClient:
         """Fetch rows with Status=pending (or empty) and Delete=false.
 
         Sort order: Priority ascending (nulls last), then created_time ascending.
-        This allows urgent items to be processed first when a Priority number is set.
+        Falls back to created_time only if Priority property doesn't exist.
         """
-        return self._query(
-            filter_obj={
-                "and": [
-                    {"or": [
-                        {"property": "Status", "select": {"equals": "pending"}},
-                        {"property": "Status", "select": {"is_empty": True}},
-                    ]},
-                    {"property": "Delete", "checkbox": {"equals": False}},
-                ]
-            },
+        filter_obj = {
+            "and": [
+                {"or": [
+                    {"property": "Status", "select": {"equals": "pending"}},
+                    {"property": "Status", "select": {"equals": "downloading"}},
+                    {"property": "Status", "select": {"is_empty": True}},
+                ]},
+                {"property": "Delete", "checkbox": {"equals": False}},
+            ]
+        }
+        result = self._query(
+            filter_obj=filter_obj,
             sorts=[
                 {"property": "Priority", "direction": "ascending"},
                 {"timestamp": "created_time", "direction": "ascending"},
             ],
         )
+        if result is not None:
+            return result
+        # Priority property may not exist; retry without it
+        logger.info("Retrying get_pending without Priority sort")
+        return self._query(
+            filter_obj=filter_obj,
+            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
+        ) or []
 
     def get_deletions(self) -> list[MediaEntry]:
         """Fetch rows marked for deletion that have been processed."""
@@ -107,7 +117,7 @@ class NotionClient:
                     {"property": "Status", "select": {"equals": "done"}},
                 ]
             }
-        )
+        ) or []
 
     def get_done_for_profile(self, profile: str) -> list[MediaEntry]:
         """Fetch all done entries for a profile (for deduplication)."""
@@ -119,7 +129,7 @@ class NotionClient:
                     {"property": "Delete", "checkbox": {"equals": False}},
                 ]
             }
-        )
+        ) or []
 
     def update_status(
         self,
@@ -159,7 +169,7 @@ class NotionClient:
                     {"property": "Delete", "checkbox": {"equals": False}},
                 ]
             }
-        )
+        ) or []
 
     def reset_status(self, page_id: str) -> None:
         """Clear status and processing metadata so the entry is re-processed."""
@@ -177,12 +187,40 @@ class NotionClient:
         """Archive a page after deletion processing."""
         self._patch(f"{NOTION_API}/pages/{page_id}", {"archived": True})
 
+    def create_entry(self, url: str, profile: str, fmt: Format) -> str | None:
+        """Create a new pending entry in Notion. Returns page_id or None on failure."""
+        payload = {
+            "parent": {"database_id": self._db_id},
+            "properties": {
+                "Name": {"title": [{"text": {"content": url}}]},
+                "Profile": {"select": {"name": profile}},
+                "Format": {"select": {"name": fmt.value}},
+                "Status": {"select": {"name": Status.PENDING.value}},
+                "Delete": {"checkbox": False},
+            },
+        }
+        result = self._post(f"{NOTION_API}/pages", payload)
+        if result and "id" in result:
+            return result["id"]
+        return None
+
+    def get_all_for_profile(self, profile: str) -> list[MediaEntry]:
+        """Fetch all non-deleted entries for a profile (any status)."""
+        return self._query(
+            filter_obj={
+                "and": [
+                    {"property": "Profile", "select": {"equals": profile}},
+                    {"property": "Delete", "checkbox": {"equals": False}},
+                ]
+            }
+        ) or []
+
     def _query(
         self,
         filter_obj: dict[str, Any],
         sorts: list[dict[str, str]] | None = None,
-    ) -> list[MediaEntry]:
-        """Query the database with pagination."""
+    ) -> list[MediaEntry] | None:
+        """Query the database with pagination. Returns None on API failure."""
         entries: list[MediaEntry] = []
         payload: dict[str, Any] = {"filter": filter_obj}
         if sorts:
@@ -202,6 +240,8 @@ class NotionClient:
 
             data = self._post(f"{NOTION_API}/databases/{self._db_id}/query", payload)
             if data is None:
+                if page_num == 1:
+                    return None  # Signal query failure (e.g. invalid sort property)
                 break
 
             for page in data.get("results", []):

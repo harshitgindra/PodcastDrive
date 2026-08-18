@@ -133,10 +133,35 @@ def main():
     print(f"  Storage:       {used_gb:.1f} GB / {total_gb:.1f} GB")
     print(f"  Refresh Token: {refresh_token[:20]}...{refresh_token[-10:]}")
     print(f"{'='*60}")
-    print("\nAdd these to your mediasync.env:")
-    print(f"  MEDIASYNC_ONEDRIVE_CLIENT_ID={args.client_id}")
-    print(f"  MEDIASYNC_ONEDRIVE_CLIENT_SECRET={args.client_secret}")
-    print(f"  MEDIASYNC_ONEDRIVE_REFRESH_TOKEN={refresh_token}")
+
+    # Auto-update mediasync.env
+    import pathlib
+    env_file = pathlib.Path(__file__).resolve().parent.parent / "mediasync.env"
+    if env_file.is_file():
+        content = env_file.read_text()
+        updates = {
+            "MEDIASYNC_ONEDRIVE_CLIENT_ID": args.client_id,
+            "MEDIASYNC_ONEDRIVE_CLIENT_SECRET": args.client_secret,
+            "MEDIASYNC_ONEDRIVE_REFRESH_TOKEN": refresh_token,
+        }
+        lines = content.splitlines()
+        new_lines = []
+        for line in lines:
+            replaced = False
+            for key, val in updates.items():
+                if line.startswith(f"{key}=") or line.startswith(f"export {key}="):
+                    prefix = "export " if line.startswith("export ") else ""
+                    new_lines.append(f"{prefix}{key}={val}")
+                    replaced = True
+                    break
+            if not replaced:
+                new_lines.append(line)
+        env_file.write_text("\n".join(new_lines) + "\n")
+        print(f"\n  \u2705 Updated {env_file}")
+    else:
+        print(f"\n  mediasync.env not found at {env_file}")
+        print(f"  MEDIASYNC_ONEDRIVE_REFRESH_TOKEN={refresh_token}")
+
     print("\nThe refresh token auto-renews on use (90-day rolling expiry).")
 
 

@@ -23,6 +23,7 @@ from mediasync.downloader import (
 )
 from mediasync.notion_client import MediaEntry, NotionClient, Status
 from mediasync.playlist import generate_m3u, make_relative_keys
+from mediasync.playlist_sync import sync_playlists
 from mediasync.standing_playlists import generate_standing_playlists
 from mediasync.storage import StorageBackend, create_storage
 from mediasync.tagger import tag_file
@@ -60,8 +61,14 @@ def run(config: Config) -> RunStats:
     # Phase 1: deletions
     stats.deleted = _process_deletions(notion, storage)
 
-    # Phase 2: pending downloads
-    valid_profiles = {p.name for p in config.profiles}
+    # Phase 2: playlist sync — discover new items added to YouTube playlists
+    profile_names = [p.name for p in config.profiles]
+    new_from_playlists = sync_playlists(notion, profile_names)
+    if new_from_playlists:
+        logger.info("Playlist sync added %d new entries", new_from_playlists)
+
+    # Phase 3: pending downloads
+    valid_profiles = set(profile_names)
     pending = notion.get_pending()
     logger.info("Found %d pending entries", len(pending))
 
@@ -85,7 +92,7 @@ def run(config: Config) -> RunStats:
         else:
             stats.failed += 1
 
-    # Phase 3: regenerate standing playlists if anything changed
+    # Phase 4: regenerate standing playlists if anything changed
     if stats.processed > 0 or stats.deleted > 0:
         generate_standing_playlists(config, notion, storage)
 

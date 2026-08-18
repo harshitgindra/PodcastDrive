@@ -43,7 +43,7 @@ def migrate(config: Config, *, dry_run: bool = False) -> dict[str, int]:
     stats = {"moved": 0, "skipped": 0, "failed": 0, "playlists": 0}
 
     notion = NotionClient(config.notion_token, config.notion_database_id)
-    storage = create_storage(config)
+    storage = None if dry_run else create_storage(config)
 
     for profile in config.profiles:
         done = notion.get_done_for_profile(profile.name)
@@ -87,7 +87,7 @@ def _migrate_entry(
     entry: MediaEntry,
     config: Config,
     notion: NotionClient,
-    storage: StorageBackend,
+    storage: StorageBackend | None,
     *,
     artwork_uploaded: set[str],
     dry_run: bool,
