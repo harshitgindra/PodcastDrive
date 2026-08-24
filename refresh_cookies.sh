@@ -1,6 +1,6 @@
 #!/bin/bash
-# refresh_cookies.sh — Export fresh YouTube cookies from Chrome and deploy to EC2
-# Uses yt-dlp'"'"'s built-in Chrome cookie decryption (handles macOS Keychain).
+# refresh_cookies.sh — Export fresh YouTube cookies from Chrome (local only)
+# Uses yt-dlp'\''s built-in Chrome cookie decryption (handles macOS Keychain).
 # Usage: ./refresh_cookies.sh
 set -euo pipefail
 
@@ -8,21 +8,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COOKIES_FILE="${SCRIPT_DIR}/cookies.txt"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python3"
 
-# Load instance info for EC2 target
-if [ -f "${SCRIPT_DIR}/deploy/.instance-info" ]; then
-  source "${SCRIPT_DIR}/deploy/.instance-info"
-else
-  echo "ERROR: deploy/.instance-info not found. Run provision.sh first."
+if [ ! -x "$VENV_PYTHON" ]; then
+  echo "ERROR: venv not found at ${VENV_PYTHON}. Run ./run.sh once to bootstrap."
   exit 1
 fi
 
-SSH_KEY="${HOME}/.ssh/${KEY_NAME}.pem"
-SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ConnectTimeout=10"
-HOST="${PUBLIC_IP}"
-
 echo "[$(date +%H:%M:%S)] Refreshing YouTube cookies..."
 
-# Step 1: Export cookies from Chrome using yt-dlp (decrypts Keychain-encrypted values).
+# Export cookies from Chrome using yt-dlp (decrypts Keychain-encrypted values).
 # Falls back to Firefox direct SQLite read if Chrome fails.
 "$VENV_PYTHON" -m yt_dlp \
   --cookies-from-browser chrome \
@@ -44,16 +37,8 @@ COOKIE_COUNT=$(grep -c "youtube.com\|google.com" "$COOKIES_FILE" 2>/dev/null || 
 
 if [ "$COOKIE_COUNT" -eq 0 ]; then
   echo "  Warning: No YouTube cookies found. Are you logged into YouTube in Chrome?"
-  exit 0
+  exit 1
 fi
-echo "  OK: Exported $COOKIE_COUNT YouTube/Google cookies from Chrome"
-
-# Step 2: Copy to EC2
-if ssh $SSH_OPTS "ec2-user@${HOST}" "true" 2>/dev/null; then
-  scp $SSH_OPTS "$COOKIES_FILE" "ec2-user@${HOST}:/home/ec2-user/PodcastDrive/cookies.txt" 2>/dev/null
-  echo "  OK: Deployed to EC2 (${HOST})"
-else
-  echo "  Warning: EC2 unreachable (${HOST}). Cookies saved locally only."
-fi
+echo "  OK: Exported $COOKIE_COUNT YouTube/Google cookies"
 
 echo "[$(date +%H:%M:%S)] Done."

@@ -203,12 +203,12 @@ else
     ok "yt-dlp up to date (last checked <${YT_DLP_AGE_DAYS}d ago)"
 fi
 
-# Auto-refresh cookies if stale (Mac only — skipped on EC2/Linux where no browser exists)
+# Auto-refresh cookies if stale (Mac only — requires browser for Keychain access)
 COOKIE_MAX_AGE_HOURS="${COOKIE_REFRESH_HOURS:-4}"
 if [ "$(uname)" = "Darwin" ] && [ -f "${SCRIPT_DIR}/refresh_cookies.sh" ]; then
     COOKIES="${SCRIPT_DIR}/cookies.txt"
     if [ ! -f "$COOKIES" ] || [ "$(find "$COOKIES" -mmin "+$((COOKIE_MAX_AGE_HOURS * 60))" 2>/dev/null)" ]; then
-        "${SCRIPT_DIR}/refresh_cookies.sh" 2>/dev/null && ok "Cookies refreshed (>${COOKIE_MAX_AGE_HOURS}h old)" || warn "Cookie refresh failed (using existing)"
+        COOKIE_ERR=$("${SCRIPT_DIR}/refresh_cookies.sh" 2>&1) && ok "Cookies refreshed (>${COOKIE_MAX_AGE_HOURS}h old)" || warn "Cookie refresh failed: check logs/cookies_refresh.log (using existing)"
     else
         ok "Cookies fresh (<${COOKIE_MAX_AGE_HOURS}h old)"
     fi
