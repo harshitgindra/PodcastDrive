@@ -244,14 +244,14 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
             _s("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache", "S3 key prefix for cached transcripts."),
             _s(
                 "BEDROCK_MODEL_ID",
-                "us.anthropic.claude-sonnet-4-6",
-                "Bedrock model for second-pass ad verification and episode summaries. Accuracy matters here.",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "Bedrock model for ad verification and episode summaries.",
             ),
             _s(
                 "BEDROCK_DETECT_MODEL_ID",
                 "",
                 "Bedrock model for first-pass detection over every transcript chunk. Falls back to "
-                "BEDROCK_MODEL_ID. A cheaper model (Haiku) cuts detection cost ~80% with little quality loss.",
+                "BEDROCK_MODEL_ID.",
             ),
             _b("EVALUATE_AD_REMOVAL", False, "Re-transcribe cleaned audio and report residual ads. Costs extra AWS spend."),
             _s("EVAL_REPORTS_DIR", "reports", "Directory for ad-removal evaluation reports."),
