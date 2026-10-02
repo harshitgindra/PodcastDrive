@@ -1,7 +1,12 @@
 """Unit tests for the RSS generator module."""
 
+import os
+import subprocess
+import sys
+import textwrap
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,6 +25,8 @@ from rss_generator import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 
 CLOUDFRONT_BASE = "https://cdn.example.com"
 PLAYLIST_ID = "PLtest123"
@@ -744,6 +751,217 @@ class TestBuildEpisodeMetadata:
         )
 
         assert result[0].summary == ""
+
+
+class TestDuplicateTitleDeterminism:
+    """``final_keys`` is a set, so the dedup winner must not depend on hash order."""
+
+    @staticmethod
+    def _entry(video_id: str, title: str, upload_date: str) -> VideoEntry:
+        return VideoEntry(
+            video_id=video_id,
+            title=title,
+            description="",
+            duration=100,
+            upload_date=upload_date,
+            thumbnail="",
+            webpage_url="",
+            playlist_index=1,
+        )
+
+    def test_keeps_newest_upload_of_duplicated_title(self):
+        entries = [
+            self._entry("old_id", "Re-uploaded Episode", "20250101"),
+            self._entry("new_id", "Re-uploaded Episode", "20250601"),
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        result = build_episode_metadata(
+            entries, {"old_id", "new_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert [e.video_id for e in result] == ["new_id"]
+
+    def test_equal_dates_break_tie_on_video_id(self):
+        """With identical dates the higher video_id wins, so the choice is total."""
+        entries = [
+            self._entry("aaa", "Same Title", "20250101"),
+            self._entry("zzz", "Same Title", "20250101"),
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        result = build_episode_metadata(
+            entries, {"aaa", "zzz"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert [e.video_id for e in result] == ["zzz"]
+
+    def test_winner_independent_of_entry_and_key_order(self):
+        """Reordering the inputs must not change which duplicate survives."""
+        pair = [
+            self._entry("old_id", "Re-uploaded Episode", "20250101"),
+            self._entry("new_id", "Re-uploaded Episode", "20250601"),
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        forward = build_episode_metadata(
+            pair, {"old_id", "new_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+        reverse = build_episode_metadata(
+            list(reversed(pair)), {"new_id", "old_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert [e.video_id for e in forward] == [e.video_id for e in reverse] == ["new_id"]
+
+    def test_winner_stable_across_hash_seeds(self):
+        """String hashing is randomised per process; the survivor must not be."""
+        script = textwrap.dedent(
+            """
+            import sys
+            sys.path.insert(0, %r)
+            from unittest.mock import MagicMock
+
+            from models import VideoEntry
+            from rss_generator import build_episode_metadata
+
+            def entry(vid, date):
+                return VideoEntry(
+                    video_id=vid, title="Dup", description="", duration=1,
+                    upload_date=date, thumbnail="", webpage_url="", playlist_index=1,
+                )
+
+            ids = {"aa%%d" %% i: "202501%%02d" %% (i + 1) for i in range(8)}
+            entries = [entry(v, d) for v, d in ids.items()]
+            s3 = MagicMock()
+            s3.get_object_size.return_value = 1000
+            result = build_episode_metadata(
+                entries, set(ids), "https://cdn.example.com", "PL", s3
+            )
+            print(",".join(e.video_id for e in result))
+            """
+        ) % str(_SRC_DIR)
+
+        outputs = set()
+        for seed in ("0", "1", "42", "12345"):
+            env = {**os.environ, "PYTHONHASHSEED": seed}
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+            outputs.add(proc.stdout.strip())
+
+        assert len(outputs) == 1, f"dedup winner varied by hash seed: {outputs}"
+        assert outputs == {"aa7"}
+
+    def test_manifest_date_resolved_before_dedup(self):
+        """A date supplied only by the manifest still decides the duplicate winner."""
+        entries = [
+            self._entry("flat_id", "Dup Title", ""),
+            self._entry("dated_id", "Dup Title", "20250101"),
+        ]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+        manifest = {"flat_id": {"upload_date": "20250901"}}
+
+        result = build_episode_metadata(
+            entries,
+            {"flat_id", "dated_id"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
+            manifest=manifest,
+        )
+
+        assert [e.video_id for e in result] == ["flat_id"]
+
+    def test_equal_dated_distinct_titles_ordered_stably(self):
+        entries = [self._entry(v, f"Title {v}", "20250101") for v in ("b", "a", "c")]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 1000
+
+        result = build_episode_metadata(
+            entries, {"a", "b", "c"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
+        )
+
+        assert [e.video_id for e in result] == ["c", "b", "a"]
+
+
+class TestFileSizeFallback:
+    """A failed HEAD must not publish a zero-byte enclosure when the size is known."""
+
+    @staticmethod
+    def _entry(video_id: str = "v1") -> VideoEntry:
+        return VideoEntry(
+            video_id=video_id,
+            title=f"Video {video_id}",
+            description="",
+            duration=100,
+            upload_date="20250101",
+            thumbnail="",
+            webpage_url="",
+            playlist_index=1,
+        )
+
+    def test_falls_back_to_manifest_size_on_head_failure(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.side_effect = Exception("HEAD throttled")
+        manifest = {"v1": {"size": 7_654_321}}
+
+        result = build_episode_metadata(
+            [self._entry()], {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, manifest=manifest
+        )
+
+        assert result[0].file_size == 7_654_321
+
+    def test_s3_size_preferred_over_manifest_size(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 100
+        manifest = {"v1": {"size": 999}}
+
+        result = build_episode_metadata(
+            [self._entry()], {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, manifest=manifest
+        )
+
+        assert result[0].file_size == 100
+
+    @pytest.mark.parametrize("manifest", [None, {}, {"v1": {}}, {"v1": {"size": 0}}, {"v1": {"size": "big"}}])
+    def test_zero_when_no_usable_manifest_size(self, manifest):
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.side_effect = Exception("S3 error")
+
+        result = build_episode_metadata(
+            [self._entry()], {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, manifest=manifest
+        )
+
+        assert result[0].file_size == 0
+
+    def test_enclosure_omits_length_when_size_unknown(self):
+        """length="0" advertises an empty file; the attribute is dropped instead."""
+        meta = _make_playlist_meta()
+        xml_str = generate_rss(
+            meta, [_make_episode(file_size=0)], CLOUDFRONT_BASE, PLAYLIST_ID
+        )
+        enc = ET.fromstring(xml_str).find(".//item/enclosure")
+
+        assert enc is not None
+        assert enc.get("length") is None
+        assert enc.get("type") == "audio/mpeg"
+        assert enc.get("url").endswith("/episodes/vid001.mp3")
+
+    def test_enclosure_keeps_length_when_size_known(self):
+        meta = _make_playlist_meta()
+        xml_str = generate_rss(
+            meta, [_make_episode(file_size=4242)], CLOUDFRONT_BASE, PLAYLIST_ID
+        )
+        enc = ET.fromstring(xml_str).find(".//item/enclosure")
+
+        assert enc.get("length") == "4242"
 
 
 # ---------------------------------------------------------------------------

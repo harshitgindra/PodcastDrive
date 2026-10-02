@@ -255,7 +255,15 @@ def _add_item(
 
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", xml_safe(episode.cloudfront_url))
-    enclosure.set("length", str(episode.file_size))
+    # A zero length advertises a zero-byte file and makes clients refuse the
+    # download; omitting the attribute lets them fall back to the real response.
+    if episode.file_size > 0:
+        enclosure.set("length", str(episode.file_size))
+    else:
+        logger.warning(
+            "Unknown file size for %s — omitting enclosure length",
+            episode.s3_key or episode.video_id,
+        )
     enclosure.set("type", "audio/mpeg")
 
     # pubDate in RFC 2822
@@ -297,6 +305,32 @@ def _add_item(
         ET.SubElement(item, f"{{{ITUNES_NS}}}episode").text = str(episode.playlist_index)
 
 
+def _episode_file_size(
+    s3: S3Manager,
+    s3_key: str,
+    video_id: str,
+    manifest: dict | None,
+) -> int:
+    """Return the episode size in bytes, falling back to the manifest.
+
+    A failed HEAD (throttling, transient 5xx) must not discard the size the
+    manifest already recorded at upload time, because a 0 would be published
+    as the enclosure length.
+    """
+    try:
+        return s3.get_object_size(s3_key)
+    except Exception:
+        logger.warning("Could not get size for %s — falling back to manifest", s3_key)
+
+    manifest_size = (manifest or {}).get(video_id, {}).get("size")
+    if isinstance(manifest_size, int) and manifest_size > 0:
+        logger.info("Using manifest size %d for %s", manifest_size, s3_key)
+        return manifest_size
+
+    logger.warning("No size available for %s — using 0", s3_key)
+    return 0
+
+
 def build_episode_metadata(
     video_entries: list[VideoEntry],
     final_keys: set[str],
@@ -310,9 +344,12 @@ def build_episode_metadata(
 
     For each video_id in *final_keys* that has a matching entry in
     *video_entries*, creates an :class:`EpisodeMeta` with the S3 key,
-    file size (from ``s3.get_object_size``), and CloudFront URL.
+    file size (from ``s3.get_object_size``, falling back to the manifest
+    ``size`` when the HEAD fails), and CloudFront URL.
 
-    Episodes are sorted by ``upload_date`` descending (newest first).
+    Episodes sharing a normalised title are deduplicated, keeping the newest
+    upload; ties break on ``video_id`` so the surviving episode does not change
+    between runs. The result is sorted by ``upload_date`` descending.
 
     Args:
         video_entries: All video entries from the playlist extraction.
@@ -328,6 +365,7 @@ def build_episode_metadata(
     episodes: list[EpisodeMeta] = []
     seen_titles: set[str] = set()
 
+    candidates: list[VideoEntry] = []
     for video_id in final_keys:
         entry = entry_map.get(video_id)
         if not entry:
@@ -337,6 +375,24 @@ def build_episode_metadata(
                 video_id,
             )
             continue
+
+        # Use manifest upload_date if entry has empty date (flat extraction doesn't include it)
+        upload_date = entry.upload_date
+        if not upload_date and manifest:
+            upload_date = manifest.get(video_id, {}).get("upload_date", "")
+        if upload_date and upload_date != entry.upload_date:
+            entry.upload_date = upload_date
+
+        candidates.append(entry)
+
+    # final_keys is a set, so iterating it leaves the title-dedup winner up to
+    # hash order: the same duplicate pair could keep a different video_id (and
+    # therefore a different guid/enclosure URL) on every run. Resolving the
+    # order first keeps the newest upload of a duplicated title, reproducibly.
+    candidates.sort(key=lambda e: (e.upload_date, e.video_id), reverse=True)
+
+    for entry in candidates:
+        video_id = entry.video_id
 
         # Deduplicate by normalised title to avoid showing the same episode
         # twice when a video is re-uploaded with a new ID.
@@ -350,19 +406,8 @@ def build_episode_metadata(
             continue
         seen_titles.add(normalised_title)
 
-        # Use manifest upload_date if entry has empty date (flat extraction doesn't include it)
-        upload_date = entry.upload_date
-        if not upload_date and manifest:
-            upload_date = manifest.get(video_id, {}).get("upload_date", "")
-        if upload_date and upload_date != entry.upload_date:
-            entry.upload_date = upload_date
-
         s3_key = f"{playlist_id}/episodes/{video_id}.mp3"
-        try:
-            file_size = s3.get_object_size(s3_key)
-        except Exception:
-            file_size = 0
-            logger.warning("Could not get size for %s — using 0", s3_key)
+        file_size = _episode_file_size(s3, s3_key, video_id, manifest)
         cloudfront_url = f"{cloudfront_base}/{playlist_id}/episodes/{video_id}.mp3"
 
         summary = manifest.get(video_id, {}).get("summary", "") if manifest else ""
@@ -385,8 +430,9 @@ def build_episode_metadata(
             )
         )
 
-    # Sort by upload_date descending (newest first)
-    episodes.sort(key=lambda e: e.upload_date, reverse=True)
+    # Sort by upload_date descending (newest first), video_id breaking ties so
+    # that equal-dated episodes keep a stable order between runs.
+    episodes.sort(key=lambda e: (e.upload_date, e.video_id), reverse=True)
 
     logger.info("Built metadata for %d episodes (deduplicated from %d keys)", len(episodes), len(final_keys))
     return episodes
