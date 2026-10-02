@@ -11,9 +11,9 @@ Keeping it in Python makes that lifecycle testable and keeps the three modes
 drifting apart, as they had: only the YouTube copy handled ``bot_detected``
 and only the RSS copy handled ``splice_failed``.
 
-The stdout format, the notify-entry schema, the Notion status transitions and
-the process exit codes are all deliberately byte-for-byte identical to the
-heredocs this replaces — ``run.sh`` and Herald both depend on them.
+The stdout format and notify-entry schema remain compatible with ``run.sh``
+and Herald. Failed episode counts now set Notion to Failed and produce a
+nonzero exit after all configured sources have been processed.
 """
 
 from __future__ import annotations
@@ -82,6 +82,8 @@ def success_status(result: dict[str, Any]) -> str:
     """
     if result.get("bot_detected"):
         return "Error: Bot Detection"
+    if result.get("failed", 0):
+        return "Failed"
     if result.get("splice_failed", 0):
         return "Splice Failed"
     return "Done"
@@ -132,7 +134,7 @@ def run_one(
 
     Returns:
         ``(result, ok)`` — the pipeline result dict (None on failure) and
-        whether it succeeded.
+        whether all episodes succeeded (including bot and splice outcomes).
     """
     writable = bool(provider is not None and podcast is not None and not dry_run)
 
@@ -186,7 +188,9 @@ def run_one(
             feed_url=feed_url_for(result.get(identifier_key, "")),
         )
 
-    return result, True
+    # A completed pipeline can still have failed episodes. Keep processing other
+    # sources, but propagate the partial failure to run.sh and run history.
+    return result, not (result.get("failed", 0) or result.get("splice_failed", 0) or result.get("bot_detected", False))
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +351,8 @@ def main(argv: list[str] | None = None) -> int:
         python -m orchestrator youtube
         python -m orchestrator rss
 
-    Exit codes preserve the previous heredoc behaviour: a failure of an
-    individual source is reported but still exits 0 (it is surfaced through
-    the notify payload), while a provider-level failure exits 1 so that
-    run.sh marks the run a partial_failure.
+    Exit 1 if any source has failed episodes, a bot/splice failure, or raises;
+    other sources still run. This lets run.sh record a partial_failure.
     """
     import aws
     from logger_config import setup_logging
@@ -370,15 +372,15 @@ def main(argv: list[str] | None = None) -> int:
         if not rest:
             print("usage: orchestrator urls URL [URL ...]", file=sys.stderr)
             return 2
+        all_ok = True
         for url in rest:
-            run_url_target(url, dry_run=dry_run)
-        return 0
+            ok = run_url_target(url, dry_run=dry_run)
+            all_ok = all_ok and ok
+        return 0 if all_ok else 1
     if mode == "youtube":
-        run_youtube_sources(dry_run=dry_run)
-        return 0
+        return 0 if run_youtube_sources(dry_run=dry_run) else 1
     if mode == "rss":
-        run_rss_sources(dry_run=dry_run)
-        return 0
+        return 0 if run_rss_sources(dry_run=dry_run) else 1
 
     print(f"unknown mode: {mode}", file=sys.stderr)
     return 2

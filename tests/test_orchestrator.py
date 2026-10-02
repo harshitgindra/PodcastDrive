@@ -138,8 +138,12 @@ class TestSuccessStatus:
             ({"bot_detected": False}, "Done"),
             ({"splice_failed": 2}, "Splice Failed"),
             ({"splice_failed": 0}, "Done"),
-            # bot detection outranks splice failure
+            ({"failed": 1}, "Failed"),
+            ({"new_episodes": 2, "failed": 1}, "Failed"),
+            ({"failed": 1, "splice_failed": 1}, "Failed"),
+            # bot detection outranks episode and splice failures
             ({"bot_detected": True, "splice_failed": 1}, "Error: Bot Detection"),
+            ({"bot_detected": True, "failed": 1}, "Error: Bot Detection"),
         ],
     )
     def test_mapping(self, result, expected):
@@ -250,6 +254,31 @@ class TestRunOne:
             podcast=podcast,
         )
         assert provider.statuses[-1] == ("Show", "Splice Failed")
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_status"),
+        [
+            ({"failed": 1}, "Failed"),
+            ({"failed": 1, "new_episodes": 2}, "Failed"),
+            ({"splice_failed": 1}, "Splice Failed"),
+            ({"bot_detected": True}, "Error: Bot Detection"),
+        ],
+    )
+    def test_partial_result_is_not_success(self, notify_file, outcome, expected_status):
+        provider = FakeProvider()
+        podcast = FakePodcast("Show", "PL1")
+        result, ok = orchestrator.run_one(
+            name="Show",
+            identifier_key="playlist_id",
+            pipeline=lambda: {"playlist_id": "PL1", **outcome},
+            provider=provider,
+            podcast=podcast,
+        )
+        assert result == {"playlist_id": "PL1", **outcome}
+        assert ok is False
+        assert provider.statuses == [("Show", "Running"), ("Show", expected_status)]
+        assert len(provider.last_runs) == 2
+        assert read_notify(notify_file)[0]["failed"] == outcome.get("failed", 0)
 
     def test_failure_marks_failed_and_records_error(self, notify_file, capsys):
         provider = FakeProvider()
@@ -523,6 +552,19 @@ class TestRunYoutubeSources:
         assert names == ["Bad", "Good"]
         assert provider.statuses[-1] == ("Good", "Done")
 
+    def test_failed_episode_continues_to_next_source(self, notify_file, monkeypatch):
+        seen = []
+
+        def fake_process(url, **kwargs):
+            seen.append(url)
+            return {"playlist_id": url, "failed": int("bad" in url)}
+
+        provider = FakeProvider(podcasts=[FakePodcast("Bad", "bad"), FakePodcast("Good", "good")])
+        _patch_url_mode(monkeypatch, provider=provider, process_playlist=fake_process)
+        assert orchestrator.run_youtube_sources(dry_run=False) is False
+        assert len(seen) == 2
+        assert provider.statuses[-3:] == [("Bad", "Failed"), ("Good", "Running"), ("Good", "Done")]
+
     def test_no_enabled_sources(self, notify_file, monkeypatch, capsys):
         provider = FakeProvider(podcasts=[FakePodcast("Off", "PL", enabled=False)])
         _patch_url_mode(monkeypatch, provider=provider, process_playlist=lambda *a, **k: {})
@@ -588,6 +630,17 @@ class TestRunRssSources:
         assert provider.statuses[-1] == ("RSS Show", "Splice Failed")
         assert read_notify(notify_file)[0]["splice_failed"] == 1
 
+    def test_failed_episode_marks_rss_source_failed(self, notify_file, monkeypatch):
+        provider = FakeProvider(podcasts=[FakePodcast("RSS Show", "https://feed")])
+        _patch_rss_mode(
+            monkeypatch,
+            provider=provider,
+            process_feed=lambda p, provider=None, dry_run=False: {"slug": "s", "failed": 1},
+        )
+        assert orchestrator.run_rss_sources(dry_run=False) is False
+        assert provider.statuses[-1] == ("RSS Show", "Failed")
+        assert read_notify(notify_file)[0]["failed"] == 1
+
     def test_failure_recorded(self, notify_file, monkeypatch):
         def boom(p, provider=None, dry_run=False):
             raise RuntimeError("feed 404")
@@ -631,9 +684,16 @@ class TestMain:
         assert orchestrator.main(["urls", "a", "b"]) == 0
         assert seen == [("a", False), ("b", False)]
 
-    def test_per_source_failure_still_exits_zero(self, monkeypatch):
-        monkeypatch.setattr(orchestrator, "run_url_target", lambda url, dry_run: False)
-        assert orchestrator.main(["urls", "a"]) == 0
+    def test_per_source_failure_exits_one_after_processing_all_urls(self, monkeypatch):
+        seen = []
+
+        def fake_run(url, dry_run):
+            seen.append(url)
+            return url != "bad"
+
+        monkeypatch.setattr(orchestrator, "run_url_target", fake_run)
+        assert orchestrator.main(["urls", "bad", "good"]) == 1
+        assert seen == ["bad", "good"]
 
     @pytest.mark.parametrize("value", ["true", "True", "1", "yes", "on"])
     def test_dry_run_env_is_honoured(self, monkeypatch, value):
@@ -665,6 +725,11 @@ class TestMain:
         )
         assert orchestrator.main(["youtube"]) == 0
         assert seen == [False]
+
+    @pytest.mark.parametrize("mode", ["youtube", "rss"])
+    def test_source_failure_exits_one(self, monkeypatch, mode):
+        monkeypatch.setattr(orchestrator, f"run_{mode}_sources", lambda dry_run: False)
+        assert orchestrator.main([mode]) == 1
 
     def test_rss_mode(self, monkeypatch):
         seen = []

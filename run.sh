@@ -495,7 +495,11 @@ ELAPSED_MIN=$(( ELAPSED / 60 ))
 ELAPSED_SEC=$(( ELAPSED % 60 ))
 echo ""
 section "Run Complete"
-ok "Finished in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
+if [ "$RUN_STATUS" = "success" ]; then
+    ok "Finished in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
+else
+    warn "Finished with partial failures in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
+fi
 echo "  Runner: ${RUNNER}"
 echo "  Log dir: ${LOG_DIR}"
 echo "  Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -532,4 +536,8 @@ if notify_file and os.path.exists(notify_file):
 " 2>/dev/null || true
 fi
 
+# Preserve notification and history writes before signaling a partial run to callers.
+if [ "$RUN_STATUS" != "success" ]; then
+    exit 1
+fi
 exit 0
