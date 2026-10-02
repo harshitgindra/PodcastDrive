@@ -19,6 +19,7 @@ from podcast_sync import (
     detect_cdn,
     process_podcast_feed,
 )
+from s3_manager import ManifestUnavailableError
 
 # ---------------------------------------------------------------------------
 # _podcast_slug
@@ -70,6 +71,11 @@ class TestFormatDuration:
 # ---------------------------------------------------------------------------
 
 
+# A published <enclosure> always carries a real byte length, so every build
+# below supplies one; omission of unsized episodes is covered by its own class.
+_SIZES = {"ep-001": 1234567}
+
+
 class TestBuildPodcastFeedXml:
     def _make_episode(self, title="Ep 1", guid="guid-1", duration=300, thumbnail=""):
         return EpisodeMeta(
@@ -85,7 +91,7 @@ class TestBuildPodcastFeedXml:
         podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
         eps = [self._make_episode()]
         ids = ["ep-001"]
-        xml = _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "test-pod")
+        xml = _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "test-pod", _SIZES)
         assert xml.startswith("<?xml")
         assert "<rss" in xml
         assert "Test Pod" in xml
@@ -94,7 +100,7 @@ class TestBuildPodcastFeedXml:
         podcast = PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
         eps = [self._make_episode()]
         ids = ["ep-001"]
-        xml = _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "test-pod")
+        xml = _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "test-pod", _SIZES)
         assert "https://cdn.example.com/test-pod/episodes/ep-001.mp3" in xml
 
     def test_empty_episodes(self):
@@ -113,6 +119,7 @@ class TestBuildPodcastFeedXml:
             ids,
             "https://cdn.example.com",
             "art-pod",
+            _SIZES,
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         assert "https://example.com/channel-art.jpg" in xml
@@ -129,6 +136,7 @@ class TestBuildPodcastFeedXml:
             ids,
             "https://cdn.example.com",
             "art-pod",
+            _SIZES,
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         assert "<image>" in xml
@@ -144,7 +152,7 @@ class TestBuildPodcastFeedXml:
         podcast = PodcastConfig(name="Art Pod", url="https://feeds.example.com/rss", source="Podcast")
         eps = [self._make_episode(thumbnail="https://example.com/ep-art.jpg")]
         ids = ["ep-001"]
-        xml = _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "art-pod")
+        xml = _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "art-pod", _SIZES)
         assert "https://example.com/ep-art.jpg" in xml
 
     def test_episode_falls_back_to_channel_thumbnail(self):
@@ -159,6 +167,7 @@ class TestBuildPodcastFeedXml:
             ids,
             "https://cdn.example.com",
             "art-pod",
+            _SIZES,
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         # channel thumbnail should appear in the item (episode fallback)
@@ -175,6 +184,7 @@ class TestBuildPodcastFeedXml:
             ids,
             "https://cdn.example.com",
             "art-pod",
+            _SIZES,
             channel_thumbnail="https://example.com/channel-art.jpg",
         )
         assert "https://example.com/ep-specific.jpg" in xml
@@ -191,6 +201,7 @@ class TestBuildPodcastFeedXml:
             ids,
             "https://cdn.example.com",
             "test-pod",
+            _SIZES,
             manifest={"ep-001": {"ads_removed": True}},
         )
         assert "My Episode [Ad-Free]" in xml
@@ -206,6 +217,7 @@ class TestBuildPodcastFeedXml:
             ids,
             "https://cdn.example.com",
             "test-pod",
+            _SIZES,
             manifest={"ep-001": {"ads_removed": False}},
         )
         assert "My Episode ✂️" not in xml
@@ -677,8 +689,8 @@ class TestProcessPodcastFeedEdgeCases:
 
         assert result["failed"] == 1
 
-    def test_backfill_get_object_size_raises_uses_zero(self, tmp_path):
-        """Covers lines 452-453: get_object_size raises during backfill → ep_sizes[eid]=0."""
+    def test_backfill_get_object_size_raises_omits_episode(self, tmp_path):
+        """A size lookup failure must not publish <enclosure length="0">."""
         podcast = _make_podcast(max_downloads=1)
         ep = _make_episode_meta("guid-1", "Ep 1")
         feed_xml = b"<rss/>"
@@ -689,17 +701,20 @@ class TestProcessPodcastFeedEdgeCases:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>") as mock_build,
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = {"guid-1"}
             mock_s3.load_manifest.return_value = {}
-            # Make get_object_size raise to exercise the except branch
             mock_s3.get_object_size.side_effect = RuntimeError("S3 error")
 
             result = process_podcast_feed(podcast, dry_run=False)
 
-        # feed should still be generated with size=0 for the episode
+        # The feed is still published, without the unsized episode in it.
         mock_s3.upload_feed.assert_called_once()
+        assert mock_build.call_args[0][2] == []
+        assert result["feed_omitted_ids"] == ["guid-1"]
+        assert result["failed"] == 1
         assert result["skipped"] == 1
 
 
@@ -1331,6 +1346,7 @@ class TestFeedXmlSanitization:
         return EpisodeMeta(**base)
 
     def _build(self, podcast, eps, ids, **kw):
+        kw.setdefault("ep_sizes", dict.fromkeys(ids, 1234567))
         return _build_podcast_feed_xml(podcast, eps, ids, "https://cdn.example.com", "test-pod", **kw)
 
     def test_control_char_in_episode_title_does_not_raise(self):
@@ -1437,7 +1453,14 @@ class TestFeedBuildFailureIsolation:
     def test_uploaded_episode_is_still_counted(self, tmp_path):
         result, mock_s3 = self._run(tmp_path, ValueError("not well-formed"))
         mock_s3.upload_episode.assert_called_once()
-        assert result["failed"] == 0
+        assert result["new_episodes"] == 1
+        assert result["episodes_failed"] == 0
+
+    def test_build_failure_is_reported_as_failed(self, tmp_path):
+        """Listeners never saw the episode, so the run must not look healthy."""
+        result, _ = self._run(tmp_path, ValueError("not well-formed"))
+        assert result["feed_failed"] is True
+        assert result["failed"] == 1
 
     def test_feed_is_not_uploaded_when_the_build_fails(self, tmp_path):
         _, mock_s3 = self._run(tmp_path, ValueError("not well-formed"))
@@ -1471,7 +1494,8 @@ class TestFeedBuildFailureIsolation:
             MockS3.return_value.list_existing_episodes.return_value = set()
             process_podcast_feed(podcast, provider=provider, dry_run=False)
 
-        provider.update_status.assert_called_once_with(podcast, "Done")
+        # The feed never published, so "Done" would be a falsely healthy status.
+        provider.update_status.assert_called_once_with(podcast, "Failed")
 
     def test_upload_feed_failure_is_also_contained(self, tmp_path):
         podcast = _make_podcast(max_downloads=1)
@@ -1494,3 +1518,294 @@ class TestFeedBuildFailureIsolation:
             result = process_podcast_feed(podcast, provider=None, dry_run=False)
 
         assert result["new_episodes"] == 1
+        assert result["feed_failed"] is True
+        assert result["failed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# process_podcast_feed — publication state is never falsely healthy
+# ---------------------------------------------------------------------------
+
+
+class TestUnreadableManifestFailsClosed:
+    """A manifest that exists but cannot be read is the only record of what was
+    published, so the podcast is abandoned for this run rather than rebuilt from
+    a blank slate."""
+
+    def _run(self, provider=None):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode") as mock_dl,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.side_effect = ManifestUnavailableError("corrupt manifest")
+            result = process_podcast_feed(podcast, provider=provider, dry_run=False)
+
+        return result, mock_s3, mock_dl, podcast
+
+    def test_returns_failed_without_raising(self):
+        result, _, _, _ = self._run()
+        assert result["failed"] == 1
+        assert result["manifest_failed"] is True
+        assert result["new_episodes"] == 0
+
+    def test_nothing_is_uploaded_or_overwritten(self):
+        _, mock_s3, mock_dl, _ = self._run()
+        mock_dl.assert_not_called()
+        mock_s3.upload_episode.assert_not_called()
+        mock_s3.upload_feed.assert_not_called()
+        mock_s3.save_manifest.assert_not_called()
+
+    def test_provider_is_told_the_source_failed(self):
+        provider = MagicMock()
+        _, _, _, podcast = self._run(provider=provider)
+        provider.update_status.assert_called_once_with(podcast, "Failed")
+
+    def test_error_names_the_manifest_fault(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="podcast_sync"):
+            self._run()
+        assert "Manifest unreadable" in caplog.text
+
+
+class TestManifestSaveFailureIsReported:
+    def _run(self, save_result):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        provider = MagicMock()
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode") as mock_dl,
+            patch("podcast_sync.remove_ads") as mock_ads,
+            patch("os.path.getsize", return_value=4096),
+            patch("os.path.exists", return_value=False),
+        ):
+            mock_dl.return_value = "/tmp/guid-1.mp3"
+            mock_ads.return_value = ("/tmp/guid-1.mp3", [], "")
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = save_result
+            result = process_podcast_feed(podcast, provider=provider, dry_run=False)
+
+        return result, provider, podcast
+
+    def test_refused_save_makes_the_run_failed(self):
+        result, _, _ = self._run(save_result=False)
+        assert result["manifest_failed"] is True
+        assert result["failed"] == 1
+        assert result["new_episodes"] == 1
+
+    def test_successful_save_keeps_the_run_healthy(self):
+        result, provider, podcast = self._run(save_result=True)
+        assert result["manifest_failed"] is False
+        assert result["failed"] == 0
+        provider.update_status.assert_called_once_with(podcast, "Done")
+
+    def test_refused_save_sets_failed_status(self):
+        _, provider, podcast = self._run(save_result=False)
+        provider.update_status.assert_called_once_with(podcast, "Failed")
+
+
+class TestNonPositiveSizeIsOmittedAndReported:
+    def _run(self, size):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>") as mock_build,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.get_object_size.return_value = size
+            mock_s3.save_manifest.return_value = True
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        return result, mock_build
+
+    @pytest.mark.parametrize("size", [0, -1])
+    def test_episode_is_left_out_of_the_build(self, size):
+        _, mock_build = self._run(size)
+        assert mock_build.call_args[0][2] == []
+
+    @pytest.mark.parametrize("size", [0, -1])
+    def test_omission_is_reported_as_failed(self, size):
+        result, _ = self._run(size)
+        assert result["feed_omitted_ids"] == ["guid-1"]
+        assert result["failed"] == 1
+
+    def test_stale_zero_size_in_manifest_triggers_a_fresh_lookup(self):
+        """A zero cached size is not trusted — it is what the old fallback wrote."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>") as mock_build,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 0}}
+            mock_s3.get_object_size.return_value = 5555
+            mock_s3.save_manifest.return_value = True
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        mock_s3.get_object_size.assert_called_once()
+        assert mock_build.call_args[0][5] == {"guid-1": 5555}
+        assert result["feed_omitted_ids"] == []
+        assert result["failed"] == 0
+
+
+class TestExhaustedEpisodesStayVisible:
+    """Exhausted episodes are never published (anti-ad policy), so they must keep
+    being reported instead of disappearing into the skipped count."""
+
+    def _run(self, provider=None, fail_reason="splice crashed (3 ads detected but original returned)"):
+        podcast = _make_podcast(max_downloads=5)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode") as mock_dl,
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>"),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {
+                "guid-1": {
+                    "splice_failed": True,
+                    "splice_failed_count": 3,
+                    "cdn": "megaphone",
+                    "fail_reason": fail_reason,
+                }
+            }
+            mock_s3.save_manifest.return_value = True
+            result = process_podcast_feed(podcast, provider=provider, dry_run=False)
+
+        return result, mock_s3, mock_dl, podcast
+
+    def test_exhausted_ids_and_reason_are_in_the_result(self):
+        result, _, _, _ = self._run()
+        assert result["splice_exhausted"] == 1
+        assert result["splice_exhausted_ids"] == ["guid-1"]
+        assert "splice crashed" in result["splice_exhausted_reasons"]["guid-1"]
+
+    def test_run_is_reported_as_splice_failed(self):
+        """splice_failed is what the orchestrator turns into a failed run."""
+        result, _, _, _ = self._run()
+        assert result["splice_failed"] == 1
+        assert result["splice_failed_this_run"] == 0
+
+    def test_status_is_not_done(self):
+        provider = MagicMock()
+        _, _, _, podcast = self._run(provider=provider)
+        provider.update_status.assert_called_once_with(podcast, "Splice Failed")
+
+    def test_episode_is_not_republished_and_counters_are_untouched(self):
+        _, mock_s3, mock_dl, _ = self._run()
+        mock_dl.assert_not_called()
+        mock_s3.upload_episode.assert_not_called()
+        mock_s3.save_manifest.assert_not_called()
+
+    def test_missing_reason_reports_unknown(self):
+        result, _, _, _ = self._run(fail_reason="")
+        assert result["splice_exhausted_reasons"]["guid-1"] == "unknown"
+
+    def test_reason_is_logged(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="podcast_sync"):
+            self._run()
+        assert "exhausted splice retries" in caplog.text
+        assert "splice crashed" in caplog.text
+
+
+class TestFeedRebuiltAfterFailures:
+    def test_run_where_every_episode_failed_still_republishes_the_feed(self):
+        """A previous run may have uploaded episodes and then failed to publish
+        the feed listing them, so a failure-only run must still rebuild."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", side_effect=RuntimeError("network")),
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>"),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {}
+            mock_s3.save_manifest.return_value = True
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["skipped"] == 0
+        assert result["episodes_failed"] == 1
+        mock_s3.upload_feed.assert_called_once()
+
+
+class TestBuilderNeverEmitsZeroLength:
+    def _podcast(self):
+        return PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+
+    def _episode(self, guid="guid-1"):
+        return EpisodeMeta(
+            title="Ep 1",
+            url="https://example.com/ep.mp3",
+            pub_date=datetime(2024, 1, 1, tzinfo=UTC),
+            guid=guid,
+            duration=300,
+        )
+
+    @pytest.mark.parametrize("sizes", [None, {}, {"ep-001": 0}, {"ep-001": -5}, {"ep-001": None}])
+    def test_item_is_omitted_when_the_size_is_unusable(self, sizes):
+        xml = _build_podcast_feed_xml(
+            self._podcast(), [self._episode()], ["ep-001"], "https://cdn.example.com", "test-pod", sizes
+        )
+        assert "<item>" not in xml
+        assert 'length="0"' not in xml
+
+    def test_sized_item_is_published_with_its_real_length(self):
+        xml = _build_podcast_feed_xml(
+            self._podcast(), [self._episode()], ["ep-001"], "https://cdn.example.com", "test-pod", {"ep-001": 4242}
+        )
+        assert 'length="4242"' in xml
+
+    def test_only_the_unsized_item_is_dropped(self):
+        eps = [self._episode("guid-1"), self._episode("guid-2")]
+        xml = _build_podcast_feed_xml(
+            self._podcast(), eps, ["ep-001", "ep-002"], "https://cdn.example.com", "test-pod", {"ep-002": 99}
+        )
+        assert "ep-001.mp3" not in xml
+        assert "ep-002.mp3" in xml

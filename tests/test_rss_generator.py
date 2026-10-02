@@ -1,5 +1,6 @@
 """Unit tests for the RSS generator module."""
 
+import logging
 import os
 import subprocess
 import sys
@@ -689,16 +690,47 @@ class TestBuildEpisodeMetadata:
 
         assert result[0].upload_date == "20230101"
 
-    def test_file_size_zero_on_s3_exception(self):
-        """When get_object_size raises, file_size falls back to 0."""
+    def test_episode_omitted_when_size_cannot_be_established(self):
+        """<enclosure length> is required, so an unsized episode is left out."""
         entries = [self._make_video_entry("v1")]
         mock_s3 = MagicMock()
         mock_s3.get_object_size.side_effect = Exception("S3 error")
 
-        result = build_episode_metadata(entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
+        omitted: list[str] = []
+        result = build_episode_metadata(
+            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, omitted_ids=omitted
+        )
 
-        assert len(result) == 1
-        assert result[0].file_size == 0
+        assert result == []
+        assert omitted == ["v1"]
+
+    def test_omission_does_not_drop_the_sized_episodes(self):
+        entries = [self._make_video_entry("v1"), self._make_video_entry("v2")]
+        mock_s3 = MagicMock()
+        def size_for(key):
+            if "v1" in key:
+                raise Exception("S3 error")
+            return 4242
+
+        mock_s3.get_object_size.side_effect = size_for
+
+        omitted: list[str] = []
+        result = build_episode_metadata(
+            entries, {"v1", "v2"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, omitted_ids=omitted
+        )
+
+        assert [e.video_id for e in result] == ["v2"]
+        assert omitted == ["v1"]
+
+    def test_omission_is_logged_as_an_error(self, caplog):
+        entries = [self._make_video_entry("v1")]
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.side_effect = Exception("S3 error")
+
+        with caplog.at_level(logging.ERROR, logger="rss_generator"):
+            build_episode_metadata(entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
+
+        assert "Omitting" in caplog.text
 
     def test_summary_read_from_manifest(self):
         """When the manifest has a 'summary' key for a video_id it is set on EpisodeMeta."""
@@ -931,15 +963,53 @@ class TestFileSizeFallback:
         assert result[0].file_size == 100
 
     @pytest.mark.parametrize("manifest", [None, {}, {"v1": {}}, {"v1": {"size": 0}}, {"v1": {"size": "big"}}])
-    def test_zero_when_no_usable_manifest_size(self, manifest):
+    def test_omitted_when_no_usable_manifest_size(self, manifest):
         mock_s3 = MagicMock()
         mock_s3.get_object_size.side_effect = Exception("S3 error")
 
+        omitted: list[str] = []
         result = build_episode_metadata(
-            [self._entry()], {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, manifest=manifest
+            [self._entry()],
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
+            manifest=manifest,
+            omitted_ids=omitted,
         )
 
-        assert result[0].file_size == 0
+        assert result == []
+        assert omitted == ["v1"]
+
+    def test_manifest_fallback_keeps_the_episode_in_the_feed(self):
+        """The persisted size is the normal fallback, so a HEAD failure is survivable."""
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.side_effect = Exception("HEAD throttled")
+
+        omitted: list[str] = []
+        result = build_episode_metadata(
+            [self._entry()],
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
+            manifest={"v1": {"size": 4242}},
+            omitted_ids=omitted,
+        )
+
+        assert [e.file_size for e in result] == [4242]
+        assert omitted == []
+
+    def test_zero_size_from_s3_is_omitted(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.return_value = 0
+
+        omitted: list[str] = []
+        build_episode_metadata(
+            [self._entry()], {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, omitted_ids=omitted
+        )
+
+        assert omitted == ["v1"]
 
     def test_enclosure_omits_length_when_size_unknown(self):
         """length="0" advertises an empty file; the attribute is dropped instead."""

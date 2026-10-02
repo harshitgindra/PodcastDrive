@@ -58,6 +58,21 @@ def _make_s3_manager(existing=None):
     return s3
 
 
+@pytest.fixture(autouse=True)
+def _fake_mp3_size(monkeypatch):
+    """Tests download to fake paths that never exist, but sync now stats the file
+    before upload so the manifest records the published byte size.  Report a
+    plausible size by default; the tests about stat failures patch it themselves."""
+    real_getsize = os.path.getsize
+
+    def getsize(path):
+        if str(path).endswith(".mp3"):
+            return 2048
+        return real_getsize(path)
+
+    monkeypatch.setattr(os.path, "getsize", getsize)
+
+
 BASE_ENV = {
     "S3_BUCKET": "test-bucket",
     "CLOUDFRONT_BASE": "https://cdn.example.com",
@@ -171,6 +186,9 @@ class TestProcessPlaylistHappyPath:
             "skipped_old",
             "unavailable",
             "failed",
+            "episodes_failed",
+            "manifest_failed",
+            "feed_omitted_ids",
             "bot_detected",
             "total_episodes",
             "elapsed_seconds",
@@ -1119,3 +1137,191 @@ class TestExtractionFaultAccounting:
 
         assert result["failed"] == 1
         assert mock_dl.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Publication state: persisted size, manifest save, feed omissions
+# ---------------------------------------------------------------------------
+
+
+class TestPublishedSizeIsPersisted:
+    """The feed needs a size fallback when a later HEAD fails, so the bytes that
+    were actually uploaded are recorded at upload time."""
+
+    def _run(self, *, getsize=None, save_manifest=True):
+        video = _make_video("vid001", duration=600)
+        playlist_meta = _make_playlist_meta()
+        meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 600,
+            "title": "Episode",
+        }
+
+        with (
+            patch.dict(os.environ, BASE_ENV, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
+            s3 = _make_s3_manager()
+            s3.load_manifest.return_value = {}
+            s3.save_manifest.return_value = save_manifest
+            mock_s3_cls.return_value = s3
+            if getsize is not None:
+                with patch("os.path.getsize", side_effect=getsize):
+                    result = process_playlist("https://youtube.com/playlist?list=PLtest")
+            else:
+                result = process_playlist("https://youtube.com/playlist?list=PLtest")
+
+        return result, s3
+
+    def test_size_is_stored_in_the_manifest(self):
+        result, s3 = self._run()
+        saved = s3.save_manifest.call_args[0][0]
+        assert saved["vid001"]["size"] == 2048
+        assert saved["vid001"]["ads_removed"] is False
+        assert result["new_episodes"] == 1
+
+    def test_stat_failure_fails_the_episode_without_publishing(self):
+        result, s3 = self._run(getsize=OSError("stat failed"))
+        assert result["episodes_failed"] == 1
+        assert result["new_episodes"] == 0
+        s3.upload_episode.assert_not_called()
+
+    def test_empty_file_is_not_published(self):
+        result, s3 = self._run(getsize=lambda path: 0)
+        assert result["episodes_failed"] == 1
+        s3.upload_episode.assert_not_called()
+
+    def test_no_untrustworthy_size_is_recorded_on_stat_failure(self):
+        _, s3 = self._run(getsize=OSError("stat failed"))
+        for call in s3.save_manifest.call_args_list:
+            assert "size" not in call[0][0].get("vid001", {})
+
+    def test_refused_manifest_save_is_reported(self):
+        result, _ = self._run(save_manifest=False)
+        assert result["manifest_failed"] is True
+        assert result["failed"] == 1
+        assert result["episodes_failed"] == 0
+
+    def test_successful_manifest_save_keeps_the_run_healthy(self):
+        result, _ = self._run(save_manifest=True)
+        assert result["manifest_failed"] is False
+        assert result["failed"] == 0
+
+
+class TestFeedOmissionsAreReported:
+    def _run(self, omitted):
+        video = _make_video("vid001")
+        playlist_meta = _make_playlist_meta()
+        meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 600,
+            "title": "Episode",
+        }
+
+        def fake_build(*args, **kwargs):
+            if kwargs.get("omitted_ids") is not None:
+                kwargs["omitted_ids"].extend(omitted)
+            return []
+
+        with (
+            patch.dict(os.environ, BASE_ENV, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
+            patch("sync.build_episode_metadata", side_effect=fake_build),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
+            s3 = _make_s3_manager()
+            s3.load_manifest.return_value = {}
+            s3.save_manifest.return_value = True
+            mock_s3_cls.return_value = s3
+            return process_playlist("https://youtube.com/playlist?list=PLtest")
+
+    def test_omitted_episode_makes_the_run_failed(self):
+        result = self._run(["vid999"])
+        assert result["feed_omitted_ids"] == ["vid999"]
+        assert result["failed"] == 1
+        assert result["episodes_failed"] == 0
+
+    def test_no_omissions_keeps_the_run_healthy(self):
+        result = self._run([])
+        assert result["feed_omitted_ids"] == []
+        assert result["failed"] == 0
+
+
+class TestReconcileReportsDegradation:
+    def test_rebuild_feed_forwards_the_omission_collector(self):
+        s3 = _make_s3_manager(existing=["vid001"])
+        collector: list[str] = []
+
+        with (
+            patch("sync.build_episode_metadata", return_value=[]) as mock_build,
+            patch("sync.generate_rss", return_value="<rss/>"),
+        ):
+            _rebuild_feed(
+                s3,
+                [_make_video("vid001")],
+                "https://cdn.example.com",
+                "PLtest",
+                _make_playlist_meta(),
+                omitted_ids=collector,
+            )
+
+        assert mock_build.call_args.kwargs["omitted_ids"] is collector
+
+    def test_reconcile_reports_a_refused_manifest_save(self):
+        s3 = _make_s3_manager(existing=["vid001"])
+        s3.save_manifest.return_value = False
+
+        with (
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+        ):
+            report = _reconcile(
+                s3,
+                [_make_video("vid001")],
+                "https://cdn.example.com",
+                "PLtest",
+                _make_playlist_meta(),
+                manifest={"stale-id": {"size": 1}},
+            )
+
+        assert report["manifest_saved"] is False
+        assert report["omitted_ids"] == []
+
+    def test_reconcile_reports_a_clean_run(self):
+        s3 = _make_s3_manager(existing=["vid001"])
+        s3.save_manifest.return_value = True
+
+        with (
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+        ):
+            report = _reconcile(
+                s3,
+                [_make_video("vid001")],
+                "https://cdn.example.com",
+                "PLtest",
+                _make_playlist_meta(),
+                manifest={},
+            )
+
+        assert report == {"manifest_saved": True, "omitted_ids": []}

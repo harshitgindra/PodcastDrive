@@ -9,7 +9,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from s3_manager import S3Manager
+from s3_manager import ManifestUnavailableError, S3Manager
 
 BUCKET = "test-podcast-bucket"
 PLAYLIST_ID = "PLtest123"
@@ -321,17 +321,46 @@ class TestManifest:
         data = obj["Body"].read()
         assert b"ep-001" in data
 
-    def test_load_manifest_returns_empty_on_corrupt_json(self, s3_manager):
+    def test_load_manifest_raises_on_corrupt_json(self, s3_manager):
+        """Corrupt JSON must not read as "first run" — that would clobber real history."""
         key = f"{PLAYLIST_ID}/manifest.json"
         s3_manager.s3_client.put_object(Bucket=BUCKET, Key=key, Body=b"not valid json")
-        result = s3_manager.load_manifest()
-        assert result == {}
+        with pytest.raises(ManifestUnavailableError):
+            s3_manager.load_manifest()
 
-    def test_load_manifest_returns_empty_on_non_dict_json(self, s3_manager):
+    def test_load_manifest_raises_on_non_dict_json(self, s3_manager):
         key = f"{PLAYLIST_ID}/manifest.json"
         s3_manager.s3_client.put_object(Bucket=BUCKET, Key=key, Body=b'["not", "a", "dict"]')
-        result = s3_manager.load_manifest()
-        assert result == {}
+        with pytest.raises(ManifestUnavailableError):
+            s3_manager.load_manifest()
+
+    def test_save_refused_after_unreadable_manifest(self, s3_manager):
+        """The unreadable manifest stays in S3 instead of being overwritten."""
+        key = f"{PLAYLIST_ID}/manifest.json"
+        s3_manager.s3_client.put_object(Bucket=BUCKET, Key=key, Body=b"not valid json")
+        with pytest.raises(ManifestUnavailableError):
+            s3_manager.load_manifest()
+
+        assert s3_manager.save_manifest({"ep-001": {"size": 1}}) is False
+        body = s3_manager.s3_client.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+        assert body == b"not valid json"
+
+    def test_force_overrides_the_refusal(self, s3_manager):
+        key = f"{PLAYLIST_ID}/manifest.json"
+        s3_manager.s3_client.put_object(Bucket=BUCKET, Key=key, Body=b"not valid json")
+        with pytest.raises(ManifestUnavailableError):
+            s3_manager.load_manifest()
+
+        assert s3_manager.save_manifest({"ep-001": {"size": 1}}, force=True) is True
+        assert s3_manager.load_manifest() == {"ep-001": {"size": 1}}
+
+    def test_missing_manifest_still_allows_saving(self, s3_manager):
+        """A genuine first run is not a failure, so the first save must go through."""
+        assert s3_manager.load_manifest() == {}
+        assert s3_manager.save_manifest({"ep-001": {"size": 10}}) is True
+
+    def test_save_manifest_returns_true_on_success(self, s3_manager):
+        assert s3_manager.save_manifest({"ep-001": {"size": 100}}) is True
 
     def test_save_manifest_content_type_is_json(self, s3_manager):
         s3_manager.save_manifest({"ep-001": {"size": 42}})
@@ -543,8 +572,8 @@ class TestResetPodcast:
 class TestManifestExceptionPaths:
     """Cover non-404 ClientError and generic Exception branches in load/save_manifest."""
 
-    def test_load_manifest_non_404_client_error_returns_empty(self):
-        """Non-404 ClientError (e.g. 403 Forbidden) is swallowed, returns {} (lines 237-238)."""
+    def test_load_manifest_non_404_client_error_raises(self):
+        """A 403 means the manifest exists but is unreachable — not an empty manifest."""
         from botocore.exceptions import ClientError
 
         manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
@@ -554,28 +583,50 @@ class TestManifestExceptionPaths:
         )
         manager.s3_client = mock_s3
 
-        result = manager.load_manifest()
-        assert result == {}
+        with pytest.raises(ManifestUnavailableError):
+            manager.load_manifest()
 
-    def test_load_manifest_generic_exception_returns_empty(self):
-        """Generic Exception in load_manifest is swallowed, returns {} (lines 239-241)."""
+    def test_load_manifest_404_returns_empty(self):
+        from botocore.exceptions import ClientError
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+        mock_s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "missing"}}, "GetObject"
+        )
+        manager.s3_client = mock_s3
+
+        assert manager.load_manifest() == {}
+
+    def test_load_manifest_generic_exception_raises(self):
         manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
         mock_s3 = unittest.mock.MagicMock()
         mock_s3.get_object.side_effect = RuntimeError("unexpected S3 failure")
         manager.s3_client = mock_s3
 
-        result = manager.load_manifest()
-        assert result == {}
+        with pytest.raises(ManifestUnavailableError):
+            manager.load_manifest()
 
-    def test_save_manifest_exception_is_swallowed(self):
-        """Exception in save_manifest is swallowed (lines 265-266)."""
+    def test_save_manifest_write_failure_returns_false(self):
+        """The write fault is reported instead of swallowed, so no caller reports success."""
         manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
         mock_s3 = unittest.mock.MagicMock()
         mock_s3.put_object.side_effect = RuntimeError("S3 write failure")
         manager.s3_client = mock_s3
 
-        # Should not raise
-        manager.save_manifest({"ep-001": {"size": 100}})
+        assert manager.save_manifest({"ep-001": {"size": 100}}) is False
+
+    def test_read_failure_blocks_a_later_save(self):
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        mock_s3 = unittest.mock.MagicMock()
+        mock_s3.get_object.side_effect = RuntimeError("unexpected S3 failure")
+        manager.s3_client = mock_s3
+
+        with pytest.raises(ManifestUnavailableError):
+            manager.load_manifest()
+
+        assert manager.save_manifest({"ep-001": {"size": 100}}) is False
+        mock_s3.put_object.assert_not_called()
 
 
 class TestCloudFrontClientInit:

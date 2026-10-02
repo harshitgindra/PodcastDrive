@@ -339,6 +339,7 @@ def build_episode_metadata(
     s3: S3Manager,
     ads_removed_ids: set[str] | None = None,
     manifest: dict | None = None,
+    omitted_ids: list[str] | None = None,
 ) -> list[EpisodeMeta]:
     """Build a sorted list of :class:`EpisodeMeta` for episodes in S3.
 
@@ -346,6 +347,11 @@ def build_episode_metadata(
     *video_entries*, creates an :class:`EpisodeMeta` with the S3 key,
     file size (from ``s3.get_object_size``, falling back to the manifest
     ``size`` when the HEAD fails), and CloudFront URL.
+
+    ``<enclosure length>`` is required by RSS 2.0, so an episode whose size
+    cannot be established is left out of the feed entirely rather than published
+    as an invalid item.  Those video ids are appended to *omitted_ids* so the
+    caller can report the degradation instead of silently shipping a short feed.
 
     Episodes sharing a normalised title are deduplicated, keeping the newest
     upload; ties break on ``video_id`` so the surviving episode does not change
@@ -357,6 +363,8 @@ def build_episode_metadata(
         cloudfront_base: CloudFront distribution base URL.
         playlist_id: Playlist ID for key/URL construction.
         s3: An :class:`S3Manager` instance for querying object sizes.
+        omitted_ids: Optional list the caller passes in to collect the video ids
+            dropped for lack of a usable size.
 
     Returns:
         List of :class:`EpisodeMeta` sorted newest-first.
@@ -408,6 +416,15 @@ def build_episode_metadata(
 
         s3_key = f"{playlist_id}/episodes/{video_id}.mp3"
         file_size = _episode_file_size(s3, s3_key, video_id, manifest)
+        if not isinstance(file_size, int) or file_size <= 0:
+            logger.error(
+                "Omitting %s from the feed: no usable size, and <enclosure> without a real "
+                "length is an invalid item",
+                s3_key,
+            )
+            if omitted_ids is not None:
+                omitted_ids.append(video_id)
+            continue
         cloudfront_url = f"{cloudfront_base}/{playlist_id}/episodes/{video_id}.mp3"
 
         summary = manifest.get(video_id, {}).get("summary", "") if manifest else ""

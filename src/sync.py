@@ -248,10 +248,20 @@ def process_playlist(
                     except Exception as eval_exc:
                         logger.warning("[Step 4] Ad evaluation failed for %s: %s", video.video_id, eval_exc)
 
+                # Size is read from the file that is about to be uploaded, so the
+                # manifest records exactly what listeners will download.  A stat
+                # failure (or an empty file) raises into the per-episode handler
+                # below: the episode fails rather than being published with
+                # metadata the feed cannot trust.
+                file_size = os.path.getsize(mp3_path)
+                if file_size <= 0:
+                    raise OSError(f"{mp3_path} is empty — refusing to publish it")
+
                 # Upload to S3 (lifecycle expiration is set automatically)
                 logger.info("[Step 4] Uploading %s to S3", video.video_id)
                 s3.upload_episode(mp3_path, video.video_id, max_age_days)
                 os.remove(mp3_path)
+                manifest[video.video_id]["size"] = file_size
                 new_count += 1
 
                 logger.info("[Step 4] Done %s (%d downloaded so far)", video.video_id, new_count)
@@ -289,17 +299,26 @@ def process_playlist(
             failed_count,
         )
 
-        # Persist manifest with ads_removed metadata
-        if new_count > 0:
-            s3.save_manifest(manifest)
+        # Persist manifest with ads_removed metadata and published sizes
+        manifest_save_failed = False
+        if new_count > 0 and not s3.save_manifest(manifest):
+            # The MP3s are in S3 but nothing records their size, so the next feed
+            # build has no fallback when a HEAD fails.  Not a healthy run.
+            manifest_save_failed = True
+            logger.error(
+                "[Step 4] Manifest save failed for %s — %d uploaded episode(s) are not recorded",
+                playlist_id,
+                new_count,
+            )
 
         # --- Step 5: Reconciliation ---
+        feed_omitted_ids: list[str] = []
         if dry_run:
             logger.info("[DRY-RUN] Skipping reconciliation and feed upload.")
             final_keys = existing_keys  # use pre-run S3 state for total count
         else:
             logger.info("[Step 5] Starting reconciliation...")
-            _reconcile(
+            reconcile_report = _reconcile(
                 s3,
                 video_entries,
                 cloudfront_base,
@@ -307,6 +326,9 @@ def process_playlist(
                 playlist_meta,
                 manifest=manifest,
             )
+            if not reconcile_report["manifest_saved"]:
+                manifest_save_failed = True
+            feed_omitted_ids = reconcile_report["omitted_ids"]
             final_keys = s3.list_existing_episodes()
 
         elapsed = time.monotonic() - _run_start
@@ -319,15 +341,23 @@ def process_playlist(
             log_fn = logger.warning
         else:
             log_fn = logger.info
+        # A publication fault (manifest not recorded, or an episode dropped from
+        # the feed for lack of a size) means listeners do not see what this run
+        # produced, so it is reported as a failure rather than as a healthy run.
+        publication_failed = manifest_save_failed or bool(feed_omitted_ids)
+        reported_failed = failed_count + (1 if publication_failed else 0)
+
         log_fn(
             "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d unavailable=%d failed=%d "
-            "bot_detected=%s total_s3=%d elapsed=%.1fs",
+            "bot_detected=%s manifest_failed=%s feed_omitted=%d total_s3=%d elapsed=%.1fs",
             playlist_id,
             new_count,
             skipped_old,
             skipped_unavailable,
-            failed_count,
+            reported_failed,
             bot_detected,
+            manifest_save_failed,
+            len(feed_omitted_ids),
             len(final_keys),
             elapsed,
         )
@@ -337,7 +367,10 @@ def process_playlist(
             "new_episodes": new_count,
             "skipped_old": skipped_old,
             "unavailable": skipped_unavailable,
-            "failed": failed_count,
+            "failed": reported_failed,
+            "episodes_failed": failed_count,
+            "manifest_failed": manifest_save_failed,
+            "feed_omitted_ids": sorted(feed_omitted_ids),
             "bot_detected": bot_detected,
             "total_episodes": len(final_keys),
             "elapsed_seconds": round(elapsed, 1),
@@ -356,8 +389,14 @@ def _rebuild_feed(
     playlist_meta: PlaylistMeta,
     manifest: dict | None = None,
     existing_keys: set | None = None,
+    omitted_ids: list[str] | None = None,
 ) -> int:
-    """Re-list S3, generate and upload feed.xml using metadata already in memory."""
+    """Re-list S3, generate and upload feed.xml using metadata already in memory.
+
+    Episodes whose size cannot be established are left out of the feed by
+    :func:`build_episode_metadata` and collected in *omitted_ids*, so the caller
+    can report the degradation instead of publishing an invalid enclosure.
+    """
     final_keys = existing_keys if existing_keys is not None else s3.list_existing_episodes()
     # Build set of video_ids that had ads removed (from manifest)
     ads_removed_ids: set[str] = set()
@@ -371,6 +410,7 @@ def _rebuild_feed(
         s3,
         ads_removed_ids=ads_removed_ids,
         manifest=manifest,
+        omitted_ids=omitted_ids,
     )
     xml = generate_rss(playlist_meta, episodes, cloudfront_base, playlist_id)
     s3.upload_feed(xml)
@@ -468,9 +508,15 @@ def _reconcile(
     - No feed entries without a corresponding S3 file
     - No S3 files without a corresponding feed entry
     - Entry count in feed == file count in S3
+
+    Returns:
+        dict with ``manifest_saved`` (False when a pruned manifest could not be
+        written) and ``omitted_ids`` (episodes left out of the feed for lack of a
+        usable size), so the caller can report a degraded run.
     """
     s3_keys = s3.list_existing_episodes()
     logger.info("[Reconcile] S3 has %d episodes", len(s3_keys))
+    manifest_saved = True
 
     playlist_ids = {v.video_id for v in video_entries}
     orphaned_files = s3_keys - playlist_ids
@@ -500,13 +546,21 @@ def _reconcile(
         if stale_manifest_keys:
             for k in stale_manifest_keys:
                 del manifest[k]
-            s3.save_manifest(manifest)
-            logger.info(
-                "[Reconcile] Pruned %d stale manifest entries (no longer in S3 or playlist)",
-                len(stale_manifest_keys),
-            )
+            manifest_saved = s3.save_manifest(manifest)
+            if manifest_saved:
+                logger.info(
+                    "[Reconcile] Pruned %d stale manifest entries (no longer in S3 or playlist)",
+                    len(stale_manifest_keys),
+                )
+            else:
+                logger.error(
+                    "[Reconcile] Could not persist the pruned manifest for %s — "
+                    "S3 still holds the stale entries",
+                    playlist_id,
+                )
 
     # Pass remaining keys to avoid a redundant S3 list call inside _rebuild_feed
+    omitted_ids: list[str] = []
     ep_count = _rebuild_feed(
         s3,
         video_entries,
@@ -515,5 +569,13 @@ def _reconcile(
         playlist_meta,
         manifest=manifest,
         existing_keys=remaining_keys,
+        omitted_ids=omitted_ids,
     )
     logger.info("[Reconcile] Done. Feed has %d entries", ep_count)
+    if omitted_ids:
+        logger.error(
+            "[Reconcile] %d episode(s) omitted from the feed for lack of a usable size: %s",
+            len(omitted_ids),
+            sorted(omitted_ids),
+        )
+    return {"manifest_saved": manifest_saved, "omitted_ids": omitted_ids}

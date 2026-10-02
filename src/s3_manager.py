@@ -13,6 +13,16 @@ from utils import retry_aws_call
 logger = logging.getLogger(__name__)
 
 
+class ManifestUnavailableError(RuntimeError):
+    """Raised when an existing manifest cannot be read or parsed.
+
+    A *missing* manifest is not an error — it is a first run, and ``{}`` is the
+    honest answer.  An *unreadable* one is, because treating it as empty makes
+    every episode look new and makes the next ``save_manifest`` overwrite real
+    publication history (sizes, splice-failure counters) with a blank slate.
+    """
+
+
 class S3Manager:
     """Handles S3 interactions and CloudFront cache invalidation.
 
@@ -31,6 +41,9 @@ class S3Manager:
         self._cf_client = None
         self._distribution_id = settings.get("CLOUDFRONT_DISTRIBUTION_ID")
         self._lifecycle_days_set: int | None = None  # cache to skip redundant PUTs
+        # False once a manifest was found but could not be read: save_manifest
+        # then refuses to write, so a read fault cannot escalate into data loss.
+        self._manifest_readable = True
         # Note: bucket name should come from the S3_BUCKET environment variable,
         # not be hardcoded. See config.env.example for configuration.
 
@@ -222,8 +235,13 @@ class S3Manager:
         be present for future use.
 
         Returns:
-            Dict mapping ``episode_id`` → metadata dict.  Returns ``{}`` if the
-            manifest does not yet exist (first run) or cannot be parsed.
+            Dict mapping ``episode_id`` → metadata dict.  ``{}`` on a genuine
+            first run (no manifest object exists).
+
+        Raises:
+            ManifestUnavailableError: A manifest exists but could not be
+                fetched, decoded, or is not a JSON object.  Callers must treat
+                this as a failed run rather than as an empty manifest.
         """
         key = f"{self.playlist_id}/manifest.json"
         try:
@@ -231,23 +249,32 @@ class S3Manager:
                 lambda: self.s3_client.get_object(Bucket=self.bucket, Key=key),
                 label="s3.get_object[manifest]",
             )
-            data = json.loads(response["Body"].read().decode("utf-8"))
-            if isinstance(data, dict):
-                logger.debug("[S3Manager] Loaded manifest with %d entries", len(data))
-                return data
-            logger.warning("[S3Manager] manifest.json is not a dict — ignoring")
-            return {}
         except ClientError as exc:
-            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
                 logger.debug("[S3Manager] No manifest found — starting fresh")
+                self._manifest_readable = True
                 return {}
-            logger.warning("[S3Manager] Could not load manifest: %s", exc, exc_info=True)
-            return {}
+            self._manifest_readable = False
+            raise ManifestUnavailableError(f"could not read s3://{self.bucket}/{key}: {exc}") from exc
         except Exception as exc:
-            logger.warning("[S3Manager] Could not load manifest: %s", exc, exc_info=True)
-            return {}
+            self._manifest_readable = False
+            raise ManifestUnavailableError(f"could not read s3://{self.bucket}/{key}: {exc}") from exc
 
-    def save_manifest(self, manifest: dict) -> None:
+        try:
+            data = json.loads(response["Body"].read().decode("utf-8"))
+        except Exception as exc:
+            self._manifest_readable = False
+            raise ManifestUnavailableError(f"s3://{self.bucket}/{key} is not valid JSON: {exc}") from exc
+
+        if not isinstance(data, dict):
+            self._manifest_readable = False
+            raise ManifestUnavailableError(f"s3://{self.bucket}/{key} is not a JSON object")
+
+        logger.debug("[S3Manager] Loaded manifest with %d entries", len(data))
+        self._manifest_readable = True
+        return data
+
+    def save_manifest(self, manifest: dict, *, force: bool = False) -> bool:
         """Persist the episode manifest to S3.
 
         Writes the manifest as pretty-printed JSON to
@@ -255,8 +282,24 @@ class S3Manager:
 
         Args:
             manifest: Dict mapping ``episode_id`` → metadata dict.
+            force: Write even when the last :meth:`load_manifest` failed.
+                Only safe when the caller built *manifest* from a source other
+                than that failed load.
+
+        Returns:
+            ``True`` when the manifest is durably stored, ``False`` when the
+            write was refused or failed.  A ``False`` return means S3 still
+            holds the previous manifest, so the caller must not report success.
         """
         key = f"{self.playlist_id}/manifest.json"
+        if not self._manifest_readable and not force:
+            logger.error(
+                "[S3Manager] Refusing to write %s: the existing manifest could not be read, "
+                "so saving would discard real publication history",
+                key,
+            )
+            return False
+
         body = json.dumps(manifest, indent=2, default=str).encode("utf-8")
         try:
             retry_aws_call(
@@ -268,9 +311,11 @@ class S3Manager:
                 ),
                 label="s3.put_object[manifest]",
             )
-            logger.debug("[S3Manager] Manifest saved (%d entries)", len(manifest))
         except Exception as exc:
-            logger.warning("[S3Manager] Could not save manifest: %s", exc, exc_info=True)
+            logger.error("[S3Manager] Could not save manifest: %s", exc, exc_info=True)
+            return False
+        logger.debug("[S3Manager] Manifest saved (%d entries)", len(manifest))
+        return True
 
     def _invalidate_cloudfront(self, path: str) -> None:
         """Create a CloudFront invalidation for the given path.

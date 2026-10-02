@@ -46,7 +46,7 @@ from podcast_downloader import (
     search_feed_url_by_name,
 )
 from rss_generator import xml_safe
-from s3_manager import S3Manager
+from s3_manager import ManifestUnavailableError, S3Manager
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -218,6 +218,19 @@ def _build_podcast_feed_xml(
     ep_ad_suffix = settings.get("EPISODE_AD_REMOVED_SUFFIX")
 
     for ep, ep_id in zip(episodes, episode_ids, strict=True):
+        size = ep_sizes.get(ep_id)
+        if not isinstance(size, int) or size <= 0:
+            # <enclosure length="0"> makes players abort or mis-seek the
+            # download, so an episode with no trustworthy size is left out of
+            # this build instead.  The caller reports the omission and the next
+            # run republishes it once the size is known.
+            logger.error(
+                "[PodcastSync] Omitting %s from feed.xml — no usable enclosure size (%r)",
+                ep_id,
+                size,
+            )
+            continue
+
         item = ET.SubElement(channel, "item")
         title = ep.title
         if ep_ad_suffix and manifest.get(ep_id, {}).get("ads_removed"):
@@ -231,7 +244,7 @@ def _build_podcast_feed_xml(
         cf_url = f"{cloudfront_base}/{slug}/episodes/{ep_id}.mp3"
         enc = ET.SubElement(item, "enclosure")
         enc.set("url", cf_url)
-        enc.set("length", str(ep_sizes.get(ep_id, 0)))
+        enc.set("length", str(size))
         enc.set("type", "audio/mpeg")
 
         ET.SubElement(item, "pubDate").text = format_datetime(ep.pub_date)
@@ -288,7 +301,14 @@ def process_podcast_feed(
                   *would* happen but skip downloads, S3 writes, and Notion updates.
 
     Returns:
-        dict with keys: ``slug``, ``new_episodes``, ``skipped``, ``failed``.
+        dict with keys ``slug``, ``new_episodes``, ``skipped`` and ``failed``,
+        plus the publication state the orchestrator and notifier read:
+        ``failed`` counts episode failures *and* a publication fault (feed not
+        uploaded, manifest not saved, episode omitted for lack of a size), so a
+        run whose output never reached listeners is never reported as healthy.
+        ``splice_failed`` covers this run's splice failures plus the episodes
+        that have exhausted their retries and remain unpublished;
+        ``splice_exhausted_reasons`` carries their last failure reason.
     """
     bucket = settings.get("S3_BUCKET")
     if not bucket:
@@ -383,7 +403,34 @@ def process_podcast_feed(
         # Load manifest to check for splice failures that need reprocessing.
         # Retries are capped at MAX_SPLICE_RETRIES (default 3) to avoid downloading
         # and transcribing a persistently-broken episode on every run indefinitely.
-        manifest = s3.load_manifest()
+        # An unreadable manifest is fail-closed: the splice counters and sizes it
+        # holds are the only record of what has already been published, so
+        # continuing would re-download exhausted episodes and then overwrite the
+        # real manifest with a blank one.  Already-published episodes and
+        # feed.xml are left untouched, and the orchestrator keeps the remaining
+        # sources running.
+        try:
+            manifest = s3.load_manifest()
+        except ManifestUnavailableError as exc:
+            logger.error(
+                "[PodcastSync] Manifest unreadable for '%s': %s — aborting this podcast "
+                "without touching S3; already-published episodes and feed.xml stay as they are",
+                podcast.name,
+                exc,
+            )
+            if provider:
+                with contextlib.suppress(Exception):
+                    provider.update_status(podcast, "Failed")
+            return {
+                "slug": slug,
+                "new_episodes": 0,
+                "skipped": 0,
+                "failed": 1,
+                "splice_failed": 0,
+                "manifest_failed": True,
+                "manifest_error": str(exc),
+            }
+
         _max_splice_retries = settings.get("MAX_SPLICE_RETRIES")
         splice_retry_ids = {
             k
@@ -401,14 +448,24 @@ def process_podcast_feed(
                 len(splice_retry_ids),
                 splice_retry_ids,
             )
+        # Exhausted episodes stay unpublished by design (never ship an
+        # ad-bearing original).  They must therefore keep being reported every
+        # run, with the reason of the last failure, until someone intervenes --
+        # the counters are read here, never reset.
+        splice_exhausted_reasons = {
+            eid: manifest.get(eid, {}).get("fail_reason", "") or "unknown" for eid in sorted(_splice_exhausted)
+        }
         if _splice_exhausted:
-            logger.warning(
-                "[PodcastSync] %d episode(s) have exhausted splice retries "
-                "(MAX_SPLICE_RETRIES=%d) and will not be retried: %s",
-                len(_splice_exhausted),
-                _max_splice_retries,
-                _splice_exhausted,
-            )
+            for eid, reason in splice_exhausted_reasons.items():
+                logger.error(
+                    "[PodcastSync] %s has exhausted splice retries (%d/%d, cdn=%s) and stays unpublished — "
+                    "last failure: %s",
+                    eid,
+                    manifest.get(eid, {}).get("splice_failed_count", 0),
+                    _max_splice_retries,
+                    manifest.get(eid, {}).get("cdn", "unknown"),
+                    reason,
+                )
 
         # Build (episode, episode_id) pairs for candidates
         candidates: list[tuple[EpisodeMeta, str]] = []
@@ -459,6 +516,10 @@ def process_podcast_feed(
                 "new_episodes": len(candidates),
                 "skipped": skipped,
                 "failed": 0,
+                "splice_failed": len(_splice_exhausted),
+                "splice_exhausted": len(_splice_exhausted),
+                "splice_exhausted_ids": sorted(_splice_exhausted),
+                "splice_exhausted_reasons": splice_exhausted_reasons,
             }
 
         # ------------------------------------------------------------------
@@ -693,13 +754,27 @@ def process_podcast_feed(
                         failed_count += 1
 
         # Persist manifest whenever something changed — uploads or splice-fail count updates
-        if new_count > 0 or splice_failed_this_run > 0:
-            s3.save_manifest(manifest)
+        manifest_save_failed = False
+        if (new_count > 0 or splice_failed_this_run > 0) and not s3.save_manifest(manifest):
+            # The episodes are in S3 but their sizes and splice counters are
+            # not, so the run is not healthy: a later feed build would see no
+            # size for them and the retry cap would be computed from stale data.
+            manifest_save_failed = True
+            logger.error(
+                "[PodcastSync] Manifest save failed for '%s' — %d uploaded episode(s) are not recorded",
+                podcast.name,
+                new_count,
+            )
 
         # ------------------------------------------------------------------
         # Step 5: Rebuild feed.xml
         # ------------------------------------------------------------------
-        if new_count > 0 or skipped > 0:
+        feed_failed = False
+        feed_omitted_ids: list[str] = []
+        # Rebuild on failures too: a run where every episode failed still has to
+        # republish feed.xml, because a previous run may have uploaded episodes
+        # and then failed to publish the feed that lists them.
+        if new_count > 0 or skipped > 0 or failed_count > 0 or splice_failed_this_run > 0:
             # Collect all episodes currently in S3 for the feed
             all_existing_ids = s3.list_existing_episodes()
 
@@ -734,8 +809,9 @@ def process_podcast_feed(
             ep_sizes: dict[str, int] = {}
             missing_from_manifest: list[str] = []
             for eid in feed_ep_ids:
-                if eid in manifest and "size" in manifest[eid]:
-                    ep_sizes[eid] = manifest[eid]["size"]
+                cached = manifest.get(eid, {}).get("size") if isinstance(manifest.get(eid), dict) else None
+                if isinstance(cached, int) and cached > 0:
+                    ep_sizes[eid] = cached
                 else:
                     missing_from_manifest.append(eid)
 
@@ -748,13 +824,29 @@ def process_podcast_feed(
                     s3_key = f"{slug}/episodes/{eid}.mp3"
                     entry: dict = manifest.setdefault(eid, {})
 
-                    # Backfill size via head_object
+                    # Backfill size via head_object.  A failure must not become
+                    # <enclosure length="0">: an episode with no trustworthy size
+                    # is omitted from this build and reported as degraded.
                     try:
                         size = s3.get_object_size(s3_key)
-                        ep_sizes[eid] = size
-                        entry["size"] = size
-                    except Exception:
-                        ep_sizes[eid] = 0
+                    except Exception as exc:
+                        logger.error(
+                            "[PodcastSync] Could not read size of %s: %s — omitting from feed.xml",
+                            s3_key,
+                            exc,
+                        )
+                        feed_omitted_ids.append(eid)
+                    else:
+                        if isinstance(size, int) and size > 0:
+                            ep_sizes[eid] = size
+                            entry["size"] = size
+                        else:
+                            logger.error(
+                                "[PodcastSync] %s reports a non-positive size (%r) — omitting from feed.xml",
+                                s3_key,
+                                size,
+                            )
+                            feed_omitted_ids.append(eid)
 
                     # Backfill episode metadata from the RSS feed (if available)
                     if eid in id_to_ep and not entry.get("title"):
@@ -774,7 +866,19 @@ def process_podcast_feed(
                         )
 
                 # Persist the backfilled manifest entries
-                s3.save_manifest(manifest)
+                if not s3.save_manifest(manifest):
+                    manifest_save_failed = True
+
+            if feed_omitted_ids:
+                omitted = set(feed_omitted_ids)
+                kept = [(ep, eid) for ep, eid in zip(feed_episodes, feed_ep_ids, strict=True) if eid not in omitted]
+                feed_episodes = [ep for ep, _ in kept]
+                feed_ep_ids = [eid for _, eid in kept]
+                logger.error(
+                    "[PodcastSync] %d episode(s) omitted from feed.xml for lack of a usable size: %s",
+                    len(omitted),
+                    sorted(omitted),
+                )
 
             logger.info("[PodcastSync] Generating feed.xml with %d episodes", len(feed_episodes))
             # The episodes and manifest are already uploaded at this point, so a
@@ -798,6 +902,7 @@ def process_podcast_feed(
                 s3.upload_feed(xml_content)
                 logger.info("[PodcastSync] feed.xml uploaded")
             except Exception as exc:
+                feed_failed = True
                 logger.error(
                     "[PodcastSync] feed.xml generation failed for '%s': %s — "
                     "%d episode(s) are uploaded and will appear once the feed rebuilds next run",
@@ -807,37 +912,64 @@ def process_podcast_feed(
                     exc_info=True,
                 )
 
+        # A publication fault (feed not uploaded, manifest not recorded, or an
+        # episode dropped from the feed for lack of a size) means listeners do
+        # not see what this run produced, so it is counted as a failure rather
+        # than reported as a healthy run.
+        publication_failed = feed_failed or manifest_save_failed or bool(feed_omitted_ids)
+        reported_failed = failed_count + (1 if publication_failed else 0)
+        # Exhausted episodes are still unpublished, so they keep the source
+        # visibly in a splice-failed state until someone intervenes.
+        reported_splice_failed = splice_failed_this_run + len(_splice_exhausted)
+
         # Update Notion status based on this run's outcomes.
-        # splice_failed_this_run is used (not the historical manifest total) so
-        # a podcast that previously had a splice failure but succeeded today
-        # correctly shows 'Done' rather than a stale 'Splice Failed'.
-        if splice_failed_this_run > 0 and provider:
-            try:
-                provider.update_status(podcast, "Splice Failed")
-            except Exception as exc:
-                logger.warning("[PodcastSync] Failed to update Notion status: %s", exc)
-        elif new_count > 0 and provider:
-            try:
-                provider.update_status(podcast, "Done")
-            except Exception as exc:
-                logger.warning("[PodcastSync] Failed to update Notion status: %s", exc)
+        # splice_failed_this_run (not the historical manifest total) decides
+        # between Done and Splice Failed so a podcast that previously had a
+        # splice failure but succeeded today is not stuck on a stale status.
+        if provider:
+            if publication_failed or failed_count > 0:
+                status = "Failed"
+            elif reported_splice_failed > 0:
+                status = "Splice Failed"
+            elif new_count > 0:
+                status = "Done"
+            else:
+                status = None
+            if status:
+                try:
+                    provider.update_status(podcast, status)
+                except Exception as exc:
+                    logger.warning("[PodcastSync] Failed to update Notion status: %s", exc)
 
         elapsed = time.monotonic() - _run_start
         logger.info(
-            "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d splice_failed=%d elapsed=%.1fs",
+            "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d splice_failed=%d "
+            "splice_exhausted=%d feed_failed=%s manifest_save_failed=%s feed_omitted=%d elapsed=%.1fs",
             slug,
             new_count,
             skipped,
-            failed_count,
+            reported_failed,
             splice_failed_this_run,
+            len(_splice_exhausted),
+            feed_failed,
+            manifest_save_failed,
+            len(feed_omitted_ids),
             elapsed,
         )
         return {
             "slug": slug,
             "new_episodes": new_count,
             "skipped": skipped,
-            "failed": failed_count,
-            "splice_failed": splice_failed_this_run,
+            "failed": reported_failed,
+            "episodes_failed": failed_count,
+            "splice_failed": reported_splice_failed,
+            "splice_failed_this_run": splice_failed_this_run,
+            "splice_exhausted": len(_splice_exhausted),
+            "splice_exhausted_ids": sorted(_splice_exhausted),
+            "splice_exhausted_reasons": splice_exhausted_reasons,
+            "feed_failed": feed_failed,
+            "feed_omitted_ids": sorted(feed_omitted_ids),
+            "manifest_failed": manifest_save_failed,
             "elapsed_seconds": round(elapsed, 1),
         }
 
