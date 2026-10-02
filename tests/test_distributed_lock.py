@@ -9,7 +9,6 @@ TTL is kept alive by renewal rather than silently lost.
 import json
 import os
 import threading
-import threading
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -824,12 +823,17 @@ class TestCli:
         assert distributed_lock.main(["acquire"]) == 0
         stale_owner = (cli_env / distributed_lock.OWNER_FILE_NAME).read_text(encoding="utf-8")
         replacement_owner = "new-run-token"
-        (cli_env / distributed_lock.OWNER_FILE_NAME).write_text(replacement_owner, encoding="utf-8")
-        _put_lock(s3_client, runner="replacement", owner=replacement_owner)
-
-        original_wait = threading.Event.wait
+        wait_calls = 0
 
         def first_wait_then_stop(self, timeout=None):
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls != 1:
+                raise AssertionError("heartbeat kept running after losing the original lease")
+            # Swap the file and remote lease only after main() has snapshotted
+            # the original token, as happens when a later run takes over.
+            (cli_env / distributed_lock.OWNER_FILE_NAME).write_text(replacement_owner, encoding="utf-8")
+            _put_lock(s3_client, runner="replacement", owner=replacement_owner)
             return False
 
         with patch.object(threading.Event, "wait", first_wait_then_stop):

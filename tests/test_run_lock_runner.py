@@ -128,7 +128,7 @@ class TestLocalFlockGuard:
 
     def test_second_run_is_refused_and_names_the_holder(self, harness, tmp_path):
         guard = 'LOCK_FILE="$SCRIPT_DIR/.podcastdrive.lock"\n' + _block(FLOCK_BLOCK)
-        holder = harness(guard + 'echo HOLDING; sleep 10\n', name="holder.sh")
+        holder = harness(guard + "echo HOLDING; sleep 10\n", name="holder.sh")
         contender = harness(guard + 'echo "GOT-LOCK"\n', name="contender.sh")
 
         holder_proc = subprocess.Popen(["bash", str(holder)], stdout=subprocess.PIPE, text=True)
@@ -152,7 +152,7 @@ class TestLocalFlockGuard:
 
     def test_contender_does_not_truncate_the_holders_pid(self, harness, tmp_path):
         guard = 'LOCK_FILE="$SCRIPT_DIR/.podcastdrive.lock"\n' + _block(FLOCK_BLOCK)
-        holder = harness(guard + 'echo HOLDING; sleep 10\n', name="holder.sh")
+        holder = harness(guard + "echo HOLDING; sleep 10\n", name="holder.sh")
         contender = harness(guard + 'echo "GOT-LOCK"\n', name="contender.sh")
 
         holder_proc = subprocess.Popen(["bash", str(holder)], stdout=subprocess.PIPE, text=True)
@@ -264,7 +264,7 @@ class TestLeaseLossTerminatesRun:
     def _long_run(self, harness, tmp_path, calls=None):
         stub = _stub_python(tmp_path, {"heartbeat": 1, "heartbeat_delay": 0.3}, log=calls)
         return harness(
-            _block(TRAPS_BLOCK) + _dist_lock_block() + 'echo SYNC-STARTED\nsleep 30\necho SYNC-FINISHED\n',
+            _block(TRAPS_BLOCK) + _dist_lock_block() + "echo SYNC-STARTED\nsleep 30\necho SYNC-FINISHED\n",
             prelude=f'DRY_RUN=false\nVENV_PYTHON="{stub}"\n',
         )
 
@@ -287,7 +287,7 @@ class TestLeaseLossTerminatesRun:
         script = harness(
             _block(TRAPS_BLOCK)
             + _dist_lock_block()
-            + 'echo SYNC-STARTED\nkill -TERM $$\nsleep 5\necho SYNC-FINISHED\n',
+            + "echo SYNC-STARTED\nkill -TERM $$\nsleep 5\necho SYNC-FINISHED\n",
             prelude=f'DRY_RUN=false\nVENV_PYTHON="{stub}"\n',
         )
         result = _run(script, timeout=25)
