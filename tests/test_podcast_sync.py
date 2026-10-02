@@ -1810,3 +1810,122 @@ class TestBuilderNeverEmitsZeroLength:
         )
         assert "ep-001.mp3" not in xml
         assert "ep-002.mp3" in xml
+
+
+class TestBuilderOmissionsReachTheResult:
+    """The caller prefilters sizes, so a builder-side drop is a disagreement that
+    must surface rather than shipping a quietly shorter feed."""
+
+    def _podcast(self):
+        return PodcastConfig(name="Test Pod", url="https://feeds.example.com/rss", source="Podcast")
+
+    def _episode(self, guid="guid-1"):
+        return EpisodeMeta(
+            title="Ep 1",
+            url="https://example.com/ep.mp3",
+            pub_date=datetime(2024, 1, 1, tzinfo=UTC),
+            guid=guid,
+            duration=300,
+        )
+
+    def test_builder_collects_the_dropped_id(self):
+        collector: list[str] = []
+        _build_podcast_feed_xml(
+            self._podcast(),
+            [self._episode()],
+            ["ep-001"],
+            "https://cdn.example.com",
+            "test-pod",
+            {},
+            omitted_ids=collector,
+        )
+        assert collector == ["ep-001"]
+
+    def test_builder_collects_nothing_for_a_sized_episode(self):
+        collector: list[str] = []
+        _build_podcast_feed_xml(
+            self._podcast(),
+            [self._episode()],
+            ["ep-001"],
+            "https://cdn.example.com",
+            "test-pod",
+            {"ep-001": 4242},
+            omitted_ids=collector,
+        )
+        assert collector == []
+
+    def test_builder_omission_is_reported_in_the_result(self):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        def build(*args, **kwargs):
+            kwargs["omitted_ids"].append("guid-1")
+            return "<rss/>"
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync._build_podcast_feed_xml", side_effect=build),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242}}
+            mock_s3.save_manifest.return_value = True
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        mock_s3.upload_feed.assert_called_once()
+        assert result["feed_omitted_ids"] == ["guid-1"]
+        assert result["failed"] == 1
+        assert result["episodes_failed"] == 0
+
+    def test_no_builder_omission_keeps_the_run_healthy(self):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>"),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242}}
+            mock_s3.save_manifest.return_value = True
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["feed_omitted_ids"] == []
+        assert result["failed"] == 0
+
+    def test_omission_survives_a_failed_upload(self):
+        """The omission is recorded before the upload, so both faults are reported."""
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        def build(*args, **kwargs):
+            kwargs["omitted_ids"].append("guid-1")
+            return "<rss/>"
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync._build_podcast_feed_xml", side_effect=build),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = {"guid-1"}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242}}
+            mock_s3.save_manifest.return_value = True
+            mock_s3.upload_feed.side_effect = RuntimeError("S3 down")
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["feed_omitted_ids"] == ["guid-1"]
+        assert result["feed_failed"] is True
+        assert result["failed"] == 1

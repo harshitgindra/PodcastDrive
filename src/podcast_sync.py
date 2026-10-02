@@ -155,6 +155,7 @@ def _build_podcast_feed_xml(
     channel_thumbnail: str = "",
     language: str = "en",
     manifest: dict | None = None,
+    omitted_ids: list[str] | None = None,
 ) -> str:
     """Generate a minimal RSS 2.0 feed for *podcast* from cleaned episode list.
 
@@ -170,6 +171,11 @@ def _build_podcast_feed_xml(
                            and RSS ``<image>`` elements.  Falls back to the first
                            episode's thumbnail when empty.
         manifest:          Optional episode manifest dict for summary lookup.
+        omitted_ids:       Optional list the caller passes in to collect the
+                           episode ids dropped for lack of a usable size.  The
+                           caller normally prefilters those, so anything landing
+                           here is a disagreement worth reporting rather than a
+                           silently shorter feed.
 
     Returns:
         Pretty-printed RSS XML string.
@@ -229,6 +235,8 @@ def _build_podcast_feed_xml(
                 ep_id,
                 size,
             )
+            if omitted_ids is not None:
+                omitted_ids.append(ep_id)
             continue
 
         item = ET.SubElement(channel, "item")
@@ -890,6 +898,7 @@ def process_podcast_feed(
             # feed from S3, so degrading to a warning is recoverable.
             try:
                 channel_thumbnail = parse_channel_thumbnail(feed_xml)
+                builder_omitted: list[str] = []
                 xml_content = _build_podcast_feed_xml(
                     podcast,
                     feed_episodes,
@@ -900,7 +909,21 @@ def process_podcast_feed(
                     channel_thumbnail=channel_thumbnail,
                     language=podcast.language,
                     manifest=manifest,
+                    omitted_ids=builder_omitted,
                 )
+                if builder_omitted:
+                    # The sizes were prefiltered above, so the builder dropping an
+                    # episode means the two disagree: report it instead of
+                    # publishing a quietly shorter feed.  Recorded before the
+                    # upload so a failed upload cannot also lose the omission.
+                    logger.error(
+                        "[PodcastSync] feed.xml built without %d prefiltered episode(s) "
+                        "the builder could not size: %s",
+                        len(builder_omitted),
+                        sorted(builder_omitted),
+                    )
+                    feed_omitted_ids.extend(builder_omitted)
+
                 s3.upload_feed(xml_content)
                 logger.info("[PodcastSync] feed.xml uploaded")
             except Exception as exc:
