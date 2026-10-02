@@ -1029,18 +1029,14 @@ class TestFileSizeFallback:
 
         assert omitted == ["v1"]
 
-    def test_enclosure_omits_length_when_size_unknown(self):
-        """length="0" advertises an empty file; the attribute is dropped instead."""
+    @pytest.mark.parametrize("size", [0, -1, None, "unknown"])
+    def test_feed_rejects_an_episode_without_a_real_length(self, size):
+        """Never emit an enclosure missing its required positive byte length."""
         meta = _make_playlist_meta()
-        xml_str = generate_rss(
-            meta, [_make_episode(file_size=0)], CLOUDFRONT_BASE, PLAYLIST_ID
-        )
-        enc = ET.fromstring(xml_str).find(".//item/enclosure")
+        episodes = [_make_episode(video_id="good", file_size=42), _make_episode(video_id="bad", file_size=size)]
 
-        assert enc is not None
-        assert enc.get("length") is None
-        assert enc.get("type") == "audio/mpeg"
-        assert enc.get("url").endswith("/episodes/vid001.mp3")
+        with pytest.raises(ValueError, match="No usable enclosure size for bad"):
+            generate_rss(meta, episodes, CLOUDFRONT_BASE, PLAYLIST_ID)
 
     def test_enclosure_keeps_length_when_size_known(self):
         meta = _make_playlist_meta()

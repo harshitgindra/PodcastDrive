@@ -123,9 +123,15 @@ def generate_rss(
         Pretty-printed RSS XML string.
 
     Raises:
-        ValueError: If *cloudfront_base* is malformed.
+        ValueError: If *cloudfront_base* is malformed or an episode has no usable enclosure size.
     """
     _validate_cloudfront_base(cloudfront_base)
+    # A caller that bypasses build_episode_metadata must not publish an item
+    # without a usable enclosure length. Fail the entire build so the caller
+    # reports a feed failure rather than silently advertising broken audio.
+    for episode in episodes:
+        if not isinstance(episode.file_size, int) or episode.file_size <= 0:
+            raise ValueError(f"No usable enclosure size for {episode.video_id}: {episode.file_size!r}")
 
     rss = ET.Element("rss", version="2.0")
     # The xmlns:itunes attribute is added automatically by ET.register_namespace
@@ -255,15 +261,9 @@ def _add_item(
 
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", xml_safe(episode.cloudfront_url))
-    # A zero length advertises a zero-byte file and makes clients refuse the
-    # download; omitting the attribute lets them fall back to the real response.
-    if episode.file_size > 0:
-        enclosure.set("length", str(episode.file_size))
-    else:
-        logger.warning(
-            "Unknown file size for %s — omitting enclosure length",
-            episode.s3_key or episode.video_id,
-        )
+    # generate_rss validates every size before creating XML, so the enclosure
+    # always advertises the exact, positive byte length of the audio object.
+    enclosure.set("length", str(episode.file_size))
     enclosure.set("type", "audio/mpeg")
 
     # pubDate in RFC 2822
