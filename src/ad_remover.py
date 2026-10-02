@@ -840,10 +840,17 @@ def _run_transcribe_job(
         else:
             raise RuntimeError(f"Transcribe job {job_name} timed out after {max_wait}s")
 
-        transcript_uri = status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
-        logger.info("[AdRemover] Downloading transcript from %s", transcript_uri)
-
+        import urllib.parse
         import urllib.request
+
+        transcript_uri = status_resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
+        # AWS returns a presigned URL here. Its query string contains temporary
+        # credentials, so retain only the origin and path in retained logs.
+        parsed_transcript_uri = urllib.parse.urlsplit(transcript_uri)
+        safe_transcript_uri = urllib.parse.urlunsplit(
+            (parsed_transcript_uri.scheme, parsed_transcript_uri.netloc, parsed_transcript_uri.path, "", "")
+        )
+        logger.info("[AdRemover] Downloading transcript from %s", safe_transcript_uri)
 
         with urllib.request.urlopen(transcript_uri, context=_SSL_CTX) as resp:
             transcript_data = json.loads(resp.read())

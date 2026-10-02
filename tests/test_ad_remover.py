@@ -4455,3 +4455,33 @@ class TestSpliceAudioSegmentValidation:
                 [{"start": "x", "end": 5.0}, {"start": 7.0, "end": 7.0}],
                 "/out.mp3",
             )
+
+
+class TestTranscriptUrlLogging:
+    def test_presigned_transcript_query_is_redacted(self, monkeypatch, mock_sleep, mock_urlopen, caplog):
+        import ad_remover
+
+        s3 = MagicMock()
+        # Built inline rather than with _make_transcribe_client(): that helper
+        # sets side_effect, which wins over return_value, so the presigned URI
+        # under test would never reach the logger.
+        transcribe = MagicMock()
+        transcribe.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {
+                    "TranscriptFileUri": "https://s3.example.com/path/transcript.json?X-Amz-Security-Token=secret&X-Amz-Signature=sig"
+                },
+            }
+        }
+        monkeypatch.setattr(ad_remover.boto3, "client", lambda service, **kwargs: s3 if service == "s3" else transcribe)
+        monkeypatch.setattr(ad_remover, "retry_aws_call", lambda fn, **kwargs: fn())
+        monkeypatch.setenv("S3_BUCKET", "bucket")
+        monkeypatch.setenv("TRANSCRIBE_POLL_INTERVAL", "1")
+
+        with caplog.at_level(logging.INFO, logger="ad_remover"):
+            ad_remover.transcribe_audio("input.mp3", "episode")
+
+        assert "https://s3.example.com/path/transcript.json" in caplog.text
+        assert "X-Amz-Security-Token" not in caplog.text
+        assert "secret" not in caplog.text
