@@ -4485,3 +4485,187 @@ class TestTranscriptUrlLogging:
         assert "https://s3.example.com/path/transcript.json" in caplog.text
         assert "X-Amz-Security-Token" not in caplog.text
         assert "secret" not in caplog.text
+
+
+class TestSpliceNoUsableSegmentsOutcome:
+    """A no-cut outcome must be distinguishable from a genuine splice failure.
+
+    podcast_sync treats ``bool(ad_segments) and cleaned_path == original_path``
+    as "splice crashed" and withholds the episode from S3 so a later run retries
+    it.  Only a value-invalid segment set makes that retry pointless, so only
+    that case may report no cuts; anything that could succeed on a fresh
+    download must keep the retry signal.
+    """
+
+    @staticmethod
+    def _splice_failed(original_path, cleaned_path, ad_segments):
+        """Mirror the splice-failure criterion used by podcast_sync."""
+        return bool(ad_segments) and cleaned_path == original_path
+
+    @staticmethod
+    def _patch_probe(monkeypatch, duration="600.0"):
+        """Make splice_audio's pre-flight see a file of *duration* seconds."""
+        monkeypatch.setattr(os.path, "getsize", lambda p: 5_000_000)
+        monkeypatch.setattr(
+            subprocess, "run", lambda cmd, **kwargs: MagicMock(stdout=f"{duration}\n", returncode=0, stderr="")
+        )
+
+    def test_no_usable_ad_segments_is_a_value_error(self):
+        import ad_remover
+
+        assert issubclass(ad_remover.NoUsableAdSegments, ValueError)
+
+    def test_empty_segment_list_raises_no_usable_ad_segments(self):
+        import ad_remover
+
+        with pytest.raises(ad_remover.NoUsableAdSegments):
+            ad_remover.splice_audio("/in.mp3", [], "/out.mp3")
+
+    def test_value_invalid_segments_raise_no_usable_ad_segments(self, monkeypatch):
+        """Reversed and non-numeric candidates → deterministic no-cut."""
+        import ad_remover
+
+        self._patch_probe(monkeypatch)
+
+        with pytest.raises(ad_remover.NoUsableAdSegments):
+            ad_remover.splice_audio(
+                "/in.mp3",
+                [{"start": 500.0, "end": 100.0}, {"start": "x", "end": 5.0}],
+                "/out.mp3",
+            )
+
+    def test_clamped_away_segments_raise_runtime_error(self, monkeypatch):
+        """Well-formed segments past a truncated file's end are operational, not no-cut.
+
+        The regression: a truncated download probes short, _clamp_ad_segments
+        drops every (valid) segment, and reporting "no usable segments" there
+        silently published a truncated episode with its ads intact.
+        """
+        import ad_remover
+
+        self._patch_probe(monkeypatch, duration="300.0")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            ad_remover.splice_audio("/in.mp3", [{"start": 900.0, "end": 950.0}], "/out.mp3")
+
+        assert not isinstance(excinfo.value, ad_remover.NoUsableAdSegments)
+        assert "truncated" in str(excinfo.value)
+
+    def test_remove_ads_publishes_original_with_no_segments(self, monkeypatch, tmp_path):
+        """Normal path: value-invalid segments → original file, empty list, no error code."""
+        import ad_remover
+
+        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a, **k: [])
+        monkeypatch.setattr(ad_remover, "detect_ads", lambda *a, **k: [{"start": 500.0, "end": 100.0}])
+        monkeypatch.setattr(ad_remover, "_generate_summary", lambda *a, **k: "a summary")
+        self._patch_probe(monkeypatch)
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == []
+        assert summary == "a summary"
+        assert summary not in ad_remover.REMOVE_ADS_ERROR_CODES
+        assert not self._splice_failed("/orig.mp3", cleaned, ads)
+
+    def test_remove_ads_still_reports_genuine_ffmpeg_failure(self, monkeypatch, tmp_path):
+        """A real ffmpeg crash keeps the detected segments and the SPLICE_FAILED code."""
+        import ad_remover
+
+        detected = [{"start": 10.0, "end": 50.0}]
+        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a, **k: [])
+        monkeypatch.setattr(ad_remover, "detect_ads", lambda *a, **k: detected)
+        monkeypatch.setattr(ad_remover, "_generate_summary", lambda *a, **k: "a summary")
+
+        def _raise(*_a, **_k):
+            raise RuntimeError("ffmpeg splice failed (exit 1):\nboom")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", _raise)
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == detected
+        assert summary == "SPLICE_FAILED"
+        assert summary in ad_remover.REMOVE_ADS_ERROR_CODES
+        assert self._splice_failed("/orig.mp3", cleaned, ads)
+
+    def test_normal_path_truncated_media_returns_splice_failed(self, monkeypatch, tmp_path):
+        """Freshly detected segments past a truncated file's end → SPLICE_FAILED."""
+        import ad_remover
+
+        detected = [{"start": 900.0, "end": 950.0}]
+        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a, **k: [])
+        monkeypatch.setattr(ad_remover, "detect_ads", lambda *a, **k: detected)
+        monkeypatch.setattr(ad_remover, "_generate_summary", lambda *a, **k: "a summary")
+        self._patch_probe(monkeypatch, duration="300.0")
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == detected
+        assert summary == "SPLICE_FAILED"
+        assert self._splice_failed("/orig.mp3", cleaned, ads)
+
+    @staticmethod
+    def _patch_cached_path(monkeypatch, ad_remover, cached_ads):
+        """Force remove_ads down the cached-ad-segments branch."""
+        monkeypatch.setenv("S3_BUCKET", "bucket")
+        monkeypatch.setattr(ad_remover.boto3, "client", lambda *a, **k: MagicMock())
+        monkeypatch.setattr(ad_remover, "_load_ad_segments_cache", lambda *a, **k: cached_ads)
+        monkeypatch.setattr(ad_remover, "_load_transcript_cache", lambda *a, **k: [])
+        monkeypatch.setattr(ad_remover, "_generate_summary", lambda *a, **k: "a summary")
+
+        def _fail_if_called(*_a, **_k):
+            raise AssertionError("cached path must not transcribe or detect")
+
+        monkeypatch.setattr(ad_remover, "transcribe_audio", _fail_if_called)
+        monkeypatch.setattr(ad_remover, "detect_ads", _fail_if_called)
+
+    def test_cached_value_invalid_segments_publish_original_once(self, monkeypatch, tmp_path):
+        """Deterministically bad cached segments must not retry forever."""
+        import ad_remover
+
+        self._patch_cached_path(monkeypatch, ad_remover, [{"start": 500.0, "end": 100.0}])
+        self._patch_probe(monkeypatch)
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == []
+        assert summary == "a summary"
+        assert not self._splice_failed("/orig.mp3", cleaned, ads)
+
+    def test_cached_segments_beyond_truncated_media_signal_retry(self, monkeypatch, tmp_path):
+        """Cached path, truncated download: the retry signal must survive."""
+        import ad_remover
+
+        cached_ads = [{"start": 900.0, "end": 950.0}]
+        self._patch_cached_path(monkeypatch, ad_remover, cached_ads)
+        # Episode probes at 300s — shorter than the cached timestamps, which were
+        # detected against the full download.
+        self._patch_probe(monkeypatch, duration="300.0")
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == cached_ads, "cached segments must survive so podcast_sync retries"
+        assert self._splice_failed("/orig.mp3", cleaned, ads)
+
+    def test_cached_path_genuine_ffmpeg_failure_still_retries(self, monkeypatch, tmp_path):
+        """A real ffmpeg crash on the cached path keeps the retry signal intact."""
+        import ad_remover
+
+        cached_ads = [{"start": 10.0, "end": 50.0}]
+        self._patch_cached_path(monkeypatch, ad_remover, cached_ads)
+
+        def _raise(*_a, **_k):
+            raise RuntimeError("ffmpeg splice timed out after 600s")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", _raise)
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == cached_ads
+        assert self._splice_failed("/orig.mp3", cleaned, ads)

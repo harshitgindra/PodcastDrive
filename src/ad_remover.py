@@ -97,6 +97,26 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 AdSegment = dict  # {"start": float, "end": float}
 
+
+class NoUsableAdSegments(ValueError):
+    """Every candidate ad segment was value-invalid, so there is nothing to cut.
+
+    Raised only for defects in the segment values themselves -- malformed,
+    non-numeric, non-finite, inverted or zero-length.  That verdict depends on
+    nothing but the values, so re-downloading and re-splicing produces the same
+    outcome on every attempt and every later cron run.  Treating it as a splice
+    failure therefore blocks the episode forever; ``remove_ads`` instead reports
+    "no cuts" so the original file is published once and the episode is done.
+
+    Segments lost to duration clamping are **not** this error: well-formed
+    timestamps that fall outside the probed audio mean the download is truncated,
+    which ``splice_audio`` reports as a ``RuntimeError`` so the existing retry
+    path gets a fresh download instead of publishing a truncated episode.
+
+    Subclasses ``ValueError`` so existing callers that absorb operational
+    errors keep working unchanged.
+    """
+
 #: Sentinel strings returned by :func:`remove_ads` in the summary position when
 #: a pipeline stage fails.  Callers **must** exclude these before writing the
 #: value to the episode manifest or an RSS feed — they are error signals, not
@@ -1838,11 +1858,17 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
         output_path: Destination path for the cleaned audio file.
 
     Raises:
-        RuntimeError: If ffmpeg/ffprobe is not available or returns non-zero.
-        ValueError:   If *ad_segments* is empty.
+        NoUsableAdSegments: If *ad_segments* is empty or every candidate is
+                      value-invalid (malformed, non-numeric, non-finite,
+                      inverted or zero-length).  Deterministic: there is nothing
+                      to cut, so the caller should publish the original.
+        RuntimeError: If ffmpeg/ffprobe fails, or if value-valid segments all
+                      fall outside the probed duration — that means the media is
+                      shorter than the audio the timestamps came from (a
+                      truncated download), which a fresh download can fix.
     """
     if not ad_segments:
-        raise ValueError("splice_audio called with empty ad_segments list")
+        raise NoUsableAdSegments("splice_audio called with empty ad_segments list")
 
     # Pre-flight: verify the file exists and is non-trivially sized
     try:
@@ -1867,10 +1893,24 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     # Re-validate here as well as at parse time: segments also arrive from the
     # S3 ad-segment cache and from music-bookend detection, neither of which
     # goes through _parse_ad_response.
-    validated = [c for c in (_coerce_ad_segment(seg) for seg in ad_segments) if c is not None]
-    validated = _clamp_ad_segments(validated, total_duration)
+    coerced = [c for c in (_coerce_ad_segment(seg) for seg in ad_segments) if c is not None]
+    if not coerced:
+        raise NoUsableAdSegments(
+            f"No usable ad segments after validation (from {len(ad_segments)} candidate(s))"
+        )
+
+    validated = _clamp_ad_segments(coerced, total_duration)
     if not validated:
-        raise ValueError(f"No usable ad segments after validation (from {len(ad_segments)} candidate(s))")
+        # The segments are well-formed; they just do not overlap the audio we
+        # probed.  That happens when the download is truncated -- the timestamps
+        # were detected against the full episode, so a shorter file drops them
+        # all.  Publishing here would ship a truncated episode with its ads
+        # intact, so this stays an operational error and the caller retries with
+        # a fresh download.
+        raise RuntimeError(
+            f"All {len(coerced)} ad segment(s) fall outside the probed duration "
+            f"({total_duration:.1f}s) of '{mp3_path}' — the file is likely truncated"
+        )
 
     # Sort ad segments and merge overlaps
     sorted_ads = sorted(validated, key=lambda s: s["start"])
@@ -2288,6 +2328,20 @@ def remove_ads(
             cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
             try:
                 splice_audio(mp3_path, all_cached, cleaned_path)
+            except NoUsableAdSegments as exc:
+                # Deterministic: the cached timestamps can never splice against
+                # this audio, so retrying would block the episode forever.
+                # Report no cuts and let the caller publish the original once.
+                logger.warning(
+                    "[AdRemover] Cached ad-segments unusable for %s (%s) — publishing original file",
+                    video_id,
+                    exc,
+                )
+                return (
+                    mp3_path,
+                    [],
+                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
+                )
             except _OPERATIONAL_ERRORS as exc:
                 logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
                 return (
@@ -2369,6 +2423,14 @@ def remove_ads(
     cleaned_path = os.path.join(tmp_dir, f"{video_id}_clean.mp3")
     try:
         splice_audio(mp3_path, all_segments, cleaned_path)
+    except NoUsableAdSegments as exc:
+        # Not a splice failure: nothing survived validation, so there is nothing
+        # ffmpeg could have cut.  Returning an empty segment list keeps this
+        # distinguishable from a genuine ffmpeg crash (which still returns the
+        # detected segments plus SPLICE_FAILED) and lets the original publish.
+        logger.warning("[AdRemover] No usable ad segments for %s (%s) — using original file", video_id, exc)
+        summary = _generate_summary(segments, video_id, episode_title, duration_secs, cache_namespace=cache_namespace)
+        return mp3_path, [], summary
     except _OPERATIONAL_ERRORS as exc:
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, all_segments, "SPLICE_FAILED"
