@@ -9,6 +9,7 @@ Handles:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -22,9 +23,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from typing import NoReturn
 
 import certifi
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 import settings
 
@@ -96,6 +98,154 @@ def require_http_url(url: str, what: str) -> str:
     return url
 
 # ---------------------------------------------------------------------------
+# HTTP transport
+# ---------------------------------------------------------------------------
+
+# Statuses a server uses to say "not now, try again": 408/425/429 plus the 5xx
+# family.  Everything else (404, 403, 401, 410, ...) is a permanent answer that
+# a retry can only turn into needless load and a slower failure.
+_TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429})
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    """Return True if *exc* is worth retrying.
+
+    ``urllib.error.HTTPError`` subclasses ``URLError`` (and therefore
+    ``OSError``), so a naive ``retry_if_exception_type(OSError)`` retries a
+    404 three times with exponential backoff.  This predicate narrows HTTP
+    failures to the transient statuses and leaves genuine network errors
+    (connection reset, DNS failure, timeout) retryable as before.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code
+        return code in _TRANSIENT_HTTP_STATUSES or 500 <= code <= 599
+    return isinstance(exc, OSError | urllib.error.URLError | TimeoutError)
+
+
+class _SchemeGuardRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that refuses to follow a redirect off http(s).
+
+    ``require_http_url`` only validates the URL we were given.  urllib's own
+    redirect handler permits ``http``, ``https`` *and* ``ftp``, so a hostile
+    feed could 302 an enclosure URL to ``ftp://`` and have the pipeline fetch
+    (and republish) whatever that yields.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        require_http_url(newurl, "redirect target")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(
+    _SchemeGuardRedirectHandler,
+    urllib.request.HTTPSHandler(context=_SSL_CTX),
+)
+
+
+def _urlopen(req: urllib.request.Request, timeout: int):  # noqa: ANN201
+    """Open *req* with redirects constrained to http(s).
+
+    The scheme of the URL actually served is re-checked on the way out: the
+    redirect handler is the gate, and this is the assertion that nothing got
+    past it (an opener handler we did not write, a cached redirect).
+
+    Raises:
+        ValueError: If a redirect left us on a non-http(s) URL.
+    """
+    resp = _OPENER.open(req, timeout=timeout)
+    final_url = getattr(resp, "url", None) or None
+    if isinstance(final_url, str) and final_url:
+        try:
+            require_http_url(final_url, "redirect target")
+        except ValueError:
+            resp.close()
+            raise
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Response header parsing
+# ---------------------------------------------------------------------------
+
+_CONTENT_RANGE_RE = re.compile(r"\A\s*bytes\s+(\d+)\s*-\s*(\d+)\s*/\s*(\d+|\*)\s*\Z", re.IGNORECASE)
+_UNSATISFIED_RANGE_RE = re.compile(r"\A\s*bytes\s*\*\s*/\s*(\d+)\s*\Z", re.IGNORECASE)
+
+
+def _header(headers: object, name: str) -> str | None:
+    """Return header *name* from *headers* as a string, or None.
+
+    Accepts anything with a mapping-style ``get`` (``email.message.Message``,
+    ``dict``) and returns None for a missing header or a non-string value, so
+    a malformed response degrades to "unknown" instead of raising.
+    """
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        value = getter(name)
+    except Exception:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value if isinstance(value, str) else None
+
+
+def _parse_content_length(headers: object) -> int | None:
+    """Return the ``Content-Length`` of a response, or None if unusable.
+
+    Returns None for a missing, non-numeric or self-contradictory header
+    (duplicate ``Content-Length`` headers are joined with a comma by
+    ``email.message.Message``) rather than guessing a size we would then
+    enforce.
+    """
+    raw = _header(headers, "Content-Length")
+    if raw is None:
+        return None
+    values = {part.strip() for part in raw.split(",") if part.strip()}
+    if len(values) != 1:
+        logger.warning("[PodcastDownloader] Ignoring conflicting Content-Length %r", raw)
+        return None
+    value = values.pop()
+    if not value.isdigit():
+        logger.warning("[PodcastDownloader] Ignoring malformed Content-Length %r", raw)
+        return None
+    return int(value)
+
+
+def _parse_content_range(headers: object) -> tuple[int, int, int | None] | None:
+    """Return ``(start, end, total)`` from a 206 ``Content-Range``, or None.
+
+    *total* is None when the server sent ``bytes start-end/*``.  An absent,
+    unparseable or internally inconsistent header yields None so the caller
+    can decide not to trust the response as a resume.
+    """
+    raw = _header(headers, "Content-Range")
+    if raw is None:
+        return None
+    match = _CONTENT_RANGE_RE.match(raw)
+    if not match:
+        logger.warning("[PodcastDownloader] Ignoring malformed Content-Range %r", raw)
+        return None
+    start, end = int(match.group(1)), int(match.group(2))
+    total = None if match.group(3) == "*" else int(match.group(3))
+    if end < start or (total is not None and end >= total):
+        logger.warning("[PodcastDownloader] Ignoring inconsistent Content-Range %r", raw)
+        return None
+    return start, end, total
+
+
+def _parse_unsatisfied_range_total(headers: object) -> int | None:
+    """Return the resource length from a 416 ``Content-Range: bytes */N``."""
+    raw = _header(headers, "Content-Range")
+    if raw is None:
+        return None
+    match = _UNSATISFIED_RANGE_RE.match(raw)
+    if not match:
+        logger.warning("[PodcastDownloader] Ignoring malformed 416 Content-Range %r", raw)
+        return None
+    return int(match.group(1))
+
+# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
@@ -157,7 +307,7 @@ def resolve_feed_url(url: str) -> str:
             lookup_url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+        with _urlopen(req, timeout=15) as resp:
             body = read_capped(resp, settings.get("MAX_ITUNES_BYTES"), "iTunes response")
         data = json.loads(body.decode("utf-8"))
 
@@ -203,7 +353,7 @@ def search_feed_url_by_name(name: str) -> str:
             search_url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+        with _urlopen(req, timeout=15) as resp:
             body = read_capped(resp, settings.get("MAX_ITUNES_BYTES"), "iTunes response")
         data = json.loads(body.decode("utf-8"))
 
@@ -258,7 +408,7 @@ def _parse_duration(raw: str) -> int:
 
 
 _fetch_feed_attempt = retry(
-    retry=retry_if_exception_type((OSError, urllib.error.URLError, TimeoutError)),
+    retry=retry_if_exception(_is_transient_http_error),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     reraise=True,
@@ -268,7 +418,8 @@ _fetch_feed_attempt = retry(
 def fetch_feed_xml(feed_url: str) -> bytes:
     """Download the RSS feed at *feed_url* and return raw bytes.
 
-    Retries up to 3 times on transient network errors.
+    Retries up to 3 times on transient network errors and on HTTP 408/425/429
+    and 5xx responses; other HTTP statuses fail immediately.
 
     Args:
         feed_url: The URL of the RSS/Atom feed.
@@ -289,7 +440,7 @@ def fetch_feed_xml(feed_url: str) -> bytes:
             feed_url,
             headers={"User-Agent": "PodcastDrive/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
+        with _urlopen(req, timeout=30) as resp:
             return read_capped(resp, settings.get("MAX_FEED_BYTES"), "RSS feed")
 
     logger.info("[PodcastDownloader] Fetching RSS feed: %s", feed_url)
@@ -511,11 +662,65 @@ def episode_id_from_guid(guid: str) -> str:
 # ---------------------------------------------------------------------------
 
 _download_retry = retry(
-    retry=retry_if_exception_type((OSError, urllib.error.URLError, TimeoutError)),
+    retry=retry_if_exception(_is_transient_http_error),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=5, max=60),
     reraise=True,
 )
+
+
+def _discard_partial(local_path: str, episode_id: str, reason: str) -> NoReturn:
+    """Delete a partial file that cannot be trusted and ask for a fresh attempt.
+
+    Raised as ``OSError`` so the ``_download_retry`` predicate treats it as
+    transient: the next attempt sees no local bytes, sends no ``Range`` header
+    and downloads the episode whole.
+    """
+    logger.warning(
+        "[PodcastDownloader] Discarding partial download of %s — %s",
+        episode_id,
+        reason,
+    )
+    with contextlib.suppress(OSError):
+        os.remove(local_path)
+    raise OSError(f"restarting {episode_id} from scratch: {reason}")
+
+
+def _handle_range_not_satisfiable(
+    exc: urllib.error.HTTPError,
+    local_path: str,
+    existing_bytes: int,
+    episode_id: str,
+) -> None:
+    """Decide what an HTTP 416 means for the partial file on disk.
+
+    A 416 only proves the requested range is invalid *now*.  Treating it as
+    "already complete" is wrong when the local file is stale or over-long — the
+    pipeline would publish a truncated or corrupt MP3.  The server's
+    ``Content-Range: bytes */N`` is the only evidence that the partial file is
+    exactly the whole resource; without it, or on a mismatch, the partial file
+    is thrown away and re-fetched.
+    """
+    total = _parse_unsatisfied_range_total(getattr(exc, "headers", None))
+
+    if not existing_bytes:
+        # We never sent a Range header, so there is nothing to validate.
+        raise exc
+
+    if total is not None and total == existing_bytes:
+        logger.info(
+            "[PodcastDownloader] %s already fully downloaded (416, %d bytes confirmed)",
+            episode_id,
+            total,
+        )
+        return
+
+    reason = (
+        f"416 reports a {total} byte resource but the local file holds {existing_bytes}"
+        if total is not None
+        else "416 carried no Content-Range, so the local size cannot be confirmed"
+    )
+    _discard_partial(local_path, episode_id, reason)
 
 
 def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
@@ -525,8 +730,12 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
     from a previous interrupted download, a ``Range: bytes=N-`` header is sent
     so only the missing bytes are transferred.  Falls back to a full download
     when the server does not support range requests (returns 200 instead of 206).
+    A resumed response is only appended when its ``Content-Range`` confirms the
+    offset, and the finished file is checked against the length the server
+    reported, so a truncated or stale transfer fails instead of being published.
 
-    Retries up to 3 times on transient network errors.
+    Retries up to 3 times on transient network errors and on HTTP 408/425/429
+    and 5xx responses; other HTTP statuses fail immediately.
 
     Args:
         url:        Direct MP3 audio URL.
@@ -560,35 +769,71 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
 
         req = urllib.request.Request(url, headers=headers)
         try:
-            resp = urllib.request.urlopen(req, timeout=300, context=_SSL_CTX)
+            resp = _urlopen(req, timeout=300)
         except urllib.error.HTTPError as exc:
             if exc.code == 416:
-                # Range not satisfiable — file already complete
-                logger.info("[PodcastDownloader] %s already fully downloaded (416)", episode_id)
+                _handle_range_not_satisfiable(exc, local_path, existing_bytes, episode_id)
                 return
             raise
 
         with resp:
-            status = getattr(resp, "status", resp.getcode())
+            status = getattr(resp, "status", None) or resp.getcode()
+            resp_headers = getattr(resp, "headers", None)
+            expected_body = _parse_content_length(resp_headers)
+
             if status == 206:
-                # Partial content — append to existing file
+                content_range = _parse_content_range(resp_headers)
+                if content_range is None:
+                    _discard_partial(
+                        local_path,
+                        episode_id,
+                        "206 response carried no usable Content-Range",
+                    )
+                start, end, expected_total = content_range
+                if start != existing_bytes:
+                    _discard_partial(
+                        local_path,
+                        episode_id,
+                        f"server resumed at byte {start} but the local file holds {existing_bytes}",
+                    )
+                span = end - start + 1
+                if expected_body is not None and expected_body != span:
+                    _discard_partial(
+                        local_path,
+                        episode_id,
+                        f"206 Content-Length {expected_body} disagrees with the "
+                        f"Content-Range span of {span} bytes",
+                    )
                 open_mode = "ab"
             else:
-                # Full response (server ignored Range header) — start fresh
                 if existing_bytes:
                     logger.info(
-                        "[PodcastDownloader] Server returned %d (no range support) — restarting %s",
+                        "[PodcastDownloader] Server returned %s (no range support) — restarting %s",
                         status,
                         episode_id,
                     )
                 open_mode = "wb"
+                expected_total = expected_body
 
+            written = 0
             with open(local_path, open_mode) as out:
                 while True:
                     chunk = resp.read(1024 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)
+                    written += len(chunk)
+
+        if expected_body is not None and written != expected_body:
+            raise OSError(
+                f"truncated transfer for {episode_id}: received {written} of {expected_body} bytes"
+            )
+        if expected_total is not None:
+            on_disk = os.path.getsize(local_path)
+            if on_disk != expected_total:
+                raise OSError(
+                    f"size mismatch for {episode_id}: {on_disk} bytes on disk, server reports {expected_total}"
+                )
 
     try:
         _attempt()

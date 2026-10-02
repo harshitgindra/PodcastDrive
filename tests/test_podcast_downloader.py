@@ -5,13 +5,20 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.error
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from podcast_downloader import (
+    _is_transient_http_error,
+    _parse_content_length,
+    _parse_content_range,
     _parse_duration,
+    _parse_unsatisfied_range_total,
+    _SchemeGuardRedirectHandler,
+    _urlopen,
     download_episode,
     episode_id_from_guid,
     fetch_feed_xml,
@@ -65,7 +72,7 @@ class TestResolveFeedUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             result = resolve_feed_url(apple_url)
 
         assert result == "https://feeds.example.com/real.rss"
@@ -79,7 +86,7 @@ class TestResolveFeedUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             result = resolve_feed_url(apple_url)
 
         assert result == apple_url
@@ -87,7 +94,7 @@ class TestResolveFeedUrl:
     def test_apple_url_network_error_returns_original(self):
         apple_url = "https://podcasts.apple.com/us/podcast/test/id111222333"
         with patch(
-            "podcast_downloader.urllib.request.urlopen",
+            "podcast_downloader._urlopen",
             side_effect=OSError("network error"),
         ):
             result = resolve_feed_url(apple_url)
@@ -103,7 +110,7 @@ class TestResolveFeedUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             result = resolve_feed_url(apple_url)
 
         assert result == apple_url
@@ -144,7 +151,7 @@ class TestFetchFeedXml:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             result = fetch_feed_xml("https://feeds.example.com/rss")
 
         assert result == fake_xml
@@ -152,7 +159,7 @@ class TestFetchFeedXml:
     def test_network_failure_raises_runtime_error(self):
         with (
             patch(
-                "podcast_downloader.urllib.request.urlopen",
+                "podcast_downloader._urlopen",
                 side_effect=OSError("connection refused"),
             ),
             pytest.raises(RuntimeError, match="Failed to fetch RSS feed"),
@@ -163,7 +170,7 @@ class TestFetchFeedXml:
         """Covers the generic `except Exception` branch (line 227-228)."""
         with (
             patch(
-                "podcast_downloader.urllib.request.urlopen",
+                "podcast_downloader._urlopen",
                 side_effect=ValueError("unexpected error"),
             ),
             pytest.raises(RuntimeError, match="Failed to fetch RSS feed"),
@@ -354,7 +361,7 @@ class TestDownloadEpisode:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             path = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert path == str(tmp_path / "ep001.mp3")
@@ -363,7 +370,7 @@ class TestDownloadEpisode:
     def test_network_failure_raises_runtime_error(self, tmp_path):
         with (
             patch(
-                "podcast_downloader.urllib.request.urlopen",
+                "podcast_downloader._urlopen",
                 side_effect=OSError("timeout"),
             ),
             pytest.raises(RuntimeError, match="Failed to download episode"),
@@ -379,7 +386,7 @@ class TestDownloadEpisode:
             partial.write_bytes(b"partial")
             raise OSError("connection reset")
 
-        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
             with pytest.raises(RuntimeError, match="Failed to download episode"):
                 download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
@@ -402,7 +409,7 @@ class TestSearchFeedUrlByName:
 
     def test_returns_feed_url_on_match(self):
         mock_resp = self._mock_response({"results": [{"feedUrl": "https://feeds.example.com/my-podcast.rss"}]})
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             result = search_feed_url_by_name("My Podcast")
         assert result == "https://feeds.example.com/my-podcast.rss"
 
@@ -412,19 +419,19 @@ class TestSearchFeedUrlByName:
 
     def test_no_results_returns_empty_string(self):
         mock_resp = self._mock_response({"results": []})
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             result = search_feed_url_by_name("Unknown Podcast XYZ")
         assert result == ""
 
     def test_result_has_no_feed_url_returns_empty_string(self):
         mock_resp = self._mock_response({"results": [{"trackName": "No feed here"}]})
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=mock_resp):
+        with patch("podcast_downloader._urlopen", return_value=mock_resp):
             result = search_feed_url_by_name("Some Podcast")
         assert result == ""
 
     def test_network_error_returns_empty_string(self):
         with patch(
-            "podcast_downloader.urllib.request.urlopen",
+            "podcast_downloader._urlopen",
             side_effect=OSError("timeout"),
         ):
             result = search_feed_url_by_name("My Podcast")
@@ -441,7 +448,7 @@ class TestSearchFeedUrlByName:
             mock_resp.__exit__ = MagicMock(return_value=False)
             return mock_resp
 
-        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
             search_feed_url_by_name("9to5Mac Daily")
 
         assert captured_urls
@@ -569,12 +576,14 @@ class TestParseEpisodesThumbnails:
 class TestDownloadEpisodeRangeResume:
     """Tests for range-request resumption in download_episode (fix #10)."""
 
-    def _make_resp(self, data: bytes, status: int = 200):
-        """Build a mock urllib response."""
+    def _make_resp(self, data: bytes, status: int = 200, headers: dict | None = None):
+        """Build a mock urllib response with real (string) headers."""
         resp = MagicMock()
         resp.read.side_effect = [data, b""]
         resp.status = status
         resp.getcode.return_value = status
+        resp.headers = headers if headers is not None else {}
+        resp.url = "https://example.com/ep.mp3"
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         return resp
@@ -585,7 +594,11 @@ class TestDownloadEpisodeRangeResume:
         partial.write_bytes(b"partial-data")  # 12 bytes already downloaded
 
         remaining = b"rest-of-file"
-        resp = self._make_resp(remaining, status=206)
+        resp = self._make_resp(
+            remaining,
+            status=206,
+            headers={"Content-Range": f"bytes 12-23/{12 + len(remaining)}"},
+        )
 
         captured_reqs = []
 
@@ -593,7 +606,7 @@ class TestDownloadEpisodeRangeResume:
             captured_reqs.append(req)
             return resp
 
-        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
             download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert captured_reqs, "urlopen was not called"
@@ -606,9 +619,9 @@ class TestDownloadEpisodeRangeResume:
         partial = tmp_path / "ep001.mp3"
         partial.write_bytes(b"AAA")
 
-        resp = self._make_resp(b"BBB", status=206)
+        resp = self._make_resp(b"BBB", status=206, headers={"Content-Range": "bytes 3-5/6"})
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+        with patch("podcast_downloader._urlopen", return_value=resp):
             download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert partial.read_bytes() == b"AAABBB"
@@ -620,22 +633,22 @@ class TestDownloadEpisodeRangeResume:
 
         resp = self._make_resp(b"fresh-full", status=200)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+        with patch("podcast_downloader._urlopen", return_value=resp):
             download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert partial.read_bytes() == b"fresh-full"
 
-    def test_416_treated_as_already_complete(self, tmp_path):
-        """HTTP 416 (Range Not Satisfiable) means the file is already fully downloaded."""
-        import urllib.error
-
+    def test_416_with_matching_content_range_is_complete(self, tmp_path):
+        """A 416 whose ``Content-Range`` confirms the local size means we are done."""
         partial = tmp_path / "ep001.mp3"
-        partial.write_bytes(b"complete-data")
+        partial.write_bytes(b"complete-data")  # 13 bytes
 
         def fake_urlopen(req, **kwargs):
-            raise urllib.error.HTTPError("url", 416, "Range Not Satisfiable", {}, None)
+            raise urllib.error.HTTPError(
+                "url", 416, "Range Not Satisfiable", {"Content-Range": "bytes */13"}, None
+            )
 
-        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
             result = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert result == str(partial)
@@ -650,7 +663,7 @@ class TestDownloadEpisodeRangeResume:
             captured_reqs.append(req)
             return resp
 
-        with patch("podcast_downloader.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
             download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
 
         assert captured_reqs[0].get_header("Range") is None
@@ -774,7 +787,7 @@ class TestFetchFeedXmlRejectsLocalFiles:
         secret = tmp_path / "secret.xml"
         secret.write_text("<rss><channel><title>secret</title></channel></rss>")
 
-        with patch("podcast_downloader.urllib.request.urlopen") as mock_open:
+        with patch("podcast_downloader._urlopen") as mock_open:
             with pytest.raises(ValueError, match="unsupported URL scheme"):
                 fetch_feed_xml(f"file://{secret}")
         mock_open.assert_not_called()
@@ -787,7 +800,7 @@ class TestDownloadEpisodeRejectsLocalFiles:
         dest_dir = tmp_path / "dl"
         dest_dir.mkdir()
 
-        with patch("podcast_downloader.urllib.request.urlopen") as mock_open:
+        with patch("podcast_downloader._urlopen") as mock_open:
             with pytest.raises(ValueError, match="unsupported URL scheme"):
                 download_episode(f"file://{source}", "ep-1", str(dest_dir))
         mock_open.assert_not_called()
@@ -901,7 +914,7 @@ class TestFetchFeedXmlSizeLimit:
         monkeypatch.setenv("MAX_FEED_BYTES", "1000")
         resp = _StreamingResponse(50_000)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+        with patch("podcast_downloader._urlopen", return_value=resp):
             with pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
                 fetch_feed_xml("https://feeds.example.com/rss")
 
@@ -912,7 +925,7 @@ class TestFetchFeedXmlSizeLimit:
         body = b"<rss><channel></channel></rss>"
         resp = _StreamingResponse(len(body), b"<rss><channel></channel></rss>"[:1])
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+        with patch("podcast_downloader._urlopen", return_value=resp):
             result = fetch_feed_xml("https://feeds.example.com/rss")
 
         assert len(result) == len(body)
@@ -921,7 +934,7 @@ class TestFetchFeedXmlSizeLimit:
         monkeypatch.setenv("MAX_FEED_BYTES", "not-a-number")
         resp = _StreamingResponse(10)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+        with patch("podcast_downloader._urlopen", return_value=resp):
             assert fetch_feed_xml("https://feeds.example.com/rss") == b"x" * 10
 
 
@@ -930,7 +943,7 @@ class TestItunesResponseSizeLimit:
         monkeypatch.setenv("MAX_ITUNES_BYTES", "500")
         resp = _StreamingResponse(1_000_000)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+        with patch("podcast_downloader._urlopen", return_value=resp):
             # resolve_feed_url swallows failures and returns the original URL
             out = resolve_feed_url("https://podcasts.apple.com/us/podcast/x/id123")
 
@@ -941,7 +954,443 @@ class TestItunesResponseSizeLimit:
         monkeypatch.setenv("MAX_ITUNES_BYTES", "500")
         resp = _StreamingResponse(1_000_000)
 
-        with patch("podcast_downloader.urllib.request.urlopen", return_value=resp):
+        with patch("podcast_downloader._urlopen", return_value=resp):
             assert search_feed_url_by_name("Some Podcast") == ""
 
         assert resp.served == 501
+
+
+# ---------------------------------------------------------------------------
+# Transient-only HTTP retry
+# ---------------------------------------------------------------------------
+
+
+def _http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://example.com/ep.mp3", code, "boom", headers or {}, None
+    )
+
+
+def _resp(data: bytes = b"audio", status: int = 200, headers: dict | None = None) -> MagicMock:
+    resp = MagicMock()
+    resp.read.side_effect = [data, b""]
+    resp.status = status
+    resp.getcode.return_value = status
+    resp.headers = headers if headers is not None else {}
+    resp.url = "https://example.com/ep.mp3"
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+class TestIsTransientHttpError:
+    @pytest.mark.parametrize("code", [408, 425, 429, 500, 502, 503, 504, 599])
+    def test_transient_statuses_are_retryable(self, code):
+        assert _is_transient_http_error(_http_error(code)) is True
+
+    @pytest.mark.parametrize("code", [400, 401, 403, 404, 410, 416, 451, 600])
+    def test_permanent_statuses_are_not_retryable(self, code):
+        assert _is_transient_http_error(_http_error(code)) is False
+
+    def test_network_errors_remain_retryable(self):
+        assert _is_transient_http_error(OSError("connection reset")) is True
+        assert _is_transient_http_error(urllib.error.URLError("dns")) is True
+        assert _is_transient_http_error(TimeoutError()) is True
+
+    def test_unrelated_exception_is_not_retryable(self):
+        assert _is_transient_http_error(ValueError("nope")) is False
+
+
+class TestDownloadEpisodeTransientRetry:
+    def test_503_is_retried_then_succeeds(self, tmp_path):
+        calls = [_http_error(503), _resp(b"audio-bytes")]
+
+        def fake_urlopen(req, **kwargs):
+            item = calls.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen) as mock_open:
+            path = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 2
+        assert open(path, "rb").read() == b"audio-bytes"
+
+    def test_429_is_retried(self, tmp_path):
+        with patch("podcast_downloader._urlopen", side_effect=_http_error(429)) as mock_open:
+            with pytest.raises(RuntimeError, match="Failed to download episode"):
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 3  # stop_after_attempt(3)
+
+    def test_404_fails_immediately_without_retry(self, tmp_path):
+        with patch("podcast_downloader._urlopen", side_effect=_http_error(404)) as mock_open:
+            with pytest.raises(RuntimeError, match="Failed to download episode"):
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 1, "a permanent 404 must not be retried"
+
+
+class TestFetchFeedXmlTransientRetry:
+    def test_500_is_retried_then_succeeds(self):
+        body = b"<rss><channel></channel></rss>"
+        calls = [_http_error(500), _resp(body)]
+
+        def fake_urlopen(req, **kwargs):
+            item = calls.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen) as mock_open:
+            assert fetch_feed_xml("https://feeds.example.com/rss") == body
+
+        assert mock_open.call_count == 2
+
+    def test_403_is_not_retried(self):
+        with patch("podcast_downloader._urlopen", side_effect=_http_error(403)) as mock_open:
+            with pytest.raises(RuntimeError, match="Failed to fetch RSS feed"):
+                fetch_feed_xml("https://feeds.example.com/rss")
+
+        assert mock_open.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Header parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseContentLength:
+    def test_plain_value(self):
+        assert _parse_content_length({"Content-Length": "1234"}) == 1234
+
+    def test_missing_header_is_unknown(self):
+        assert _parse_content_length({}) is None
+
+    def test_headerless_object_is_unknown(self):
+        assert _parse_content_length(None) is None
+
+    @pytest.mark.parametrize("raw", ["", "abc", "-5", "1.5", "12 34", "+12"])
+    def test_malformed_value_is_unknown(self, raw):
+        assert _parse_content_length({"Content-Length": raw}) is None
+
+    def test_duplicate_but_identical_values_are_accepted(self):
+        assert _parse_content_length({"Content-Length": "100, 100"}) == 100
+
+    def test_conflicting_duplicates_are_refused(self):
+        assert _parse_content_length({"Content-Length": "100, 200"}) is None
+
+    def test_non_string_value_is_ignored(self):
+        assert _parse_content_length({"Content-Length": object()}) is None
+
+    def test_integer_value_is_tolerated(self):
+        assert _parse_content_length({"Content-Length": 42}) == 42
+
+    def test_raising_getter_is_ignored(self):
+        class Hostile:
+            def get(self, name):
+                raise RuntimeError("boom")
+
+        assert _parse_content_length(Hostile()) is None
+
+
+class TestParseContentRange:
+    def test_full_range(self):
+        assert _parse_content_range({"Content-Range": "bytes 10-19/20"}) == (10, 19, 20)
+
+    def test_unknown_total(self):
+        assert _parse_content_range({"Content-Range": "bytes 10-19/*"}) == (10, 19, None)
+
+    def test_case_and_whitespace_tolerant(self):
+        assert _parse_content_range({"Content-Range": " BYTES 0 - 9 / 10 "}) == (0, 9, 10)
+
+    def test_missing_header(self):
+        assert _parse_content_range({}) is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["items 0-9/10", "bytes 0-9", "bytes */10", "bytes -9/10", "garbage"],
+    )
+    def test_malformed_header(self, raw):
+        assert _parse_content_range({"Content-Range": raw}) is None
+
+    @pytest.mark.parametrize("raw", ["bytes 9-5/20", "bytes 0-20/20"])
+    def test_inconsistent_header_is_refused(self, raw):
+        assert _parse_content_range({"Content-Range": raw}) is None
+
+
+class TestParseUnsatisfiedRangeTotal:
+    def test_total_extracted(self):
+        assert _parse_unsatisfied_range_total({"Content-Range": "bytes */4096"}) == 4096
+
+    def test_missing_header(self):
+        assert _parse_unsatisfied_range_total({}) is None
+
+    @pytest.mark.parametrize("raw", ["bytes 0-9/10", "bytes */*", "bytes */abc", ""])
+    def test_malformed_header(self, raw):
+        assert _parse_unsatisfied_range_total({"Content-Range": raw}) is None
+
+
+# ---------------------------------------------------------------------------
+# Content-Length completeness validation
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadEpisodeContentLength:
+    def test_matching_content_length_succeeds(self, tmp_path):
+        body = b"x" * 64
+        resp = _resp(body, headers={"Content-Length": str(len(body))})
+
+        with patch("podcast_downloader._urlopen", return_value=resp):
+            path = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert os.path.getsize(path) == 64
+
+    def test_truncated_body_fails_and_removes_the_file(self, tmp_path):
+        """A body shorter than Content-Length must not be published as complete."""
+        def fake_urlopen(req, **kwargs):
+            return _resp(b"x" * 10, headers={"Content-Length": "100"})
+
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen) as mock_open:
+            with pytest.raises(RuntimeError, match="truncated transfer"):
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 3, "a truncated transfer is transient and retried"
+        assert not (tmp_path / "ep001.mp3").exists()
+
+    def test_overlong_body_also_fails(self, tmp_path):
+        def fake_urlopen(req, **kwargs):
+            return _resp(b"x" * 100, headers={"Content-Length": "10"})
+
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
+            with pytest.raises(RuntimeError, match="truncated transfer"):
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+    def test_unusable_content_length_skips_validation(self, tmp_path):
+        resp = _resp(b"x" * 10, headers={"Content-Length": "100, 200"})
+
+        with patch("podcast_downloader._urlopen", return_value=resp):
+            path = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert os.path.getsize(path) == 10
+
+
+# ---------------------------------------------------------------------------
+# 206 / 416 resume validation
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadEpisodeResumeValidation:
+    def _partial(self, tmp_path, data: bytes = b"AAA"):
+        partial = tmp_path / "ep001.mp3"
+        partial.write_bytes(data)
+        return partial
+
+    def test_206_without_content_range_restarts_from_scratch(self, tmp_path):
+        partial = self._partial(tmp_path)
+        calls = [_resp(b"BBB", status=206), _resp(b"whole-file", status=200)]
+
+        with patch("podcast_downloader._urlopen", side_effect=calls) as mock_open:
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 2
+        # second request must not carry a Range header: the partial was discarded
+        assert mock_open.call_args_list[1][0][0].get_header("Range") is None
+        assert partial.read_bytes() == b"whole-file"
+
+    def test_206_with_wrong_offset_restarts_from_scratch(self, tmp_path):
+        partial = self._partial(tmp_path, b"AAA")
+        calls = [
+            _resp(b"BBB", status=206, headers={"Content-Range": "bytes 99-101/102"}),
+            _resp(b"whole-file", status=200),
+        ]
+
+        with patch("podcast_downloader._urlopen", side_effect=calls) as mock_open:
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 2
+        assert partial.read_bytes() == b"whole-file", "mismatched offset must not be appended"
+
+    def test_206_total_mismatch_fails(self, tmp_path):
+        """A resumed file whose final size disagrees with the server total is rejected."""
+        self._partial(tmp_path, b"AAA")
+
+        def fake_urlopen(req, **kwargs):
+            # Honour the requested offset so every attempt fails on the total,
+            # not on an offset mismatch.
+            raw = req.get_header("Range")
+            start = int(raw.removeprefix("bytes=").rstrip("-")) if raw else 0
+            return _resp(
+                b"BB",
+                status=206,
+                headers={"Content-Range": f"bytes {start}-{start + 1}/99"},
+            )
+
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
+            with pytest.raises(RuntimeError, match="size mismatch"):
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert not (tmp_path / "ep001.mp3").exists()
+
+    def test_206_consistent_resume_succeeds(self, tmp_path):
+        partial = self._partial(tmp_path, b"AAA")
+        resp = _resp(
+            b"BBB",
+            status=206,
+            headers={"Content-Range": "bytes 3-5/6", "Content-Length": "3"},
+        )
+
+        with patch("podcast_downloader._urlopen", return_value=resp):
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert partial.read_bytes() == b"AAABBB"
+
+    def test_206_content_length_disagreeing_with_content_range_restarts(self, tmp_path):
+        """Content-Length must match the span the Content-Range claims to serve."""
+        partial = self._partial(tmp_path, b"AAA")
+        calls = [
+            _resp(
+                b"BBB",
+                status=206,
+                headers={"Content-Range": "bytes 3-5/6", "Content-Length": "999"},
+            ),
+            _resp(b"whole-file", status=200),
+        ]
+
+        with patch("podcast_downloader._urlopen", side_effect=calls) as mock_open:
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 2
+        assert mock_open.call_args_list[1][0][0].get_header("Range") is None
+        assert partial.read_bytes() == b"whole-file", "inconsistent 206 must not be appended"
+
+    def test_416_size_mismatch_redownloads(self, tmp_path):
+        """A 416 reporting a different length means the partial file is stale."""
+        partial = self._partial(tmp_path, b"stale")  # 5 bytes
+        calls = [
+            _http_error(416, {"Content-Range": "bytes */99"}),
+            _resp(b"whole-file", status=200),
+        ]
+
+        def fake_urlopen(req, **kwargs):
+            item = calls.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen) as mock_open:
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 2
+        assert mock_open.call_args_list[1][0][0].get_header("Range") is None
+        assert partial.read_bytes() == b"whole-file"
+
+    def test_416_without_content_range_redownloads(self, tmp_path):
+        partial = self._partial(tmp_path, b"unverifiable")
+        calls = [_http_error(416), _resp(b"whole-file", status=200)]
+
+        def fake_urlopen(req, **kwargs):
+            item = calls.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
+            download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert partial.read_bytes() == b"whole-file"
+
+    def test_416_with_no_local_file_fails_without_retry(self, tmp_path):
+        """We sent no Range header, so a 416 is a server error, not completion."""
+        with patch("podcast_downloader._urlopen", side_effect=_http_error(416)) as mock_open:
+            with pytest.raises(RuntimeError, match="Failed to download episode"):
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert mock_open.call_count == 1
+        assert not (tmp_path / "ep001.mp3").exists()
+
+
+# ---------------------------------------------------------------------------
+# Redirect scheme checks
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectSchemeGuard:
+    def _handler(self):
+        return _SchemeGuardRedirectHandler()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "ftp://evil.example.com/payload.mp3",
+            "file:///etc/passwd",
+            "data:audio/mpeg;base64,AAAA",
+            "javascript:alert(1)",
+            "/relative-without-scheme",
+        ],
+    )
+    def test_redirect_off_http_is_refused(self, target):
+        handler = self._handler()
+        req = urllib.request.Request("https://example.com/ep.mp3")
+
+        with pytest.raises(ValueError, match="redirect target"):
+            handler.redirect_request(req, None, 302, "Found", {}, target)
+
+    def test_http_redirect_is_allowed(self):
+        handler = self._handler()
+        req = urllib.request.Request("https://example.com/ep.mp3")
+
+        with patch.object(
+            urllib.request.HTTPRedirectHandler, "redirect_request", return_value="ok"
+        ) as parent:
+            result = handler.redirect_request(
+                req, None, 302, "Found", {}, "https://cdn.example.com/ep.mp3"
+            )
+
+        assert result == "ok"
+        assert parent.called
+
+    def test_download_refuses_a_redirect_to_ftp(self, tmp_path):
+        """End to end: the ValueError from the guard aborts the download."""
+        with patch(
+            "podcast_downloader._OPENER.open",
+            side_effect=ValueError("Refusing to fetch redirect target: unsupported URL scheme 'ftp'"),
+        ):
+            with pytest.raises(RuntimeError, match="unsupported URL scheme"):
+                download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
+
+        assert not (tmp_path / "ep001.mp3").exists()
+
+
+class TestUrlopenFinalUrlCheck:
+    def test_non_http_final_url_is_refused_and_response_closed(self):
+        resp = MagicMock()
+        resp.url = "ftp://evil.example.com/payload.mp3"
+
+        with patch("podcast_downloader._OPENER.open", return_value=resp):
+            with pytest.raises(ValueError, match="redirect target"):
+                _urlopen(urllib.request.Request("https://example.com/ep.mp3"), timeout=5)
+
+        resp.close.assert_called_once()
+
+    def test_http_final_url_is_returned(self):
+        resp = MagicMock()
+        resp.url = "https://cdn.example.com/ep.mp3"
+
+        with patch("podcast_downloader._OPENER.open", return_value=resp) as opener:
+            assert _urlopen(urllib.request.Request("https://example.com/ep.mp3"), timeout=7) is resp
+
+        assert opener.call_args.kwargs["timeout"] == 7
+
+    def test_missing_final_url_is_tolerated(self):
+        resp = MagicMock()
+        resp.url = None
+
+        with patch("podcast_downloader._OPENER.open", return_value=resp):
+            assert _urlopen(urllib.request.Request("https://example.com/ep.mp3"), timeout=5) is resp
+
+    def test_opener_blocks_non_http_schemes_via_the_redirect_handler(self):
+        """The guard handler is actually installed on the module opener."""
+        handlers = [type(h).__name__ for h in __import__("podcast_downloader")._OPENER.handlers]
+        assert "_SchemeGuardRedirectHandler" in handlers
