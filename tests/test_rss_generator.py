@@ -981,6 +981,24 @@ class TestFileSizeFallback:
         assert result == []
         assert omitted == ["v1"]
 
+    def test_malformed_manifest_entry_is_omitted_when_head_fails(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_object_size.side_effect = Exception("HEAD throttled")
+        omitted: list[str] = []
+
+        result = build_episode_metadata(
+            [self._entry()],
+            {"v1"},
+            CLOUDFRONT_BASE,
+            PLAYLIST_ID,
+            mock_s3,
+            manifest={"v1": "not metadata"},
+            omitted_ids=omitted,
+        )
+
+        assert result == []
+        assert omitted == ["v1"]
+
     def test_manifest_fallback_keeps_the_episode_in_the_feed(self):
         """The persisted size is the normal fallback, so a HEAD failure is survivable."""
         mock_s3 = MagicMock()

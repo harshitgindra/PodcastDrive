@@ -665,13 +665,15 @@ def process_podcast_feed(
                 if cleaned_path != original_path and original_path and os.path.exists(original_path):
                     os.remove(original_path)
 
+                # Record the exact positive byte length before upload.  Publishing
+                # first and discovering an unreadable/empty local file afterwards
+                # would leave an S3 object with an unusable feed entry.
+                file_size = os.path.getsize(cleaned_path)
+                if file_size <= 0:
+                    raise OSError(f"{cleaned_path} is empty — refusing to publish it")
+
                 logger.info("[PodcastSync] Uploading %s to S3", ep_id)
                 thread_s3.upload_episode(cleaned_path, ep_id, age_days)
-
-                try:
-                    file_size = os.path.getsize(cleaned_path)
-                except OSError:
-                    file_size = 0
 
                 if cleaned_path and os.path.exists(cleaned_path):
                     os.remove(cleaned_path)

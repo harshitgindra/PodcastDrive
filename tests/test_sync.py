@@ -188,6 +188,7 @@ class TestProcessPlaylistHappyPath:
             "failed",
             "episodes_failed",
             "manifest_failed",
+            "feed_failed",
             "feed_omitted_ids",
             "bot_detected",
             "total_episodes",
@@ -1148,7 +1149,7 @@ class TestPublishedSizeIsPersisted:
     """The feed needs a size fallback when a later HEAD fails, so the bytes that
     were actually uploaded are recorded at upload time."""
 
-    def _run(self, *, getsize=None, save_manifest=True):
+    def _run(self, *, getsize=None, save_manifest=True, generate_rss="<rss/>"):
         video = _make_video("vid001", duration=600)
         playlist_meta = _make_playlist_meta()
         meta = {
@@ -1167,12 +1168,13 @@ class TestPublishedSizeIsPersisted:
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
             patch("sync.build_episode_metadata", return_value=[]),
-            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.generate_rss", side_effect=generate_rss),
             patch("sync.shutil.rmtree"),
             patch("os.makedirs"),
             patch("os.remove"),
         ):
             s3 = _make_s3_manager()
+            s3.list_existing_episodes.side_effect = [set(), {"vid001"}, {"vid001"}]
             s3.load_manifest.return_value = {}
             s3.save_manifest.return_value = save_manifest
             mock_s3_cls.return_value = s3
@@ -1217,6 +1219,12 @@ class TestPublishedSizeIsPersisted:
         result, _ = self._run(save_manifest=True)
         assert result["manifest_failed"] is False
         assert result["failed"] == 0
+
+    def test_feed_build_failure_is_reported_without_raising(self):
+        result, s3 = self._run(generate_rss=ValueError("invalid XML"))
+        assert result["feed_failed"] is True
+        assert result["failed"] == 1
+        s3.upload_feed.assert_not_called()
 
 
 class TestFeedOmissionsAreReported:
@@ -1324,4 +1332,4 @@ class TestReconcileReportsDegradation:
                 manifest={},
             )
 
-        assert report == {"manifest_saved": True, "omitted_ids": []}
+        assert report == {"manifest_saved": True, "feed_failed": False, "omitted_ids": []}

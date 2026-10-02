@@ -322,7 +322,8 @@ def _episode_file_size(
     except Exception:
         logger.warning("Could not get size for %s — falling back to manifest", s3_key)
 
-    manifest_size = (manifest or {}).get(video_id, {}).get("size")
+    manifest_entry = (manifest or {}).get(video_id, {})
+    manifest_size = manifest_entry.get("size") if isinstance(manifest_entry, dict) else None
     if isinstance(manifest_size, int) and manifest_size > 0:
         logger.info("Using manifest size %d for %s", manifest_size, s3_key)
         return manifest_size
@@ -427,7 +428,8 @@ def build_episode_metadata(
             continue
         cloudfront_url = f"{cloudfront_base}/{playlist_id}/episodes/{video_id}.mp3"
 
-        summary = manifest.get(video_id, {}).get("summary", "") if manifest else ""
+        manifest_entry = manifest.get(video_id, {}) if manifest else {}
+        summary = manifest_entry.get("summary", "") if isinstance(manifest_entry, dict) else ""
         episodes.append(
             EpisodeMeta(
                 video_id=entry.video_id,

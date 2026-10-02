@@ -633,8 +633,8 @@ class TestProcessPodcastFeedEdgeCases:
         assert not original.exists()
         assert result["new_episodes"] == 1
 
-    def test_getsize_oserror_falls_back_to_zero(self, tmp_path):
-        """Covers lines 363-364: OSError on getsize after upload → file_size=0."""
+    def test_getsize_oserror_fails_before_upload(self, tmp_path):
+        """A local size failure must not publish an object without usable metadata."""
         podcast = _make_podcast(max_downloads=1)
         ep = _make_episode_meta("guid-1", "Ep 1")
         feed_xml = b"<rss/>"
@@ -656,10 +656,10 @@ class TestProcessPodcastFeedEdgeCases:
             mock_s3.load_manifest.return_value = {}
             result = process_podcast_feed(podcast, dry_run=False)
 
-        assert result["new_episodes"] == 1
-        # Manifest should record size=0 when getsize fails
-        saved = mock_s3.save_manifest.call_args[0][0]
-        assert saved["guid-1"]["size"] == 0
+        assert result["new_episodes"] == 0
+        assert result["episodes_failed"] == 1
+        mock_s3.upload_episode.assert_not_called()
+        mock_s3.save_manifest.assert_not_called()
 
     def test_partial_file_oserror_during_cleanup_is_swallowed(self, tmp_path):
         """Covers lines 386-389: OSError when removing partial file is silently ignored."""
@@ -1220,6 +1220,7 @@ class TestFfprobeValidationRetry:
                 side_effect=[(False, "suspiciously small (3 bytes)"), (True, "")],
             ) as mock_validate,
             patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")) as mock_remove_ads,
+            patch("podcast_sync.os.path.getsize", return_value=4096),
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = set()
