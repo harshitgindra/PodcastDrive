@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 
 import aws
 from mediasync.config import Config
@@ -262,6 +264,26 @@ def _notify(config: Config, stats: RunStats, elapsed_secs: int) -> None:
             proc.returncode,
             (proc.stderr or proc.stdout or "").strip()[:500],
         )
+        return
+
+    _mark_summary_sent()
+
+
+def _mark_summary_sent() -> None:
+    """Tell the runner a summary reached its recipient.
+
+    ``run_mediasync.sh`` alerts on any non-zero exit that produced no summary —
+    config errors, a broken venv, an unhandled exception.  A completed run with
+    ``stats.failed > 0`` also exits non-zero but has already been reported here,
+    so without this marker it would get a second, redundant message.
+    """
+    path = os.environ.get("MEDIASYNC_NOTIFY_SENTINEL", "").strip()
+    if not path:
+        return
+    try:
+        Path(path).touch()
+    except OSError as exc:
+        logger.warning("Could not write notify sentinel %s: %s", path, exc)
 
 
 if __name__ == "__main__":
