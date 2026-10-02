@@ -12,6 +12,7 @@ import pytest
 # plugins, so a late in-function import can resolve to the wrong module.
 from extractor import BotDetectedError, ExtractionError
 from models import PlaylistMeta, VideoEntry
+from s3_manager import ManifestUnavailableError
 from sync import _rebuild_feed, _reconcile, process_playlist
 
 # A date that is always recent (2 days ago) for tests that expect downloads
@@ -1333,3 +1334,64 @@ class TestReconcileReportsDegradation:
             )
 
         assert report == {"manifest_saved": True, "feed_failed": False, "omitted_ids": []}
+
+
+class TestUnreadableManifestFailsClosed:
+    """The manifest is the only record of what is already published, so an
+    unreadable one abandons the playlist instead of rebuilding from a blank slate."""
+
+    def _run(self):
+        video = _make_video("vid001")
+        playlist_meta = _make_playlist_meta()
+        meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "desc",
+            "thumbnail": "",
+            "duration": 600,
+            "title": "Episode",
+        }
+
+        with (
+            patch.dict(os.environ, BASE_ENV, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value=meta),
+            patch("sync.download_and_convert") as mock_dl,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree") as mock_rmtree,
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
+            s3 = _make_s3_manager()
+            s3.load_manifest.side_effect = ManifestUnavailableError("corrupt manifest")
+            mock_s3_cls.return_value = s3
+            result = process_playlist("https://youtube.com/playlist?list=PLtest")
+
+        return result, s3, mock_dl, mock_rmtree
+
+    def test_returns_a_failed_result_instead_of_raising(self):
+        result, _, _, _ = self._run()
+        assert result["failed"] == 1
+        assert result["manifest_failed"] is True
+        assert result["new_episodes"] == 0
+
+    def test_result_shape_matches_a_normal_run(self):
+        result, _, _, _ = self._run()
+        assert {"playlist_id", "new_episodes", "failed", "bot_detected", "total_episodes"} <= set(result)
+
+    def test_nothing_is_downloaded_uploaded_or_overwritten(self):
+        _, s3, mock_dl, _ = self._run()
+        mock_dl.assert_not_called()
+        s3.upload_episode.assert_not_called()
+        s3.upload_feed.assert_not_called()
+        s3.save_manifest.assert_not_called()
+
+    def test_temp_dir_is_cleaned_up(self):
+        _, _, _, mock_rmtree = self._run()
+        mock_rmtree.assert_called_once()
+
+    def test_fault_is_logged_as_an_error(self, caplog):
+        with caplog.at_level(logging.ERROR, logger="sync"):
+            self._run()
+        assert "Manifest unreadable" in caplog.text

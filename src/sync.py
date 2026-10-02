@@ -17,7 +17,7 @@ from downloader import download_and_convert
 from extractor import BotDetectedError, ExtractionError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
-from s3_manager import S3Manager
+from s3_manager import ManifestUnavailableError, S3Manager
 from utils import extract_playlist_id, parse_upload_date
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,36 @@ def process_playlist(
     s3 = S3Manager(bucket=bucket, playlist_id=playlist_id)
     tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{playlist_id}-")
     _run_start = time.monotonic()
-    manifest = s3.load_manifest()
+
+    # An unreadable manifest is fail-closed: it is the only record of the sizes
+    # and ad state of what is already published, so this playlist is abandoned
+    # before anything is written to S3 instead of being rebuilt from a blank
+    # slate.  Reported as a failed result rather than raised, so the caller gets
+    # the same shape as every other outcome and the temp dir is cleaned up here.
+    try:
+        manifest = s3.load_manifest()
+    except ManifestUnavailableError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.error(
+            "Manifest unreadable for %s: %s — aborting this playlist without touching S3; "
+            "already-published episodes and feed.xml stay as they are",
+            playlist_id,
+            exc,
+        )
+        return {
+            "playlist_id": playlist_id,
+            "new_episodes": 0,
+            "skipped_old": 0,
+            "unavailable": 0,
+            "failed": 1,
+            "episodes_failed": 0,
+            "manifest_failed": True,
+            "feed_failed": False,
+            "feed_omitted_ids": [],
+            "bot_detected": False,
+            "total_episodes": 0,
+            "elapsed_seconds": round(time.monotonic() - _run_start, 1),
+        }
 
     try:
         # --- Step 1: Flat-extract playlist ---
