@@ -28,27 +28,78 @@ LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs}"
 mkdir -p "$LOG_DIR"
 export LOG_DIR
 
+# --- Secret file permissions ---
+# config.env holds AWS keys and cookies.txt holds YouTube session cookies; both
+# are frequently created by editors or downloads with group/world read bits.
+for SECRET_FILE in "${SCRIPT_DIR}/config.env" "${SCRIPT_DIR}/cookies.txt"; do
+    if [ -f "$SECRET_FILE" ]; then
+        SECRET_MODE=$(stat -f '%OLp' "$SECRET_FILE" 2>/dev/null || stat -c '%a' "$SECRET_FILE" 2>/dev/null || echo "")
+        if [ "$SECRET_MODE" != "600" ]; then
+            chmod 600 "$SECRET_FILE" 2>/dev/null \
+                && info "Tightened permissions on $(basename "$SECRET_FILE") to 600" \
+                || warn "Could not tighten permissions on $SECRET_FILE (currently ${SECRET_MODE:-unknown})"
+        fi
+    fi
+done
+
 # --- Lock file to prevent concurrent runs (#18) ---
 LOCK_FILE="${SCRIPT_DIR}/.podcastdrive.lock"
 
-cleanup() {
-    # Release distributed lock (S3) — safe even if not acquired
-    if [ -n "${VENV_PYTHON:-}" ] && [ -x "${VENV_PYTHON:-}" ]; then
-      PYTHONPATH="${SCRIPT_DIR}/src" "${VENV_PYTHON}" -c "
-from distributed_lock import S3Lock
-S3Lock().release()
-" 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT INT TERM
+# Only a run that actually took the S3 lease may release it; a contender that
+# lost the race must leave the holder's lease untouched.
+DIST_LOCK_HELD=false
+LOCK_RENEW_PID=""
+RUNNER_PID=$$
+LEASE_LOST_FLAG="${LOG_DIR}/.lease_lost"
+rm -f "$LEASE_LOST_FLAG"
 
-# Atomic lock using flock — eliminates TOCTOU race condition.
-# The lock is released automatically when the file descriptor (9) is closed at exit.
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    fail "Another instance is running. Remove $LOCK_FILE if stale."
+cleanup() {
+    if [ -n "${LOCK_RENEW_PID:-}" ]; then
+        kill "$LOCK_RENEW_PID" 2>/dev/null || true
+        wait "$LOCK_RENEW_PID" 2>/dev/null || true
+        LOCK_RENEW_PID=""
+    fi
+    if [ "${DIST_LOCK_HELD:-false}" = true ] && [ -n "${VENV_PYTHON:-}" ] && [ -x "${VENV_PYTHON:-}" ]; then
+        PYTHONPATH="${SCRIPT_DIR}/src" "${VENV_PYTHON}" -m distributed_lock release >/dev/null 2>&1 || true
+        DIST_LOCK_HELD=false
+    fi
+    rm -f "$LEASE_LOST_FLAG"
+}
+trap cleanup EXIT
+
+# A lost lease means another machine may already be writing the same feeds, so
+# the run must die rather than finish unprotected. The heartbeat watcher drops
+# $LEASE_LOST_FLAG and signals this shell; this handler turns that into a
+# non-zero exit, which fires the EXIT trap above.
+on_terminate() {
+    trap - INT TERM
+    if [ -f "$LEASE_LOST_FLAG" ]; then
+        DIST_LOCK_HELD=false   # the lease is someone else's now — do not delete it
+        fail "Distributed lease lost mid-run — another machine may have taken over. Aborting to avoid concurrent writes. See ${LOG_DIR}/lock_renewal.log"
+    fi
+    fail "Interrupted — aborting."
+}
+trap on_terminate INT TERM
+
+if ! command -v flock >/dev/null 2>&1; then
+    fail "flock not found — install it (macOS: brew install flock, Linux: util-linux). Refusing to run without a local lock."
 fi
-echo $$ >&9
+
+# Atomic local lock. flock on fd 9 is released by the kernel when this process
+# exits, so a crash can never leave a stale lock behind. Opened for append, not
+# truncation, so a contender cannot erase the holder's PID record.
+exec 9>>"$LOCK_FILE"
+if ! flock -n 9; then
+    LOCK_HOLDER_PID=$(head -n 1 "$LOCK_FILE" 2>/dev/null | tr -cd '0-9')
+    if [ -n "$LOCK_HOLDER_PID" ] && kill -0 "$LOCK_HOLDER_PID" 2>/dev/null; then
+        fail "Another PodcastDrive run is already active (PID ${LOCK_HOLDER_PID}). Wait for it to finish, or stop it with: kill ${LOCK_HOLDER_PID}"
+    fi
+    # The lock is held but the recorded PID is gone or unreadable: deleting
+    # $LOCK_FILE would NOT release the lock, it would only let the next run open
+    # a different inode and lock that instead.
+    fail "Another process holds ${LOCK_FILE}. Find it with: lsof ${LOCK_FILE} — do not delete the lock file, that does not release the lock."
+fi
+printf '%s\n' "$$" >"$LOCK_FILE"
 
 # --- Help ---
 show_help() {
@@ -240,30 +291,47 @@ _HOSTNAME=$(hostname -s 2>/dev/null || echo "unknown")
 export RUNNER="${RUNNER:-${_HOSTNAME}/${TRIGGER:-manual}}"
 
 # --- Distributed lock (prevents concurrent runs across machines) ---
+# Lease length and renewal cadence. The lease is deliberately shorter than a
+# long sync: the heartbeat below extends it, so an abandoned run is reclaimable
+# within LOCK_TTL_SECONDS instead of blocking every machine for hours.
+LOCK_TTL_SECONDS="${LOCK_TTL_SECONDS:-1800}"
+LOCK_RENEW_INTERVAL="${LOCK_RENEW_INTERVAL:-300}"
+
 if [ "$DRY_RUN" = false ]; then
-  LOCK_OUTPUT=$("${VENV_PYTHON}" -c "
-from distributed_lock import S3Lock, LockAcquireError
-import sys
-try:
-    lock = S3Lock()
-    lock.acquire()
-    print(\"acquired\")
-except LockAcquireError as e:
-    print(f\"LOCKED:{e}\")
-    sys.exit(99)
-except Exception as e:
-    print(f\"ERROR:{type(e).__name__}: {e}\")
-    sys.exit(1)
-" 2>&1) || true
-  LOCK_EXIT=$?
+  LOCK_EXIT=0
+  LOCK_OUTPUT=$("${VENV_PYTHON}" -m distributed_lock acquire --ttl "$LOCK_TTL_SECONDS" 2>&1) || LOCK_EXIT=$?
   if [ "$LOCK_EXIT" -eq 99 ]; then
     warn "Another machine is running PodcastDrive: ${LOCK_OUTPUT#LOCKED:}"
     warn "Skipping this run."
     exit 0
   elif [ "$LOCK_EXIT" -ne 0 ]; then
-    warn "Distributed lock failed: ${LOCK_OUTPUT#ERROR:}"
-    warn "Proceeding without distributed lock."
+    # Fail closed: without a verified lease a second machine could be writing
+    # the same feeds and episodes, so refuse the run instead of guessing.
+    fail "Could not acquire the distributed lock: ${LOCK_OUTPUT} — refusing to run unprotected."
   fi
+  DIST_LOCK_HELD=true
+
+  # Renew the lease in the background so runs longer than the TTL keep it.
+  # If renewal loses the lease, stop this shell immediately: continuing could
+  # write concurrently with the runner that acquired the replacement lease.
+  # The flag file distinguishes a lost lease from an operator's Ctrl-C, and the
+  # foreground child is signalled first because bash defers traps until the
+  # foreground command returns — without that, an in-flight sync would keep
+  # running for hours with no lease.
+  (
+      if "${VENV_PYTHON}" -m distributed_lock heartbeat \
+          --ttl "$LOCK_TTL_SECONDS" --interval "$LOCK_RENEW_INTERVAL" \
+          >>"${LOG_DIR}/lock_renewal.log" 2>&1; then
+          :
+      else
+          : > "$LEASE_LOST_FLAG"
+          warn "Distributed lock heartbeat failed; stopping this run to avoid concurrent writes. See ${LOG_DIR}/lock_renewal.log"
+          pkill -TERM -P "$RUNNER_PID" 2>/dev/null || true
+          kill -TERM "$RUNNER_PID" 2>/dev/null || true
+      fi
+  ) &
+  LOCK_RENEW_PID=$!
+  ok "Distributed lock held (lease ${LOCK_TTL_SECONDS}s, renewed every ${LOCK_RENEW_INTERVAL}s)"
 fi
 
 # --- Record run start (S3 history) ---
