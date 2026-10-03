@@ -203,6 +203,14 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 "against AWS API rate limits; the work is IO-bound.",
             ),
             _i("MAX_SPLICE_RETRIES", 3, "Lifetime splice attempts per episode before it is abandoned."),
+            _b(
+                "SPLICE_RESET_EXHAUSTED",
+                False,
+                "One-shot recovery switch. When true, episodes that previously exhausted "
+                "MAX_SPLICE_RETRIES have their lifetime splice-failure counter reset at the start "
+                "of a run so they are re-queued. Set this after fixing the root cause (e.g. "
+                "pinning a stable FFMPEG_BIN), then unset it once the backlog clears.",
+            ),
             _i("SPLICE_MAX_ATTEMPTS_PER_RUN", 2, "Splice retries attempted in any single run, across all episodes."),
             _i("MAX_FEED_BYTES", 32 * 1024 * 1024, "Refuse RSS feeds larger than this. The largest real feeds are ~5 MiB."),
             _i("MAX_ITUNES_BYTES", 8 * 1024 * 1024, "Refuse iTunes lookup/search responses larger than this."),
@@ -266,6 +274,19 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
     (
         "ffmpeg / ffprobe timeouts",
         (
+            _s(
+                "FFMPEG_BIN",
+                "ffmpeg",
+                "Path to the ffmpeg executable. Defaults to the first 'ffmpeg' on PATH; set to an "
+                "absolute path to pin a known-good build when the PATH ffmpeg is unstable "
+                "(e.g. the Homebrew ARM ffmpeg 8.x SIGSEGV during splicing).",
+            ),
+            _s(
+                "FFPROBE_BIN",
+                "ffprobe",
+                "Path to the ffprobe executable. Defaults to the first 'ffprobe' on PATH; pin to an "
+                "absolute path alongside FFMPEG_BIN when the PATH build is unstable.",
+            ),
             # A hung child holds the S3 distributed lock (TTL 3600s), which silently blocks
             # every later cron run, so every invocation must be bounded.
             _f("FFMPEG_SILENCEDETECT_TIMEOUT_SECS", 1800.0, "Timeout for the ffmpeg silencedetect pass."),

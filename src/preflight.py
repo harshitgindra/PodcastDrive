@@ -248,24 +248,111 @@ def _check_ytdlp_challenge_solver() -> None:
 
 
 def _check_ffmpeg() -> None:
-    """Verify ffmpeg is available on PATH."""
+    """Verify the configured ffmpeg/ffprobe binaries exist, run, and can splice.
+
+    A plain ``-version`` probe is not enough: the Homebrew ARM ffmpeg 8.x crashes
+    with SIGSEGV (exit -11) on the atrim/concat splice graph and even on stream-copy
+    segment extraction, while reporting a perfectly healthy ``-version``.  That
+    failure mode silently abandons every episode, so we additionally run a tiny
+    synthetic splice end-to-end and fail preflight if the binary segfaults.
+    """
     _section("ffmpeg")
 
-    if not shutil.which("ffmpeg"):
-        _fail("ffmpeg not found on PATH — install with: brew install ffmpeg")
+    ffmpeg_bin = settings.get("FFMPEG_BIN") or "ffmpeg"
+
+    # Resolve the binary: an absolute/relative path is used as-is, a bare name is
+    # looked up on PATH.  This surfaces a mis-set FFMPEG_BIN as a clear failure
+    # rather than a cryptic FileNotFoundError mid-run.
+    if os.path.sep in ffmpeg_bin:
+        found = os.path.exists(ffmpeg_bin) and os.access(ffmpeg_bin, os.X_OK)
+    else:
+        found = shutil.which(ffmpeg_bin) is not None
+    if not found:
+        _fail(
+            f"ffmpeg not found (FFMPEG_BIN={ffmpeg_bin!r}) — install with 'brew install ffmpeg' "
+            "or point FFMPEG_BIN at a working binary"
+        )
 
     result = subprocess.run(
-        ["ffmpeg", "-version"],
+        [ffmpeg_bin, "-version"],
         capture_output=True,
         text=True,
         timeout=30,
     )
     if result.returncode != 0:
-        _fail("ffmpeg binary found but failed to run")
+        _fail(f"ffmpeg binary found but failed to run (FFMPEG_BIN={ffmpeg_bin!r})")
 
     # First line of ffmpeg -version output: "ffmpeg version X.Y.Z ..."
     version_line = result.stdout.splitlines()[0] if result.stdout else "unknown"
     _ok(f"ffmpeg: {version_line}")
+
+    _check_ffmpeg_splice(ffmpeg_bin)
+
+
+def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
+    """Run a tiny synthetic atrim/concat splice to detect a crashing ffmpeg.
+
+    Generates ~2 s of silence, then exercises the exact filter graph shape the ad
+    splicer uses (two atrim segments → concat).  A SIGSEGV here means the binary
+    cannot splice despite a healthy ``-version``, which would otherwise abandon
+    every episode at runtime.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="pcd-ffmpeg-check-") as work:
+        src = os.path.join(work, "src.mp3")
+        out = os.path.join(work, "out.mp3")
+        try:
+            gen = subprocess.run(
+                [
+                    ffmpeg_bin, "-y", "-f", "lavfi",
+                    "-i", "anullsrc=r=44100:cl=mono",
+                    "-t", "2", "-codec:a", "libmp3lame", "-q:a", "9", src,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            if gen.returncode != 0:
+                _warn(
+                    "ffmpeg splice self-test could not generate a probe clip "
+                    f"(exit {gen.returncode}); skipping. ffmpeg may still be unstable at runtime."
+                )
+                return
+
+            splice = subprocess.run(
+                [
+                    ffmpeg_bin, "-y", "-i", src,
+                    "-filter_complex",
+                    "[0:a]atrim=start=0:end=0.5,asetpts=PTS-STARTPTS[a0];"
+                    "[0:a]atrim=start=1:end=1.5,asetpts=PTS-STARTPTS[a1];"
+                    "[a0][a1]concat=n=2:v=0:a=1[out]",
+                    "-map", "[out]", "-codec:a", "libmp3lame", "-q:a", "2", out,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            _fail(f"ffmpeg splice self-test timed out (FFMPEG_BIN={ffmpeg_bin!r})")
+            return
+        except OSError as exc:
+            _fail(f"ffmpeg splice self-test could not run (FFMPEG_BIN={ffmpeg_bin!r}): {exc}")
+            return
+
+        if splice.returncode == -11:
+            _fail(
+                f"ffmpeg SEGFAULTED (exit -11) on a trivial splice (FFMPEG_BIN={ffmpeg_bin!r}). "
+                "This binary cannot splice audio and will abandon every episode — the Homebrew "
+                "ARM ffmpeg 8.x is a known offender. Pin FFMPEG_BIN/FFPROBE_BIN to a stable build "
+                "(e.g. 'brew install ffmpeg@7' or an official static build)."
+            )
+            return
+        if splice.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+            _fail(
+                f"ffmpeg splice self-test failed (exit {splice.returncode}, FFMPEG_BIN={ffmpeg_bin!r}):\n"
+                f"{splice.stderr.strip()[:500]}"
+            )
+            return
+
+    _ok("ffmpeg splice self-test passed (atrim+concat produces output)")
+
 
 
 def _check_transcribe(region: str) -> None:

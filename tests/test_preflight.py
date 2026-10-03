@@ -543,7 +543,11 @@ class TestCheckFfmpeg:
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "ffmpeg version 6.0\nmore lines"
-        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run", return_value=mock_result),
+            patch("preflight._check_ffmpeg_splice"),
+        ):
             _check_ffmpeg()
         assert "ffmpeg version 6.0" in capsys.readouterr().out
 
@@ -558,6 +562,7 @@ class TestCheckFfmpeg:
         with (
             patch("shutil.which", return_value="/usr/bin/ffmpeg"),
             patch("subprocess.run", return_value=mock_result),
+            patch("preflight._check_ffmpeg_splice"),
             pytest.raises(SystemExit),
         ):
             _check_ffmpeg()
@@ -566,9 +571,97 @@ class TestCheckFfmpeg:
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = ""
-        with patch("shutil.which", return_value="/usr/bin/ffmpeg"), patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run", return_value=mock_result),
+            patch("preflight._check_ffmpeg_splice"),
+        ):
             _check_ffmpeg()
         assert "unknown" in capsys.readouterr().out
+
+    def test_uses_configured_ffmpeg_bin(self, capsys, monkeypatch):
+        """FFMPEG_BIN pointing at an absolute path is used verbatim (no PATH lookup)."""
+        monkeypatch.setenv("FFMPEG_BIN", "/opt/custom/ffmpeg")
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ffmpeg version 7.0\n"
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd)
+            return mock_result
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.access", return_value=True),
+            patch("subprocess.run", fake_run),
+            patch("preflight._check_ffmpeg_splice"),
+        ):
+            _check_ffmpeg()
+        assert seen[0][0] == "/opt/custom/ffmpeg"
+
+    def test_fails_when_configured_bin_missing(self, monkeypatch):
+        monkeypatch.setenv("FFMPEG_BIN", "/opt/custom/ffmpeg")
+        with (
+            patch("os.path.exists", return_value=False),
+            pytest.raises(SystemExit),
+        ):
+            _check_ffmpeg()
+
+
+class TestCheckFfmpegSplice:
+    """The splice self-test catches a binary that reports a healthy -version but
+    segfaults on the atrim/concat graph the ad splicer actually uses."""
+
+    def _run(self, gen_rc=0, splice_rc=0, out_bytes=b"spliced-audio"):
+        import preflight
+
+        def fake_run(cmd, **kwargs):
+            res = MagicMock()
+            if "-filter_complex" in cmd:
+                res.returncode = splice_rc
+                res.stderr = "boom"
+                out_path = cmd[-1]
+                if out_bytes is not None:
+                    import pathlib
+
+                    pathlib.Path(out_path).write_bytes(out_bytes)
+            else:
+                res.returncode = gen_rc
+                res.stderr = ""
+                src_path = cmd[-1]
+                if gen_rc == 0:
+                    import pathlib
+
+                    pathlib.Path(src_path).write_bytes(b"src")
+            return res
+
+        with patch("subprocess.run", fake_run):
+            preflight._check_ffmpeg_splice("ffmpeg")
+
+    def test_passes_on_healthy_splice(self, capsys):
+        self._run(splice_rc=0)
+        assert "splice self-test passed" in capsys.readouterr().out
+
+    def test_fails_on_sigsegv(self, capsys):
+        with pytest.raises(SystemExit):
+            self._run(splice_rc=-11)
+        assert "SEGFAULTED" in capsys.readouterr().out
+
+    def test_fails_on_nonzero_splice(self):
+        with pytest.raises(SystemExit):
+            self._run(splice_rc=1)
+
+    def test_fails_when_output_empty(self):
+        with pytest.raises(SystemExit):
+            self._run(splice_rc=0, out_bytes=b"")
+
+    def test_warns_but_passes_when_probe_clip_cannot_be_generated(self, capsys):
+        # Generation failing is environmental, not a crash — warn, do not abort.
+        self._run(gen_rc=1)
+        out = capsys.readouterr().out
+        assert "could not generate a probe clip" in out
+
 
 
 # ── _check_notion ─────────────────────────────────────────────────────────────

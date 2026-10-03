@@ -440,6 +440,30 @@ def process_podcast_feed(
             }
 
         _max_splice_retries = settings.get("MAX_SPLICE_RETRIES")
+
+        # One-shot recovery: once the root cause of a splice crash is fixed (e.g.
+        # a stable FFMPEG_BIN is pinned), operators set SPLICE_RESET_EXHAUSTED=true
+        # for a single run to clear the lifetime counter on abandoned episodes so
+        # they are re-queued instead of staying permanently unpublished.
+        if settings.get("SPLICE_RESET_EXHAUSTED"):
+            _reset_ids = [
+                k
+                for k, v in manifest.items()
+                if isinstance(v, dict)
+                and v.get("splice_failed")
+                and v.get("splice_failed_count", 0) >= _max_splice_retries
+            ]
+            if _reset_ids:
+                for k in _reset_ids:
+                    manifest[k]["splice_failed_count"] = 0
+                logger.warning(
+                    "[PodcastSync] SPLICE_RESET_EXHAUSTED is set — reset splice_failed_count "
+                    "for %d exhausted episode(s) in '%s' so they will be retried: %s",
+                    len(_reset_ids),
+                    podcast.name,
+                    sorted(_reset_ids),
+                )
+
         splice_retry_ids = {
             k
             for k, v in manifest.items()
@@ -459,15 +483,30 @@ def process_podcast_feed(
         # Exhausted episodes stay unpublished by design (never ship an
         # ad-bearing original).  They must therefore keep being reported every
         # run, with the reason of the last failure, until someone intervenes --
-        # the counters are read here, never reset.
+        # the counters are read here, never reset (except by SPLICE_RESET_EXHAUSTED).
         splice_exhausted_reasons = {
             eid: manifest.get(eid, {}).get("fail_reason", "") or "unknown" for eid in sorted(_splice_exhausted)
         }
         if _splice_exhausted:
+            # Collapse what used to be one ERROR line per exhausted episode (hundreds
+            # per run for a large backlog, drowning genuinely new failures) into a
+            # single actionable ERROR summary — distinct failure reasons are listed
+            # once, with full per-episode detail available at DEBUG.
+            _distinct_reasons = sorted(set(splice_exhausted_reasons.values()))
+            logger.error(
+                "[PodcastSync] %d episode(s) have exhausted splice retries (%d/%d) in '%s' and stay "
+                "unpublished — set SPLICE_RESET_EXHAUSTED=true after fixing ffmpeg to retry them. "
+                "Reasons: %s. IDs: %s",
+                len(_splice_exhausted),
+                _max_splice_retries,
+                _max_splice_retries,
+                podcast.name,
+                "; ".join(_distinct_reasons),
+                sorted(_splice_exhausted),
+            )
             for eid, reason in splice_exhausted_reasons.items():
-                logger.error(
-                    "[PodcastSync] %s has exhausted splice retries (%d/%d, cdn=%s) and stays unpublished — "
-                    "last failure: %s",
+                logger.debug(
+                    "[PodcastSync] %s exhausted splice retries (%d/%d, cdn=%s) — last failure: %s",
                     eid,
                     manifest.get(eid, {}).get("splice_failed_count", 0),
                     _max_splice_retries,

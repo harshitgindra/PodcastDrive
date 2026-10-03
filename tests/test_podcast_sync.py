@@ -924,6 +924,92 @@ class TestSpliceRetryCount:
         assert saved["guid-1"]["splice_failed"] is True
         assert saved["guid-1"]["splice_failed_count"] == 2  # 1 previous + 1 this run
 
+
+class TestSpliceResetExhausted:
+    """SPLICE_RESET_EXHAUSTED re-queues episodes that previously hit the lifetime
+    cap, so a fixed root cause (e.g. a stable FFMPEG_BIN) can clear the backlog
+    without manual manifest surgery."""
+
+    def test_reset_requeues_exhausted_episode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        monkeypatch.setenv("SPLICE_RESET_EXHAUSTED", "true")
+        podcast = _make_podcast(max_downloads=5)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+        fake_mp3 = tmp_path / "guid-1.mp3"
+        fake_mp3.write_bytes(b"ID3")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {
+                "guid-1": {"splice_failed": True, "splice_failed_count": 3, "cdn": "acast"}
+            }
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        # Counter was reset, so the previously-exhausted episode was re-queued and
+        # is no longer reported as exhausted.
+        assert result["splice_exhausted"] == 0
+        assert result["new_episodes"] == 1
+
+    def test_no_reset_keeps_episode_exhausted(self, monkeypatch):
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        monkeypatch.delenv("SPLICE_RESET_EXHAUSTED", raising=False)
+        podcast = _make_podcast(max_downloads=5)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode") as mock_dl,
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {
+                "guid-1": {"splice_failed": True, "splice_failed_count": 3, "cdn": "acast"}
+            }
+            result = process_podcast_feed(podcast, dry_run=True)
+
+        mock_dl.assert_not_called()
+        assert result["splice_exhausted"] == 1
+
+    def test_reset_is_logged(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        monkeypatch.setenv("SPLICE_RESET_EXHAUSTED", "true")
+        podcast = _make_podcast(max_downloads=5)
+        ep = _make_episode_meta("guid-1", "Ep 1")
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode"),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {
+                "guid-1": {"splice_failed": True, "splice_failed_count": 3, "cdn": "acast"}
+            }
+            with caplog.at_level(logging.WARNING, logger="podcast_sync"):
+                process_podcast_feed(podcast, dry_run=True)
+
+        assert "SPLICE_RESET_EXHAUSTED is set" in caplog.text
+
+
     def test_splice_failed_count_not_incremented_on_success(self, tmp_path, monkeypatch):
         """A successful episode resets splice_failed to False and does not increment count."""
         monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")

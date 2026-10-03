@@ -147,6 +147,23 @@ def _ffmpeg_timeout(name: str) -> float:
     return settings.get(name)
 
 
+def _ffmpeg_bin() -> str:
+    """Return the configured ffmpeg executable.
+
+    Defaults to ``"ffmpeg"`` (resolved via PATH) but can be pinned to an absolute
+    path via ``FFMPEG_BIN`` when the PATH build is unstable — the Homebrew ARM
+    ffmpeg 8.x, for example, SIGSEGVs (exit -11) on the atrim/concat splice graph
+    and even on plain stream-copy segment extraction, which silently abandons
+    every episode.  A blank value falls back to ``"ffmpeg"``.
+    """
+    return settings.get("FFMPEG_BIN") or "ffmpeg"
+
+
+def _ffprobe_bin() -> str:
+    """Return the configured ffprobe executable (see :func:`_ffmpeg_bin`)."""
+    return settings.get("FFPROBE_BIN") or "ffprobe"
+
+
 # ---------------------------------------------------------------------------
 # Fix #5 – Silence detection + boundary snapping
 # ---------------------------------------------------------------------------
@@ -170,7 +187,7 @@ def detect_silence(
         or the file contains no qualifying silences.
     """
     cmd = [
-        "ffmpeg",
+        _ffmpeg_bin(),
         "-i",
         mp3_path,
         "-af",
@@ -649,7 +666,7 @@ def _get_audio_duration(mp3_path: str) -> float:
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                _ffprobe_bin(),
                 "-v",
                 "error",
                 "-show_entries",
@@ -745,7 +762,7 @@ def _extract_audio_window(mp3_path: str, start: float, end: float, out_path: str
         RuntimeError: If ffmpeg exits with a non-zero return code.
     """
     cmd = [
-        "ffmpeg",
+        _ffmpeg_bin(),
         "-y",
         "-ss",
         str(start),
@@ -1717,7 +1734,7 @@ def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
 
 def _ffprobe_duration(path: str, force_format: str | None = None) -> float:
     """Run ffprobe to get duration in seconds. Raises RuntimeError on failure."""
-    cmd = ["ffprobe", "-v", "error"]
+    cmd = [_ffprobe_bin(), "-v", "error"]
     if force_format:
         cmd += ["-f", force_format]
     cmd += [
@@ -1952,7 +1969,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
         filter_complex = filter_complex.replace(f"[{concat_out}]", "[out]", 1)
 
     cmd = [
-        "ffmpeg",
+        _ffmpeg_bin(),
         "-y",
         "-i",
         mp3_path,
@@ -2032,7 +2049,7 @@ def _splice_concat_demuxer(
             seg_path = os.path.join(work_dir, f"_seg_{i}_{token}.mp3")
             segment_paths.append(seg_path)
             cmd = [
-                "ffmpeg",
+                _ffmpeg_bin(),
                 "-y",
                 "-ss",
                 str(start),
@@ -2063,7 +2080,7 @@ def _splice_concat_demuxer(
 
         # Step 3: join and re-encode
         cmd = [
-            "ffmpeg",
+            _ffmpeg_bin(),
             "-y",
             "-f",
             "concat",
