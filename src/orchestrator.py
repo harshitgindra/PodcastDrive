@@ -134,7 +134,7 @@ def run_one(
 
     Returns:
         ``(result, ok)`` — the pipeline result dict (None on failure) and
-        whether all episodes succeeded (including bot and splice outcomes).
+        whether this invocation had no new failures (bot or splice included).
     """
     writable = bool(provider is not None and podcast is not None and not dry_run)
 
@@ -188,9 +188,15 @@ def run_one(
             feed_url=feed_url_for(result.get(identifier_key, "")),
         )
 
-    # A completed pipeline can still have failed episodes. Keep processing other
-    # sources, but propagate the partial failure to run.sh and run history.
-    return result, not (result.get("failed", 0) or result.get("splice_failed", 0) or result.get("bot_detected", False))
+    # splice_failed also includes permanently exhausted episodes from earlier
+    # runs. Keep those visible in status and notifications, but only a new
+    # splice failure makes this invocation a partial failure. Results without
+    # the split counter retain their existing fail-closed behavior.
+    return result, not (
+        result.get("failed", 0)
+        or result.get("splice_failed_this_run", result.get("splice_failed", 0))
+        or result.get("bot_detected", False)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         python -m orchestrator youtube
         python -m orchestrator rss
 
-    Exit 1 if any source has failed episodes, a bot/splice failure, or raises;
+    Exit 1 if any source has new failed episodes, bot/splice failure, or raises;
     other sources still run. This lets run.sh record a partial_failure.
     """
     import aws

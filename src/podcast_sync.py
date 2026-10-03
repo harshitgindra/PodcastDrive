@@ -525,6 +525,7 @@ def process_podcast_feed(
                 "skipped": skipped,
                 "failed": 0,
                 "splice_failed": len(_splice_exhausted),
+                "splice_failed_this_run": 0,
                 "splice_exhausted": len(_splice_exhausted),
                 "splice_exhausted_ids": sorted(_splice_exhausted),
                 "splice_exhausted_reasons": splice_exhausted_reasons,

@@ -8,6 +8,7 @@ TTL is kept alive by renewal rather than silently lost.
 
 import json
 import os
+import signal
 import threading
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -817,6 +818,29 @@ class TestCli:
 
         assert distributed_lock.main(["heartbeat", "--interval", "1"]) == 1
         assert capsys.readouterr().out.startswith("LOST:")
+
+    def test_heartbeat_ignores_operator_sigint_until_runner_releases_lease(
+        self, cli_env, s3_client, capsys
+    ):
+        assert distributed_lock.main(["acquire"]) == 0
+        original_handler = signal.getsignal(signal.SIGINT)
+        calls = 0
+
+        def interrupt_then_stop(self, timeout=None):
+            nonlocal calls
+            calls += 1
+            assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+            signal.raise_signal(signal.SIGINT)
+            # End this in-process heartbeat by losing the lease after SIGINT.
+            _put_lock(s3_client, runner="replacement", owner="replacement-token")
+            return False
+
+        with patch.object(threading.Event, "wait", interrupt_then_stop):
+            assert distributed_lock.main(["heartbeat", "--interval", "1"]) == 1
+
+        assert calls == 1
+        assert signal.getsignal(signal.SIGINT) is original_handler
+        assert capsys.readouterr().out.endswith("LOST:Lock now owned by 'replacement' — lease lost\n")
 
     def test_heartbeat_never_adopts_a_replaced_owner_file(self, cli_env, s3_client, capsys):
         """An orphaned prior runner may not renew a later runner's lease."""

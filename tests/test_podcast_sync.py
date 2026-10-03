@@ -890,6 +890,9 @@ class TestSpliceRetryCount:
         # Episode was NOT re-queued — download never called
         mock_dl.assert_not_called()
         assert result["new_episodes"] == 0
+        assert result["splice_failed"] == 1
+        assert result["splice_failed_this_run"] == 0
+        assert result["splice_exhausted"] == 1
 
     def test_splice_failed_count_incremented_in_manifest(self, tmp_path, monkeypatch):
         """Each splice failure increments splice_failed_count in the manifest."""
@@ -1720,7 +1723,7 @@ class TestExhaustedEpisodesStayVisible:
         assert "splice crashed" in result["splice_exhausted_reasons"]["guid-1"]
 
     def test_run_is_reported_as_splice_failed(self):
-        """splice_failed is what the orchestrator turns into a failed run."""
+        """Historical splice_failed remains visible without failing today's run."""
         result, _, _, _ = self._run()
         assert result["splice_failed"] == 1
         assert result["splice_failed_this_run"] == 0

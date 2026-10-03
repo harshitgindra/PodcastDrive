@@ -13,7 +13,9 @@ What must hold:
 """
 
 import os
+import signal
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -211,6 +213,64 @@ class TestDistributedLockGate:
         assert "heartbeat" in logged
         assert "release" in logged, "cleanup must release the lease it took"
 
+    def test_cleanup_reaps_real_heartbeat_before_releasing_lease(self, harness, tmp_path):
+        """The supervised Python child cannot survive the run or renew a freed lease."""
+        pid_file = tmp_path / "heartbeat.pid"
+        stopped_file = tmp_path / "heartbeat.stopped"
+        release_file = tmp_path / "release.ok"
+        stub = _write_script(
+            tmp_path, "heartbeat_stub.py",
+            textwrap.dedent(f"""\
+                #!{sys.executable}
+                import os
+                import signal
+                import sys
+                import time
+                from pathlib import Path
+
+                command = sys.argv[3]
+                if command == "acquire":
+                    sys.exit(0)
+                if command == "release":
+                    pid = int(Path({str(pid_file)!r}).read_text())
+                    stopped = Path({str(stopped_file)!r}).exists()
+                    try:
+                        os.kill(pid, 0)
+                        alive = True
+                    except ProcessLookupError:
+                        alive = False
+                    Path({str(release_file)!r}).write_text(str(stopped and not alive))
+                    sys.exit(0)
+                if command == "heartbeat":
+                    def stop(*_args):
+                        Path({str(stopped_file)!r}).write_text("stopped")
+                        sys.exit(0)
+                    signal.signal(signal.SIGTERM, stop)
+                    Path({str(pid_file)!r}).write_text(str(os.getpid()))
+                    while True:
+                        time.sleep(1)
+                sys.exit(2)
+            """),
+        )
+        script = harness(
+            _block(TRAPS_BLOCK) + _dist_lock_block() + "sleep 1\n",
+            prelude=f'DRY_RUN=false\nVENV_PYTHON="{stub}"\n',
+        )
+        try:
+            result = _run(script, timeout=10)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert release_file.read_text() == "True", "released while heartbeat could still run"
+        finally:
+            # A regression in this test must not leave its stub renewing a lease.
+            if pid_file.exists():
+                pid = int(pid_file.read_text())
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    os.kill(pid, signal.SIGTERM)
+
     def test_held_lock_skips_the_run_without_failing(self, harness, tmp_path):
         script = self._gate(harness, tmp_path, {"acquire": 99, "acquire_output": "LOCKED:held by mini"})
         result = _run(script)
@@ -281,6 +341,64 @@ class TestLeaseLossTerminatesRun:
         _run(self._long_run(harness, tmp_path, calls=calls), timeout=25)
 
         assert "release" not in calls.read_text().split(), "released a lease we no longer own"
+
+    def test_ctrl_c_releases_held_lease_without_false_lease_loss(self, harness, tmp_path):
+        """An INT to the heartbeat must not make the runner abandon its lease."""
+        ready = tmp_path / "heartbeat.ready"
+        released = tmp_path / "released"
+        stub = _write_script(
+            tmp_path,
+            "sigint_stub.py",
+            textwrap.dedent(f"""\
+                #!{sys.executable}
+                import signal
+                import sys
+                import time
+                from pathlib import Path
+
+                command = sys.argv[3]
+                if command == "heartbeat":
+                    signal.signal(signal.SIGINT, signal.SIG_IGN)
+                    Path({str(ready)!r}).write_text(str(__import__("os").getpid()))
+                    while True:
+                        time.sleep(1)
+                if command == "release":
+                    Path({str(released)!r}).touch()
+                sys.exit(0)
+            """),
+        )
+        script = harness(
+            _block(TRAPS_BLOCK)
+            + _dist_lock_block()
+            + f'while [ ! -f "{ready}" ]; do sleep 0.05; done\n'
+            + "echo READY\nwait \"$LOCK_RENEW_PID\"\n",
+            prelude=f'DRY_RUN=false\nVENV_PYTHON="{stub}"\n',
+        )
+        proc = subprocess.Popen(
+            ["bash", str(script)], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        try:
+            assert "Distributed lock held" in proc.stdout.readline()
+            assert proc.stdout.readline().strip() == "READY", "heartbeat did not start"
+            assert ready.exists()
+            os.kill(int(ready.read_text()), signal.SIGINT)
+            os.kill(proc.pid, signal.SIGTERM)
+            stdout, stderr = proc.communicate(timeout=10)
+            assert proc.returncode != 0, stdout + stderr
+            assert "lease lost" not in stdout.lower(), stdout + stderr
+            assert "Interrupted" in stdout
+            assert released.exists(), "operator interrupt left the owned lease behind"
+            assert not (tmp_path / "logs" / ".lease_lost").exists()
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate(timeout=5)
+            if ready.exists():
+                try:
+                    os.kill(int(ready.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
 
     def test_interrupt_without_lease_loss_reports_an_interrupt(self, harness, tmp_path):
         stub = _stub_python(tmp_path, {"heartbeat_delay": 30})

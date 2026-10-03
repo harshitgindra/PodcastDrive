@@ -280,6 +280,33 @@ class TestRunOne:
         assert len(provider.last_runs) == 2
         assert read_notify(notify_file)[0]["failed"] == outcome.get("failed", 0)
 
+    @pytest.mark.parametrize(
+        ("result", "expected_ok"),
+        [
+            ({"splice_failed": 96, "splice_failed_this_run": 0, "splice_exhausted": 96}, True),
+            ({"splice_failed": 97, "splice_failed_this_run": 1, "splice_exhausted": 96}, False),
+            ({"splice_failed": 96, "splice_failed_this_run": 0, "failed": 1}, False),
+            ({"splice_failed": 96, "splice_failed_this_run": 0, "bot_detected": True}, False),
+            ({"splice_failed": 1}, False),  # legacy results still fail closed
+        ],
+    )
+    def test_exhausted_backlog_is_visible_but_only_new_failures_fail_run(
+        self, notify_file, result, expected_ok
+    ):
+        provider = FakeProvider()
+        podcast = FakePodcast("RSS Show", "https://feed")
+        _, ok = orchestrator.run_one(
+            name="RSS Show", identifier_key="slug",
+            pipeline=lambda: {"slug": "rss-show", **result},
+            provider=provider, podcast=podcast,
+        )
+        assert ok is expected_ok
+        assert read_notify(notify_file)[0]["splice_failed"] == result["splice_failed"]
+        expected_status = "Error: Bot Detection" if result.get("bot_detected") else (
+            "Failed" if result.get("failed") else "Splice Failed"
+        )
+        assert provider.statuses[-1] == ("RSS Show", expected_status)
+
     def test_failure_marks_failed_and_records_error(self, notify_file, capsys):
         provider = FakeProvider()
         podcast = FakePodcast("Show", "PL1")
@@ -629,6 +656,22 @@ class TestRunRssSources:
         orchestrator.run_rss_sources(dry_run=False)
         assert provider.statuses[-1] == ("RSS Show", "Splice Failed")
         assert read_notify(notify_file)[0]["splice_failed"] == 1
+
+    @pytest.mark.parametrize("fresh_failures, expected", [(0, True), (1, False)])
+    def test_exhausted_backlog_only_fails_rss_on_fresh_splice(
+        self, notify_file, monkeypatch, fresh_failures, expected
+    ):
+        provider = FakeProvider(podcasts=[FakePodcast("RSS Show", "https://feed")])
+        _patch_rss_mode(
+            monkeypatch, provider=provider,
+            process_feed=lambda p, provider=None, dry_run=False: {
+                "slug": "s", "splice_failed": 96 + fresh_failures,
+                "splice_failed_this_run": fresh_failures, "splice_exhausted": 96,
+            },
+        )
+        assert orchestrator.run_rss_sources(dry_run=False) is expected
+        assert provider.statuses[-1] == ("RSS Show", "Splice Failed")
+        assert read_notify(notify_file)[0]["splice_failed"] == 96 + fresh_failures
 
     def test_failed_episode_marks_rss_source_failed(self, notify_file, monkeypatch):
         provider = FakeProvider(podcasts=[FakePodcast("RSS Show", "https://feed")])

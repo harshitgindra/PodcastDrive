@@ -319,9 +319,29 @@ if [ "$DRY_RUN" = false ]; then
   # foreground command returns — without that, an in-flight sync would keep
   # running for hours with no lease.
   (
-      if "${VENV_PYTHON}" -m distributed_lock heartbeat \
+      # Cleanup must stop and reap the actual heartbeat before releasing the
+      # lease. Killing just this wrapper subshell would orphan its Python child.
+      heartbeat_pid=""
+      stop_heartbeat() {
+          # Ignore repeated TERM while waiting for the child to exit.
+          trap "" TERM
+          # If TERM arrives between launch and $! assignment, the child is
+          # still discoverable as this subshell's only background job.
+          if [ -z "$heartbeat_pid" ]; then
+              heartbeat_pid=$(jobs -pr)
+          fi
+          if [ -n "$heartbeat_pid" ]; then
+              kill "$heartbeat_pid" 2>/dev/null || true
+              wait "$heartbeat_pid" 2>/dev/null || true
+          fi
+          exit 0
+      }
+      trap stop_heartbeat TERM
+      "${VENV_PYTHON}" -m distributed_lock heartbeat \
           --ttl "$LOCK_TTL_SECONDS" --interval "$LOCK_RENEW_INTERVAL" \
-          >>"${LOG_DIR}/lock_renewal.log" 2>&1; then
+          >>"${LOG_DIR}/lock_renewal.log" 2>&1 &
+      heartbeat_pid=$!
+      if wait "$heartbeat_pid"; then
           :
       else
           : > "$LEASE_LOST_FLAG"

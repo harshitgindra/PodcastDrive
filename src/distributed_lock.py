@@ -28,6 +28,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import uuid
@@ -545,25 +546,29 @@ def main(argv: list[str] | None = None) -> int:
         print("released")
         return 0
 
-    # heartbeat: snapshot the ownership token before waiting. The run.sh
-    # cleanup runs in another process and can replace the token file when a
-    # later invocation starts; a surviving old heartbeat must never adopt that
-    # new token and renew the new invocation's lease.
-    lock._owner_id = lock.owner_id
-    if not lock._owner_id:
-        print("LOST:No lock ownership token — cannot renew")
-        return 1
-
-    # Renew until the lease is lost, then exit non-zero so the supervising
-    # runner can abort instead of writing without a lease.
-    stop = threading.Event()
-    while not stop.wait(args.interval):
-        try:
-            lock.renew()
-        except LockRenewError as exc:
-            print(f"LOST:{exc}")
+    # Ctrl-C belongs to run.sh: this heartbeat must wait for the runner to
+    # stop it with TERM, or its nonzero exit would be mistaken for lease loss.
+    # Install before reading the owner token, which can involve filesystem I/O.
+    previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        # Snapshot the token: an old heartbeat must never adopt a later run's
+        # token if cleanup replaces the owner file.
+        lock._owner_id = lock.owner_id
+        if not lock._owner_id:
+            print("LOST:No lock ownership token — cannot renew")
             return 1
-    return 0
+
+        # A genuine lost lease still aborts the supervising runner.
+        stop = threading.Event()
+        while not stop.wait(args.interval):
+            try:
+                lock.renew()
+            except LockRenewError as exc:
+                print(f"LOST:{exc}")
+                return 1
+        return 0
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised via subprocess
