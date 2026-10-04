@@ -1622,6 +1622,20 @@ class TestLoudnorm:
         fc = " ".join(cmd)
         assert "loudnorm" in fc, "loudnorm filter should appear in ffmpeg command"
 
+    def test_loudnorm_followed_by_s16p_conversion(self, monkeypatch):
+        """loudnorm output is converted to s16p before the encoder.
+
+        libmp3lame's psymodel crashes (psymodel.c:576 assertion) on loudnorm's
+        float output; the aformat=sample_fmts=s16p conversion pre-empts it.
+        """
+        cmd = []
+        self._splice(monkeypatch, "true", cmd)
+        fc_idx = cmd.index("-filter_complex") + 1
+        fc = cmd[fc_idx]
+        assert "aformat=sample_fmts=s16p" in fc
+        # Must come after loudnorm in the chain, not before.
+        assert fc.index("loudnorm") < fc.index("aformat=sample_fmts=s16p")
+
     def test_loudnorm_filter_excluded_when_disabled(self, monkeypatch):
         """SPLICE_LOUDNORM=false omits the loudnorm filter."""
         cmd = []
@@ -3818,6 +3832,42 @@ class TestSpliceConcatDemuxer:
         assert out_arg == str(out)
         assert keep_arg[0] == (0.0, 30.0)
         assert keep_arg[1][0] == 60.0
+
+    def test_fallback_called_on_sigabrt(self, monkeypatch, tmp_path):
+        """splice_audio triggers _splice_concat_demuxer on ffmpeg exit -6 (SIGABRT).
+
+        The libmp3lame psymodel assertion aborts the process with SIGABRT; the
+        concat-demuxer fallback (which skips loudnorm) must still recover it.
+        """
+        import subprocess
+
+        import ad_remover
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 5000)
+        out = tmp_path / "out.mp3"
+
+        abort_exc = subprocess.CalledProcessError(-6, "ffmpeg", stderr="Assertion failed")
+        fallback_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "-filter_complex" in cmd:
+                raise abort_exc
+            return subprocess.CompletedProcess(cmd, 0, stdout="120.0", stderr="")
+
+        monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
+
+        def fake_fallback(mp3_path, keep, output_path):
+            fallback_called.append((mp3_path, keep, output_path))
+            import pathlib
+
+            pathlib.Path(output_path).write_bytes(b"cleaned")
+
+        monkeypatch.setattr(ad_remover, "_splice_concat_demuxer", fake_fallback)
+
+        ad_remover.splice_audio(str(src), [{"start": 30.0, "end": 60.0}], str(out))
+
+        assert len(fallback_called) == 1
 
     def test_non_sigsegv_not_swallowed(self, monkeypatch, tmp_path):
         """splice_audio re-raises CalledProcessError for non-SIGSEGV exit codes."""

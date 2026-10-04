@@ -1956,6 +1956,15 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     # Build ffmpeg atrim + concat + optional loudnorm filter_complex.
     # loudnorm (EBU R128) equalises loudness across all keep intervals so that
     # volume discontinuities at cut points are inaudible.
+    #
+    # loudnorm emits planar float (fltp) samples. Feeding those straight into
+    # libmp3lame triggers an assertion crash in lame's psychoacoustic model
+    # ("Assertion failed: (el >= 0), function calc_energy, psymodel.c:576") on
+    # certain content — reproducible across ffmpeg 7/8/9 and lame 3.100/4.0, so
+    # it is a libmp3lame bug, not an ffmpeg-version issue. Converting the samples
+    # to signed 16-bit planar (s16p) before the encoder avoids the broken code
+    # path entirely (verified 15/15 vs 0/15 unfixed). The explicit aformat is a
+    # no-op for already-s16 audio, so it is safe to apply unconditionally.
     loudnorm = settings.get("SPLICE_LOUDNORM")
     filter_parts = [
         f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{i}]" for i, (start, end) in enumerate(keep)
@@ -1964,7 +1973,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     concat_out = "concat_out"
     filter_complex = ";".join(filter_parts) + f";{inputs}concat=n={len(keep)}:v=0:a=1[{concat_out}]"
     if loudnorm:
-        filter_complex += f";[{concat_out}]loudnorm=I=-16:TP=-1.5:LRA=11[out]"
+        filter_complex += f";[{concat_out}]loudnorm=I=-16:TP=-1.5:LRA=11,aformat=sample_fmts=s16p[out]"
     else:
         filter_complex = filter_complex.replace(f"[{concat_out}]", "[out]", 1)
 
@@ -1998,12 +2007,16 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"ffmpeg splice timed out after {exc.timeout}s for {mp3_path}") from exc
     except subprocess.CalledProcessError as exc:
-        if exc.returncode == -11:
-            # SIGSEGV — the atrim filter_complex path crashed ffmpeg (seen on
-            # ARM with long files).  Retry using the concat demuxer: extract
-            # each keep interval as an independent segment file, then join them.
+        if exc.returncode in (-11, -6):
+            # ffmpeg crashed (SIGSEGV -11 or SIGABRT -6). Observed causes: the
+            # atrim filter_complex path on long files (ARM), and the libmp3lame
+            # psymodel assertion on loudnorm's float output (now pre-empted by the
+            # s16p conversion above). Retry via the concat demuxer, which extracts
+            # each keep interval by stream-copy and re-encodes without the loudnorm
+            # filter graph — side-stepping both crash paths.
             logger.warning(
-                "[AdRemover] ffmpeg SIGSEGV (exit -11) — retrying with concat-demuxer fallback for %s",
+                "[AdRemover] ffmpeg crashed (exit %d) — retrying with concat-demuxer fallback for %s",
+                exc.returncode,
                 mp3_path,
             )
             _splice_concat_demuxer(mp3_path, keep, output_path)

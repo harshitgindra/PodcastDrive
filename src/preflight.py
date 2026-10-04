@@ -290,12 +290,14 @@ def _check_ffmpeg() -> None:
 
 
 def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
-    """Run a tiny synthetic atrim/concat splice to detect a crashing ffmpeg.
+    """Run a synthetic splice that mirrors the production filter graph.
 
-    Generates ~2 s of silence, then exercises the exact filter graph shape the ad
-    splicer uses (two atrim segments → concat).  A SIGSEGV here means the binary
-    cannot splice despite a healthy ``-version``, which would otherwise abandon
-    every episode at runtime.
+    Generates ~2 s of silence (the worst case — silence reliably triggered the
+    libmp3lame psymodel crash where tonal content did not), then runs the exact
+    graph the ad splicer uses: two atrim segments → concat → loudnorm → s16p →
+    libmp3lame.  A crash here (SIGSEGV -11 or SIGABRT -6) means this binary +
+    lame cannot splice despite a healthy ``-version``, which would otherwise
+    abandon every episode at runtime.
     """
     import tempfile
 
@@ -306,7 +308,7 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
             gen = subprocess.run(
                 [
                     ffmpeg_bin, "-y", "-f", "lavfi",
-                    "-i", "anullsrc=r=44100:cl=mono",
+                    "-i", "anullsrc=r=44100:cl=stereo",
                     "-t", "2", "-codec:a", "libmp3lame", "-q:a", "9", src,
                 ],
                 capture_output=True, text=True, timeout=30,
@@ -318,13 +320,17 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
                 )
                 return
 
+            # Mirror src/ad_remover.py splice_audio(): atrim+concat, then
+            # loudnorm followed by the s16p conversion that works around the
+            # libmp3lame psymodel assertion on loudnorm's float output.
             splice = subprocess.run(
                 [
                     ffmpeg_bin, "-y", "-i", src,
                     "-filter_complex",
                     "[0:a]atrim=start=0:end=0.5,asetpts=PTS-STARTPTS[a0];"
                     "[0:a]atrim=start=1:end=1.5,asetpts=PTS-STARTPTS[a1];"
-                    "[a0][a1]concat=n=2:v=0:a=1[out]",
+                    "[a0][a1]concat=n=2:v=0:a=1[c];"
+                    "[c]loudnorm=I=-16:TP=-1.5:LRA=11,aformat=sample_fmts=s16p[out]",
                     "-map", "[out]", "-codec:a", "libmp3lame", "-q:a", "2", out,
                 ],
                 capture_output=True, text=True, timeout=30,
@@ -336,12 +342,13 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
             _fail(f"ffmpeg splice self-test could not run (FFMPEG_BIN={ffmpeg_bin!r}): {exc}")
             return
 
-        if splice.returncode == -11:
+        if splice.returncode in (-11, -6):
+            sig = "SEGFAULTED (exit -11)" if splice.returncode == -11 else "ABORTED (exit -6)"
             _fail(
-                f"ffmpeg SEGFAULTED (exit -11) on a trivial splice (FFMPEG_BIN={ffmpeg_bin!r}). "
-                "This binary cannot splice audio and will abandon every episode — the Homebrew "
-                "ARM ffmpeg 8.x is a known offender. Pin FFMPEG_BIN/FFPROBE_BIN to a stable build "
-                "(e.g. 'brew install ffmpeg@7' or an official static build)."
+                f"ffmpeg {sig} on the production splice graph (FFMPEG_BIN={ffmpeg_bin!r}). "
+                "This ffmpeg+libmp3lame cannot splice audio and will abandon every episode. "
+                "If exit -6 with a 'psymodel.c' assertion, the installed libmp3lame is the "
+                "offender — reinstall lame, or pin FFMPEG_BIN to a build with a working one."
             )
             return
         if splice.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
@@ -351,7 +358,7 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
             )
             return
 
-    _ok("ffmpeg splice self-test passed (atrim+concat produces output)")
+    _ok("ffmpeg splice self-test passed (atrim+concat+loudnorm+libmp3lame produces output)")
 
 
 
