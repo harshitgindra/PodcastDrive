@@ -1996,32 +1996,48 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     logger.info("[AdRemover] Running ffmpeg splice command")
     logger.debug("[AdRemover] ffmpeg cmd: %s", " ".join(cmd))
 
-    try:
-        subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS"),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"ffmpeg splice timed out after {exc.timeout}s for {mp3_path}") from exc
-    except subprocess.CalledProcessError as exc:
-        if exc.returncode in (-11, -6):
-            # ffmpeg crashed (SIGSEGV -11 or SIGABRT -6). Observed causes: the
-            # atrim filter_complex path on long files (ARM), and the libmp3lame
-            # psymodel assertion on loudnorm's float output (now pre-empted by the
-            # s16p conversion above). Retry via the concat demuxer, which extracts
-            # each keep interval by stream-copy and re-encodes without the loudnorm
-            # filter graph — side-stepping both crash paths.
-            logger.warning(
-                "[AdRemover] ffmpeg crashed (exit %d) — retrying with concat-demuxer fallback for %s",
-                exc.returncode,
-                mp3_path,
+    # ffmpeg can crash with a signal (SIGSEGV -11 / SIGABRT -6) rather than a
+    # clean error, and on the ARM Homebrew build these crashes are often
+    # probabilistic — the identical command succeeds on a re-run. Retry in-place
+    # a few times before paying for the slower concat-demuxer fallback, which
+    # re-reads the same file with the same decoder and tends to crash again.
+    crash_retries = settings.get("SPLICE_CRASH_RETRIES")
+    last_crash: subprocess.CalledProcessError | None = None
+    for crash_attempt in range(1, crash_retries + 2):  # 1 initial + N retries
+        try:
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS"),
             )
-            _splice_concat_demuxer(mp3_path, keep, output_path)
-        else:
-            raise RuntimeError(f"ffmpeg splice failed (exit {exc.returncode}):\n{exc.stderr}") from exc
+            return  # success
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"ffmpeg splice timed out after {exc.timeout}s for {mp3_path}") from exc
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode not in (-11, -6):
+                raise RuntimeError(f"ffmpeg splice failed (exit {exc.returncode}):\n{exc.stderr}") from exc
+            last_crash = exc
+            if crash_attempt <= crash_retries:
+                logger.warning(
+                    "[AdRemover] ffmpeg crashed (exit %d) on splice attempt %d/%d for %s — re-running",
+                    exc.returncode,
+                    crash_attempt,
+                    crash_retries + 1,
+                    mp3_path,
+                )
+
+    # In-place retries exhausted — fall back to the concat demuxer, which extracts
+    # each keep interval by stream-copy and re-encodes without the loudnorm filter
+    # graph, side-stepping both crash paths.
+    logger.warning(
+        "[AdRemover] ffmpeg crashed (exit %d) after %d splice attempt(s) — retrying with concat-demuxer fallback for %s",
+        last_crash.returncode if last_crash else -1,
+        crash_retries + 1,
+        mp3_path,
+    )
+    _splice_concat_demuxer(mp3_path, keep, output_path)
 
 
 def _splice_concat_demuxer(

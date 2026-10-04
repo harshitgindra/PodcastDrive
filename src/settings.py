@@ -212,6 +212,13 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 "pinning a stable FFMPEG_BIN), then unset it once the backlog clears.",
             ),
             _i("SPLICE_MAX_ATTEMPTS_PER_RUN", 2, "Splice retries attempted in any single run, across all episodes."),
+            _i(
+                "SPLICE_CRASH_RETRIES",
+                2,
+                "In-process re-runs of the identical splice command when ffmpeg crashes with a "
+                "signal (SIGSEGV/SIGABRT) before falling back to the concat demuxer. These crashes "
+                "are often probabilistic, so simply re-running usually succeeds.",
+            ),
             _i("MAX_FEED_BYTES", 32 * 1024 * 1024, "Refuse RSS feeds larger than this. The largest real feeds are ~5 MiB."),
             _i("MAX_ITUNES_BYTES", 8 * 1024 * 1024, "Refuse iTunes lookup/search responses larger than this."),
         ),

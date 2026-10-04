@@ -3869,6 +3869,75 @@ class TestSpliceConcatDemuxer:
 
         assert len(fallback_called) == 1
 
+    def test_crash_retry_succeeds_without_fallback(self, monkeypatch, tmp_path):
+        """A probabilistic crash that clears on re-run must NOT hit the fallback.
+
+        ffmpeg SIGSEGVs intermittently on the ARM build; the identical command
+        often succeeds on retry. splice_audio should re-run in-place and only
+        fall back to the concat demuxer once SPLICE_CRASH_RETRIES is exhausted.
+        """
+        import subprocess
+
+        import ad_remover
+
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "2")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 5000)
+        out = tmp_path / "out.mp3"
+
+        calls = {"filter_complex": 0}
+        fallback_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "-filter_complex" in cmd:
+                calls["filter_complex"] += 1
+                if calls["filter_complex"] == 1:
+                    raise subprocess.CalledProcessError(-11, "ffmpeg", stderr="SIGSEGV")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="120.0", stderr="")
+
+        monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            ad_remover, "_splice_concat_demuxer", lambda *a, **k: fallback_called.append(a)
+        )
+
+        ad_remover.splice_audio(str(src), [{"start": 30.0, "end": 60.0}], str(out))
+
+        assert calls["filter_complex"] == 2  # crashed once, succeeded on retry
+        assert fallback_called == []  # fallback never needed
+
+    def test_crash_retry_exhausted_falls_back(self, monkeypatch, tmp_path):
+        """Every in-place retry crashing must eventually reach the fallback."""
+        import subprocess
+
+        import ad_remover
+
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "2")
+
+        src = tmp_path / "ep.mp3"
+        src.write_bytes(b"\xff\xfb" * 5000)
+        out = tmp_path / "out.mp3"
+
+        calls = {"filter_complex": 0}
+        fallback_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "-filter_complex" in cmd:
+                calls["filter_complex"] += 1
+                raise subprocess.CalledProcessError(-11, "ffmpeg", stderr="SIGSEGV")
+            return subprocess.CompletedProcess(cmd, 0, stdout="120.0", stderr="")
+
+        monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            ad_remover, "_splice_concat_demuxer", lambda *a, **k: fallback_called.append(a)
+        )
+
+        ad_remover.splice_audio(str(src), [{"start": 30.0, "end": 60.0}], str(out))
+
+        assert calls["filter_complex"] == 3  # 1 initial + 2 retries
+        assert len(fallback_called) == 1
+
     def test_non_sigsegv_not_swallowed(self, monkeypatch, tmp_path):
         """splice_audio re-raises CalledProcessError for non-SIGSEGV exit codes."""
         import subprocess
