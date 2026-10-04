@@ -2,15 +2,43 @@
 
 import json
 import logging
+import ssl
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import boto3
+import certifi
 from botocore.exceptions import ClientError
 
 import settings
 from utils import retry_aws_call
 
 logger = logging.getLogger(__name__)
+
+#: Shared SSL context for the Overcast ping — built once at import rather than on
+#: every feed upload (each build loads and parses the certifi CA bundle).
+_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+
+
+def _parse_retry_after(value: str | None, *, default: float, cap: float) -> float:
+    """Parse an HTTP ``Retry-After`` header into a bounded delay in seconds.
+
+    Only the delta-seconds form is supported (the form Overcast returns); an
+    HTTP-date, a malformed value, or a missing header all fall back to
+    *default*. The result is clamped to ``[0, cap]`` so a hostile or buggy
+    server cannot stall the run.
+    """
+    if not value:
+        return default
+    try:
+        secs = float(value.strip())
+    except (ValueError, AttributeError):
+        return default
+    if secs < 0:
+        return default
+    return min(secs, cap)
 
 
 class ManifestUnavailableError(RuntimeError):
@@ -184,6 +212,12 @@ class S3Manager:
     def upload_feed(self, xml_content: str) -> str:
         """Upload the RSS feed XML to S3 and invalidate CloudFront cache.
 
+        If the uploaded feed is byte-for-byte identical to what is already in S3,
+        the CloudFront invalidation and Overcast ping are skipped: there is
+        nothing new for subscribers to crawl, and pinging Overcast on every
+        no-op run (feeds where no episode changed) wastes the shared rate-limit
+        budget and produces a stream of 429 warnings.
+
         Args:
             xml_content: The RSS XML string to upload.
 
@@ -191,17 +225,25 @@ class S3Manager:
             The S3 key where the feed was uploaded.
         """
         key = f"{self.playlist_id}/feed.xml"
+
+        new_body = xml_content.encode("utf-8")
+        unchanged = self._feed_body_matches(key, new_body)
+
         logger.info("Uploading feed to s3://%s/%s", self.bucket, key)
         retry_aws_call(
             lambda: self.s3_client.put_object(
                 Bucket=self.bucket,
                 Key=key,
-                Body=xml_content.encode("utf-8"),
+                Body=new_body,
                 ContentType="application/rss+xml",
                 CacheControl="max-age=300, s-maxage=60",
             ),
             label="s3.put_object",
         )
+
+        if unchanged:
+            logger.info("Feed unchanged for %s — skipping CloudFront invalidation and Overcast ping", key)
+            return key
 
         # Invalidate CloudFront cache for the feed
         self._invalidate_cloudfront(f"/{key}")
@@ -210,6 +252,18 @@ class S3Manager:
         self._ping_overcast()
 
         return key
+
+    def _feed_body_matches(self, key: str, new_body: bytes) -> bool:
+        """Return True if the object at *key* already equals *new_body*.
+
+        Any read error (missing object, transient S3 failure) returns False so
+        the caller falls back to the safe behaviour of invalidating and pinging.
+        """
+        try:
+            resp = self.s3_client.get_object(Bucket=self.bucket, Key=key)
+            return resp["Body"].read() == new_body
+        except Exception:
+            return False
 
     def get_object_size(self, key: str) -> int:
         """Return the content length (in bytes) of an S3 object.
@@ -456,7 +510,8 @@ class S3Manager:
         """Ping Overcast to trigger an immediate feed crawl.
 
         Uses Overcast's ping API: https://overcast.fm/podcasterinfo
-        Retries once on HTTP 429 (rate-limited) with a 5-second delay.
+        Retries once on HTTP 429 (rate-limited), honoring the server's
+        ``Retry-After`` header when present (capped), otherwise a short default.
         All other failures are logged as warnings and swallowed.
         """
         cloudfront_base = settings.get("CLOUDFRONT_BASE")
@@ -466,28 +521,23 @@ class S3Manager:
         feed_url = f"{cloudfront_base}/{self.playlist_id}/feed.xml"
 
         try:
-            import ssl
-            import urllib.error
-            import urllib.parse
-            import urllib.request
-
-            import certifi
-
-            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
             params = urllib.parse.urlencode({"urlprefix": feed_url})
             url = f"https://overcast.fm/ping?{params}"
             req = urllib.request.Request(url, method="GET")
 
             for attempt in range(2):
                 try:
-                    with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
+                    with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
                         logger.info("Overcast ping sent for %s (status=%d)", feed_url, resp.status)
                         return
                 except urllib.error.HTTPError as exc:
                     if exc.code == 429 and attempt == 0:
-                        # Rate-limited — wait and retry once
-                        logger.debug("Overcast rate-limited (429), retrying in 5s for %s", feed_url)
-                        time.sleep(5)
+                        # Rate-limited — wait and retry once. Prefer the server's
+                        # Retry-After hint (seconds), capped so a huge value can't
+                        # stall the run; fall back to a short default otherwise.
+                        delay = _parse_retry_after(exc.headers.get("Retry-After"), default=5.0, cap=30.0)
+                        logger.debug("Overcast rate-limited (429), retrying in %.0fs for %s", delay, feed_url)
+                        time.sleep(delay)
                         continue
                     raise
         except Exception as exc:

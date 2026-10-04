@@ -541,6 +541,89 @@ class TestNotionUpdateStatus:
         # Should not raise
         provider.update_status(podcast, "Failed")
 
+    @patch("retry.time.sleep", lambda s: None)
+    @patch("urllib.request.urlopen")
+    def test_retries_transient_failure_then_succeeds(self, mock_urlopen):
+        """A transient timeout is retried and the subsequent success is used."""
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
+
+        ok = MagicMock()
+        ok.__enter__ = MagicMock(return_value=ok)
+        ok.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.side_effect = [TimeoutError("read timed out"), ok]
+
+        provider.update_status(podcast, "Done")
+        assert mock_urlopen.call_count == 2
+
+    @patch("retry.time.sleep", lambda s: None)
+    @patch("urllib.request.urlopen")
+    def test_retries_on_429(self, mock_urlopen):
+        """HTTP 429 (rate-limited) is treated as transient and retried."""
+        import urllib.error
+
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
+
+        ok = MagicMock()
+        ok.__enter__ = MagicMock(return_value=ok)
+        ok.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError(None, 429, "Too Many Requests", {}, None),
+            ok,
+        ]
+
+        provider.update_status(podcast, "Done")
+        assert mock_urlopen.call_count == 2
+
+    @patch("retry.time.sleep", lambda s: None)
+    @patch("urllib.request.urlopen")
+    def test_does_not_retry_permanent_4xx(self, mock_urlopen):
+        """A non-retryable 4xx (e.g. 404) is not retried — one attempt, swallowed."""
+        import urllib.error
+
+        provider = self._make_provider()
+        podcast = PodcastConfig(name="Show", url="PLabc", page_id="page-123")
+        mock_urlopen.side_effect = urllib.error.HTTPError(None, 404, "Not Found", {}, None)
+
+        provider.update_status(podcast, "Done")  # should not raise
+        assert mock_urlopen.call_count == 1
+
+
+class TestIsTransientNotionError:
+    """Unit tests for the Notion transient-error predicate."""
+
+    def test_429_is_transient(self):
+        import urllib.error
+
+        from config_provider import _is_transient_notion_error
+
+        assert _is_transient_notion_error(urllib.error.HTTPError(None, 429, "x", {}, None))
+
+    def test_503_is_transient(self):
+        import urllib.error
+
+        from config_provider import _is_transient_notion_error
+
+        assert _is_transient_notion_error(urllib.error.HTTPError(None, 503, "x", {}, None))
+
+    def test_404_is_not_transient(self):
+        import urllib.error
+
+        from config_provider import _is_transient_notion_error
+
+        assert not _is_transient_notion_error(urllib.error.HTTPError(None, 404, "x", {}, None))
+
+    def test_timeout_is_transient(self):
+        from config_provider import _is_transient_notion_error
+
+        assert _is_transient_notion_error(TimeoutError("read timed out"))
+
+    def test_value_error_is_not_transient(self):
+        from config_provider import _is_transient_notion_error
+
+        assert not _is_transient_notion_error(ValueError("bad"))
+
 
 # ---------------------------------------------------------------------------
 # get_config_provider factory

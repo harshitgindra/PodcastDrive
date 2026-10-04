@@ -6,13 +6,38 @@ interface. Each provider returns a list of PodcastConfig objects.
 
 import logging
 import os
+import ssl
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC
 
+import certifi
+
 import settings
+from retry import retry_call
 
 logger = logging.getLogger(__name__)
+
+#: Shared SSL context for Notion API calls — built once at import rather than on
+#: every request (the context loads and parses the certifi CA bundle each time).
+_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+
+#: HTTP statuses from Notion worth retrying: rate-limit and transient 5xx.
+_RETRYABLE_NOTION_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_transient_notion_error(exc: BaseException) -> bool:
+    """Is *exc* a Notion API failure a retry could plausibly fix?
+
+    Rate-limit (429) and 5xx responses are transient; so are transport-level
+    failures (timeouts, connection resets, DNS). A 4xx other than 429 is a
+    permanent client error that a retry only turns into needless load.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_NOTION_STATUSES
+    return isinstance(exc, OSError | urllib.error.URLError | TimeoutError)
 
 #: Hard cap on Notion query pages (100 rows each).  Purely a runaway-loop guard:
 #: 200 pages is 20,000 rows, far above any realistic subscription list.
@@ -172,12 +197,7 @@ class NotionConfigProvider(ConfigProvider):
             return self._cache
 
         import json
-        import ssl
         import urllib.request
-
-        import certifi
-
-        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
         url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
         headers = {
@@ -209,7 +229,7 @@ class NotionConfigProvider(ConfigProvider):
             )
 
             try:
-                with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
+                with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             except Exception as exc:
                 logger.error("Failed to query Notion database: %s", exc)
@@ -337,12 +357,6 @@ class NotionConfigProvider(ConfigProvider):
             return
 
         import json
-        import ssl
-        import urllib.request
-
-        import certifi
-
-        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
         url = f"https://api.notion.com/v1/pages/{podcast.page_id}"
         headers = {
@@ -368,9 +382,25 @@ class NotionConfigProvider(ConfigProvider):
             method="PATCH",
         )
 
+        def _patch() -> None:
+            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX):
+                pass
+
         try:
-            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
-                logger.info("Updated Notion status to '%s' for %s", status, podcast.name)
+            # Notion occasionally rate-limits (429) or times out; a single failure
+            # otherwise leaves the page stuck on a stale status (e.g. "Running")
+            # even though the sync finished. Retry transient failures with
+            # back-off before giving up.
+            retry_call(
+                _patch,
+                attempts=3,
+                base_delay=1.0,
+                jitter=True,
+                retryable=_is_transient_notion_error,
+                label=f"notion.update_status[{podcast.name}]",
+                logger=logger,
+            )
+            logger.info("Updated Notion status to '%s' for %s", status, podcast.name)
         except Exception as exc:
             logger.warning("Failed to update Notion status for %s: %s", podcast.name, exc)
 
@@ -407,13 +437,8 @@ class NotionConfigProvider(ConfigProvider):
             return
 
         import json
-        import ssl
         import urllib.request
         from datetime import datetime
-
-        import certifi
-
-        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
         url = f"https://api.notion.com/v1/pages/{podcast.page_id}"
         headers = {
@@ -451,7 +476,7 @@ class NotionConfigProvider(ConfigProvider):
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
+            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX):
                 logger.info("Updated Notion for %s", podcast.name)
         except Exception as exc:
             logger.warning("Failed to update Notion for %s: %s", podcast.name, exc)
@@ -585,12 +610,7 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
             return
 
         import json
-        import ssl
         import urllib.request
-
-        import certifi
-
-        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
         url = f"https://api.notion.com/v1/pages/{podcast.page_id}"
         headers = {
@@ -615,7 +635,7 @@ class NotionPodcastConfigProvider(NotionConfigProvider):
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx):
+            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX):
                 logger.info("Updated Notion URL for '%s' → %s", podcast.name, new_url)
         except Exception as exc:
             logger.warning("Failed to update Notion URL for %s: %s", podcast.name, exc)

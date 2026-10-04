@@ -240,6 +240,47 @@ class TestUploadFeed:
         obj = s3_manager.s3_client.head_object(Bucket=BUCKET, Key=key)
         assert obj["ContentType"] == "application/rss+xml"
 
+    def test_pings_and_invalidates_when_feed_is_new(self, s3_manager):
+        """A first-time (or changed) feed triggers invalidation + Overcast ping."""
+        s3_manager._invalidate_cloudfront = unittest.mock.MagicMock()
+        s3_manager._ping_overcast = unittest.mock.MagicMock()
+
+        s3_manager.upload_feed("<rss><channel><title>New</title></channel></rss>")
+
+        s3_manager._invalidate_cloudfront.assert_called_once()
+        s3_manager._ping_overcast.assert_called_once()
+
+    def test_skips_ping_and_invalidation_when_feed_unchanged(self, s3_manager):
+        """Re-uploading identical feed content skips invalidation + ping.
+
+        Pinging Overcast on no-op runs wastes its rate-limit budget and spams
+        429 warnings, so an unchanged feed is a no-op beyond the idempotent PUT.
+        """
+        xml = "<rss><channel><title>Same</title></channel></rss>"
+        # First upload establishes the object.
+        s3_manager.upload_feed(xml)
+
+        s3_manager._invalidate_cloudfront = unittest.mock.MagicMock()
+        s3_manager._ping_overcast = unittest.mock.MagicMock()
+
+        # Second upload of identical bytes must skip both side effects.
+        s3_manager.upload_feed(xml)
+
+        s3_manager._invalidate_cloudfront.assert_not_called()
+        s3_manager._ping_overcast.assert_not_called()
+
+    def test_pings_again_when_feed_changes(self, s3_manager):
+        """A changed feed after an identical one re-triggers the side effects."""
+        s3_manager.upload_feed("<rss><channel><title>V1</title></channel></rss>")
+
+        s3_manager._invalidate_cloudfront = unittest.mock.MagicMock()
+        s3_manager._ping_overcast = unittest.mock.MagicMock()
+
+        s3_manager.upload_feed("<rss><channel><title>V2</title></channel></rss>")
+
+        s3_manager._invalidate_cloudfront.assert_called_once()
+        s3_manager._ping_overcast.assert_called_once()
+
 
 class TestGetObjectSize:
     def test_returns_content_length(self, s3_manager):
@@ -820,6 +861,86 @@ class TestPingOvercastRetry:
         manager._ping_overcast()  # should not raise
 
         assert call_count[0] == 2  # tried twice, then gave up
+
+    def test_honors_retry_after_header(self, monkeypatch):
+        """A Retry-After header on the 429 drives the sleep duration (capped)."""
+        import urllib.error
+
+        call_count = [0]
+        sleep_calls = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        def fake_urlopen(req, timeout, context):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise urllib.error.HTTPError(None, 429, "Too Many Requests", {"Retry-After": "12"}, None)
+            return FakeResponse()
+
+        monkeypatch.setenv("CLOUDFRONT_BASE", "https://cdn.example.com")
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("s3_manager.time.sleep", lambda s: sleep_calls.append(s))
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager._ping_overcast()
+
+        assert sleep_calls == [12.0]
+
+    def test_caps_oversized_retry_after(self, monkeypatch):
+        """An absurd Retry-After is clamped so it cannot stall the run."""
+        import urllib.error
+
+        sleep_calls = []
+
+        def fake_urlopen(req, timeout, context):
+            raise urllib.error.HTTPError(None, 429, "Too Many Requests", {"Retry-After": "99999"}, None)
+
+        monkeypatch.setenv("CLOUDFRONT_BASE", "https://cdn.example.com")
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("s3_manager.time.sleep", lambda s: sleep_calls.append(s))
+
+        manager = S3Manager(bucket=BUCKET, playlist_id=PLAYLIST_ID)
+        manager._ping_overcast()  # should not raise
+
+        assert sleep_calls == [30.0]  # capped
+
+
+class TestParseRetryAfter:
+    """Unit tests for the Retry-After header parser."""
+
+    def test_valid_seconds(self):
+        from s3_manager import _parse_retry_after
+
+        assert _parse_retry_after("10", default=5.0, cap=30.0) == 10.0
+
+    def test_missing_returns_default(self):
+        from s3_manager import _parse_retry_after
+
+        assert _parse_retry_after(None, default=5.0, cap=30.0) == 5.0
+
+    def test_malformed_returns_default(self):
+        from s3_manager import _parse_retry_after
+
+        # HTTP-date form is unsupported — fall back to default.
+        assert _parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT", default=5.0, cap=30.0) == 5.0
+
+    def test_negative_returns_default(self):
+        from s3_manager import _parse_retry_after
+
+        assert _parse_retry_after("-3", default=5.0, cap=30.0) == 5.0
+
+    def test_clamped_to_cap(self):
+        from s3_manager import _parse_retry_after
+
+        assert _parse_retry_after("1000", default=5.0, cap=30.0) == 30.0
+
 
 
 # ---------------------------------------------------------------------------
