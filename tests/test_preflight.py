@@ -613,12 +613,24 @@ class TestCheckFfmpegSplice:
     """The splice self-test catches a binary that reports a healthy -version but
     segfaults on the atrim/concat graph the ad splicer actually uses."""
 
-    def _run(self, gen_rc=0, splice_rc=0, out_bytes=b"spliced-audio"):
+    def _run(
+        self,
+        gen_rc=0,
+        splice_rc=0,
+        out_bytes=b"spliced-audio",
+        probe_rc=0,
+        probe_stdout="2.001",
+        probe_which=True,
+    ):
         import preflight
 
         def fake_run(cmd, **kwargs):
             res = MagicMock()
-            if "-filter_complex" in cmd:
+            if "-show_entries" in cmd:  # the ffprobe duration probe
+                res.returncode = probe_rc
+                res.stdout = probe_stdout
+                res.stderr = "probe boom"
+            elif "-filter_complex" in cmd:  # the splice graph
                 res.returncode = splice_rc
                 res.stderr = "boom"
                 out_path = cmd[-1]
@@ -626,7 +638,7 @@ class TestCheckFfmpegSplice:
                     import pathlib
 
                     pathlib.Path(out_path).write_bytes(out_bytes)
-            else:
+            else:  # the synthetic clip generation
                 res.returncode = gen_rc
                 res.stderr = ""
                 src_path = cmd[-1]
@@ -636,7 +648,10 @@ class TestCheckFfmpegSplice:
                     pathlib.Path(src_path).write_bytes(b"src")
             return res
 
-        with patch("subprocess.run", fake_run):
+        def fake_which(name):
+            return "/usr/bin/ffprobe" if probe_which else None
+
+        with patch("subprocess.run", fake_run), patch("preflight.shutil.which", fake_which):
             preflight._check_ffmpeg_splice("ffmpeg")
 
     def test_passes_on_healthy_splice(self, capsys):
@@ -662,6 +677,34 @@ class TestCheckFfmpegSplice:
         out = capsys.readouterr().out
         assert "could not generate a probe clip" in out
 
+    def test_ffprobe_self_test_passes(self, capsys):
+        self._run(probe_rc=0, probe_stdout="2.001")
+        out = capsys.readouterr().out
+        assert "splice self-test passed" in out
+        assert "ffprobe self-test passed" in out
+
+    def test_warns_but_passes_when_ffprobe_missing(self, capsys):
+        # Good ffmpeg + missing ffprobe must not abort: production probes
+        # duration through ffprobe -> ffprobe -f mp3 -> mutagen, so the mutagen
+        # fallback keeps episodes processing.  Surface it as a warning only.
+        self._run(probe_which=False)
+        out = capsys.readouterr().out
+        assert "splice self-test passed" in out
+        assert "ffprobe not found" in out
+        assert "mutagen" in out
+
+    def test_warns_but_passes_when_ffprobe_segfaults(self, capsys):
+        # A segfaulting ffprobe signals a partially corrupt install (what the
+        # broken runner showed) but is not fatal — warn, do not abort.
+        self._run(probe_rc=-11)
+        out = capsys.readouterr().out
+        assert "SEGFAULTED" in out
+        assert "mutagen" in out
+
+    def test_warns_but_passes_when_ffprobe_returns_empty(self, capsys):
+        self._run(probe_rc=0, probe_stdout="")
+        out = capsys.readouterr().out
+        assert "ffprobe self-test failed" in out
 
 
 # ── _check_notion ─────────────────────────────────────────────────────────────

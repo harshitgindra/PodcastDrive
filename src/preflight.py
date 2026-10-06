@@ -358,7 +358,56 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
             )
             return
 
-    _ok("ffmpeg splice self-test passed (atrim+concat+loudnorm+libmp3lame produces output)")
+        _ok("ffmpeg splice self-test passed (atrim+concat+loudnorm+libmp3lame produces output)")
+
+        # Production probes duration via ffprobe (probe_duration_with_fallbacks:
+        # ffprobe -> ffprobe -f mp3 -> mutagen).  A broken ffprobe degrades to the
+        # mutagen fallback rather than abandoning episodes, so this is a loud
+        # warning, not a hard fail — but a segfaulting ffprobe signals a corrupt
+        # install (exactly what the broken runner showed) worth surfacing early.
+        ffprobe_bin = settings.get("FFPROBE_BIN") or "ffprobe"
+        if os.path.sep in ffprobe_bin:
+            probe_found = os.path.exists(ffprobe_bin) and os.access(ffprobe_bin, os.X_OK)
+        else:
+            probe_found = shutil.which(ffprobe_bin) is not None
+        if not probe_found:
+            _warn(
+                f"ffprobe not found (FFPROBE_BIN={ffprobe_bin!r}) — duration probing will fall "
+                "back to mutagen; install ffmpeg or point FFPROBE_BIN at a working binary"
+            )
+            return
+
+        try:
+            probe = subprocess.run(
+                [
+                    ffprobe_bin, "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=nw=1:nk=1", out,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            _warn(f"ffprobe self-test timed out (FFPROBE_BIN={ffprobe_bin!r}) — mutagen fallback will be used")
+            return
+        except OSError as exc:
+            _warn(f"ffprobe self-test could not run (FFPROBE_BIN={ffprobe_bin!r}): {exc} — mutagen fallback will be used")
+            return
+
+        if probe.returncode in (-11, -6):
+            sig = "SEGFAULTED (exit -11)" if probe.returncode == -11 else "ABORTED (exit -6)"
+            _warn(
+                f"ffprobe {sig} on a valid clip (FFPROBE_BIN={ffprobe_bin!r}) — the ffmpeg install "
+                "is partially corrupt; duration probing will fall back to mutagen. Reinstall ffmpeg "
+                "or pin FFPROBE_BIN to a working build."
+            )
+            return
+        if probe.returncode != 0 or not probe.stdout.strip():
+            _warn(
+                f"ffprobe self-test failed (exit {probe.returncode}, FFPROBE_BIN={ffprobe_bin!r}) — "
+                "duration probing will fall back to mutagen"
+            )
+            return
+
+    _ok("ffprobe self-test passed (reads duration from the spliced clip)")
 
 
 
