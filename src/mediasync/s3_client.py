@@ -40,22 +40,27 @@ class S3Client:
             key: Full S3 key to check.
 
         Returns:
-            True if the object exists, False otherwise.
+            True if the object exists, False if it is missing.
+
+        Raises:
+            S3Error: If the S3 request fails for a reason other than not found.
         """
         try:
             self._client.head_object(Bucket=self._bucket, Key=key)
             return True
         except ClientError as exc:
-            if exc.response["Error"]["Code"] == "404":
+            if exc.response.get("Error", {}).get("Code") in {"404", "NoSuchKey", "NotFound"}:
                 return False
-            return False
+            raise S3Error(f"Head failed for {key}: {exc}") from exc
 
     def list_folder(self, remote_folder: str) -> set[str]:
         """List filenames (object name suffixes) in a remote S3 prefix.
 
         Returns:
             Set of filenames (last path component) under the prefix.
-            Returns empty set on error.
+
+        Raises:
+            S3Error: If the S3 listing fails.
         """
         prefix = remote_folder.rstrip('/') + '/'
         filenames: set[str] = set()
@@ -68,8 +73,8 @@ class S3Client:
                     name = key[len(prefix):]
                     if name and '/' not in name:  # Skip nested objects
                         filenames.add(name)
-        except ClientError:
-            pass
+        except ClientError as exc:
+            raise S3Error(f"List failed for {prefix}: {exc}") from exc
         return filenames
 
     def upload(self, local_path: Path, remote_folder: str, filename: str) -> str:

@@ -112,11 +112,12 @@ class TestFileExists:
         # Default fixture has 404
         assert client.file_exists("MediaSync/audio/missing.m4a") is False
 
-    def test_other_error_returns_false(self, client):
+    def test_other_error_raises(self, client):
         client._client.head_object.side_effect = ClientError(
             {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
         )
-        assert client.file_exists("key") is False
+        with pytest.raises(S3Error, match="Head failed"):
+            client.file_exists("key")
 
 
 class TestUploadIdempotent:

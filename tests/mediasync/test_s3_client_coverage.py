@@ -52,7 +52,9 @@ class TestListFolder:
         result = client.list_folder("prefix/missing")
         assert result == set()
 
-    def test_client_error_returns_empty(self, client):
+    def test_client_error_raises(self, client):
+        from mediasync.s3_client import S3Error
+
         paginator = MagicMock()
         client._client.get_paginator.return_value = paginator
         paginator.paginate.side_effect = ClientError(
@@ -60,8 +62,8 @@ class TestListFolder:
             "ListObjectsV2",
         )
 
-        result = client.list_folder("prefix/denied")
-        assert result == set()
+        with pytest.raises(S3Error, match="List failed"):
+            client.list_folder("prefix/denied")
 
     def test_multiple_pages(self, client):
         paginator = MagicMock()
