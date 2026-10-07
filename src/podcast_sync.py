@@ -514,9 +514,37 @@ def process_podcast_feed(
                     reason,
                 )
 
-        # Build (episode, episode_id) pairs for candidates
+        # Splice-retry episodes may have aged out of the feed window while the
+        # splice step was broken (e.g. a crashing ffmpeg).  They are known pending
+        # work -- within the age window when first queued -- so re-admit them from
+        # the full feed regardless of age.  Otherwise they are stranded forever:
+        # splice_failed in the manifest, but stripped out by the age filter above
+        # before the retry logic can ever re-attempt them.
+        if splice_retry_ids:
+            _present = {episode_id_from_guid(ep.guid) for ep in episodes}
+            _readmit = [
+                ep
+                for ep in all_feed_episodes
+                if episode_id_from_guid(ep.guid) in splice_retry_ids
+                and episode_id_from_guid(ep.guid) not in _present
+            ]
+            if _readmit:
+                logger.info(
+                    "[PodcastSync] Re-admitting %d aged-out splice-retry episode(s) past the "
+                    "%s-day age filter: %s",
+                    len(_readmit),
+                    max_age_days,
+                    sorted(episode_id_from_guid(ep.guid) for ep in _readmit),
+                )
+                episodes = list(episodes) + _readmit
+
+        # Build (episode, episode_id) pairs for candidates.  The max_episodes cap
+        # applies only to genuinely NEW downloads; splice retries are known work
+        # and are never capped (and never trigger an early break, so a retry that
+        # sorts after the cap-th new episode is still collected).
         candidates: list[tuple[EpisodeMeta, str]] = []
         skipped = 0
+        new_count = 0
         for ep in episodes:
             ep_id = episode_id_from_guid(ep.guid)
             # Permanently exhausted — never uploaded, no infinite retry loop
@@ -537,17 +565,23 @@ def process_podcast_feed(
                 skipped += 1
                 logger.debug("[PodcastSync] Already in S3, skipping: %s", ep_id)
                 continue
+            is_retry = ep_id in splice_retry_ids
+            # Cap NEW downloads only; keep scanning (no break) so retries that sort
+            # after the cap-th new episode are still collected.
+            if not is_retry and new_count >= max_episodes:
+                skipped += 1
+                continue
             # New episode, or previously splice-failed (under or over retries threshold)
-            if ep_id in splice_retry_ids:
+            if is_retry:
                 logger.info(
                     "[PodcastSync] Re-queuing %s for splice retry (run attempt %d/%d)",
                     ep_id,
                     manifest.get(ep_id, {}).get("splice_failed_count", 0) + 1,
                     _max_splice_retries,
                 )
+            else:
+                new_count += 1
             candidates.append((ep, ep_id))
-            if len(candidates) >= max_episodes:
-                break
 
         logger.info(
             "[PodcastSync] %d new candidates (skipped %d already in S3)",

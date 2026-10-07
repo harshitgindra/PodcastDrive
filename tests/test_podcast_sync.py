@@ -2018,3 +2018,92 @@ class TestBuilderOmissionsReachTheResult:
         assert result["feed_omitted_ids"] == ["guid-1"]
         assert result["feed_failed"] is True
         assert result["failed"] == 1
+
+
+class TestSpliceRetryAgeBypass:
+    """Splice-retry episodes must drain even after aging out of the feed window,
+    and must not be starved by the new-download cap."""
+
+    def test_aged_out_retry_episode_readmitted_past_age_filter(self, tmp_path, monkeypatch):
+        from datetime import timedelta
+
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        podcast = _make_podcast(max_age_days=3, max_downloads=1)
+        new_ep = _make_episode_meta("guid-new", "New in window")
+        old_ep = EpisodeMeta(
+            title="Old aged-out",
+            url="https://example.com/old.mp3",
+            pub_date=datetime.now(UTC) - timedelta(days=30),
+            guid="guid-old",
+            duration=300,
+        )
+        processed: list[str] = []
+
+        def fake_download(url, ep_id, tmp):
+            path = os.path.join(tmp, f"{ep_id}.mp3")
+            open(path, "wb").write(b"ID3")
+            processed.append(ep_id)
+            return path
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[new_ep, old_ep]),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g: g),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", side_effect=fake_download),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {
+                "guid-old": {"splice_failed": True, "splice_failed_count": 0, "size": 1000}
+            }
+            process_podcast_feed(podcast, dry_run=False)
+
+        # The aged-out retry drained despite being outside the 3-day window,
+        # and the in-window new episode (cap=1) was NOT starved by it.
+        assert "guid-old" in processed
+        assert "guid-new" in processed
+
+    def test_retries_not_counted_against_new_download_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        podcast = _make_podcast(max_age_days=7, max_downloads=1)
+        # Two retries + two new episodes, all in window. Cap=1 limits NEW to one
+        # but both retries must still process.
+        eps = [
+            _make_episode_meta("guid-r1", "Retry 1"),
+            _make_episode_meta("guid-r2", "Retry 2"),
+            _make_episode_meta("guid-n1", "New 1"),
+            _make_episode_meta("guid-n2", "New 2"),
+        ]
+        processed: list[str] = []
+
+        def fake_download(url, ep_id, tmp):
+            path = os.path.join(tmp, f"{ep_id}.mp3")
+            open(path, "wb").write(b"ID3")
+            processed.append(ep_id)
+            return path
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=eps),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g: g),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", side_effect=fake_download),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = {
+                "guid-r1": {"splice_failed": True, "splice_failed_count": 0, "size": 1000},
+                "guid-r2": {"splice_failed": True, "splice_failed_count": 0, "size": 1000},
+            }
+            process_podcast_feed(podcast, dry_run=False)
+
+        assert "guid-r1" in processed
+        assert "guid-r2" in processed
+        # Exactly one NEW episode admitted under the cap of 1.
+        new_processed = [e for e in processed if e.startswith("guid-n")]
+        assert len(new_processed) == 1
