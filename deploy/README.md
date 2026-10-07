@@ -11,7 +11,7 @@
 | **OS** | Amazon Linux 2023 |
 | **SSH Key** | Name configured during provisioning |
 | **IAM Role** | `PodcastDrive-EC2-Role` |
-| **Security Group** | `PodcastDrive-SG` (SSH only + port 9090 for webhook) |
+| **Security Group** | `PodcastDrive-SG` (SSH; webhook port 9090 must not be public) |
 | **Timezone** | `America/Los_Angeles` (PDT/PST) |
 
 > After provisioning, instance details are saved to `deploy/.instance-info` (git-ignored).
@@ -62,44 +62,43 @@ ssh -i ~/.ssh/<KEY>.pem ec2-user@<IP> 'crontab -r'
 ssh -i ~/.ssh/<KEY>.pem ec2-user@<IP> 'crontab PodcastDrive/deploy/crontab.txt'
 ```
 
-## HTTP Webhook (iPhone Trigger)
+## HTTP Webhook (private access only)
 
-Trigger runs remotely via HTTP (no SSH key needed on phone):
+The webhook binds to loopback and does not provide TLS. **Do not expose TCP/9090
+in the EC2 security group or access it over plain HTTP.** The old
+`open-webhook-port.sh` now refuses to add public ingress. If port 9090 was
+previously opened, remove the existing security-group ingress rule separately.
+
+Use AWS Systems Manager port forwarding from an authorized machine instead:
 
 ```bash
-# Trigger a run
-curl -H "Authorization: Bearer <TOKEN>" http://<IP>:9090/run
-
-# Check status (is a run in progress?)
-curl -H "Authorization: Bearer <TOKEN>" http://<IP>:9090/status
-
-# View recent logs
-curl -H "Authorization: Bearer <TOKEN>" http://<IP>:9090/logs
-
-# Health check (no auth required)
-curl http://<IP>:9090/health
+aws ssm start-session \
+  --target <INSTANCE_ID> \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["9090"],"localPortNumber":["9090"]}' \
+  --region us-west-2
 ```
+
+Then, in another terminal, use `http://127.0.0.1:9090`. Keep the bearer token
+in the `Authorization` header, never in a URL. The token is stored in
+`deploy/.webhook-env` on the instance with mode `0600`; the installer does not
+print it. Rotate it if it may have been exposed.
+
+```bash
+curl -X POST -H "Authorization: Bearer <TOKEN>" http://127.0.0.1:9090/run
+curl -X POST -H "Authorization: Bearer <TOKEN>" http://127.0.0.1:9090/status
+curl -X POST -H "Authorization: Bearer <TOKEN>" http://127.0.0.1:9090/logs
+curl http://127.0.0.1:9090/health
+```
+
+`/run`, `/status`, and `/logs` require authentication. `/health` returns only
+liveness. Triggering a run requires POST; GET is not accepted for actions.
 
 Environment variables:
 - `WEBHOOK_TOKEN` — Required. Shared secret for Bearer auth.
 - `WEBHOOK_PORT` — Listen port (default: `9090`).
-- `WEBHOOK_BIND` — Bind address (default: `127.0.0.1`). Set to `0.0.0.0` if
-  accessed directly from the network (ensure TLS termination via reverse proxy).
+- `WEBHOOK_BIND` — Must be a loopback address; non-loopback binding is rejected.
 - `PROJECT_DIR` — Path to the PodcastDrive repo on disk.
-
-Token is stored in `deploy/.webhook-env` on the EC2 instance (git-ignored).
-
-### iOS Shortcut Setup
-
-1. **Shortcuts** app → **+** → **Add Action** → **"Get Contents of URL"**
-2. URL: `http://<IP>:9090/run`
-3. Method: GET
-4. Headers → Add: `Authorization` = `Bearer <TOKEN>`
-5. Add to Home Screen for one-tap trigger
-
-> **Security note:** The webhook accepts only `Authorization: Bearer <token>` header
-> authentication. Query-string tokens (`?token=...`) are not supported — they leak
-> into server logs, proxy logs, and browser history.
 
 ## Manual Operations
 
@@ -175,7 +174,7 @@ TTL: 1 hour. Automatically released on completion (success or failure).
 Every run is tagged with `<hostname>/<trigger>`:
 - `ip-172-31-5-42/cron` — EC2 scheduled run
 - `Harshits-MacBook/manual` — local manual run
-- `ip-172-31-5-42/webhook` — iPhone-triggered via HTTP
+- `ip-172-31-5-42/webhook` — privately triggered webhook run
 
 Visible in: log lines, Notion "Runner" column, S3 run history.
 
@@ -205,10 +204,7 @@ chmod 400 ~/.ssh/<KEY>.pem
 # 2. Provision EC2 + IAM
 ./deploy/provision.sh --key-name <KEY>
 
-# 3. Open webhook port
-./deploy/open-webhook-port.sh
-
-# 4. Deploy code + setup + cron + webhook
+# 3. Deploy code + setup + cron + loopback-only webhook
 ./deploy/deploy.sh
 ```
 
@@ -227,7 +223,7 @@ All scripts are idempotent — safe to re-run on failure.
 | `webhook.py` | HTTP server for remote triggering (/run, /status, /logs) |
 | `webhook.service` | systemd unit for webhook auto-restart |
 | `install-webhook.sh` | Generates auth token, installs systemd service |
-| `open-webhook-port.sh` | Adds port 9090 to security group |
+| `open-webhook-port.sh` | Refuses unsafe public ingress for port 9090 |
 | `.instance-info` | Auto-generated, git-ignored — instance ID/IP/key |
 | `.webhook-env` | Auto-generated, git-ignored — webhook auth token |
 

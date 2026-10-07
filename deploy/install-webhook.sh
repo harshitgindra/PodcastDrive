@@ -28,19 +28,8 @@ sudo systemctl restart podcastdrive-webhook
 
 echo "  Webhook service started."
 
-# --- Print access info ---
-TOKEN=$(grep WEBHOOK_TOKEN "$ENV_FILE" | cut -d= -f2-)
-IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "<IP>")
+# Do not print or return the bearer token. Access must remain local or tunneled.
 echo ""
-echo "==========================================="
-echo "🔗 Webhook ready!"
-echo "==========================================="
-echo ""
-echo "  Trigger:  curl http://${IP}:9090/run?token=${TOKEN}"
-echo "  Status:   curl http://${IP}:9090/status?token=${TOKEN}"
-echo "  Logs:     curl http://${IP}:9090/logs?token=${TOKEN}"
-echo "  Health:   curl http://${IP}:9090/health  (no auth needed)"
-echo ""
-echo "  Token: ${TOKEN}"
-echo "  (saved in ${ENV_FILE})"
-echo "==========================================="
+echo "Webhook service restarted and bound to loopback."
+echo "Access it through SSM port forwarding; do not expose TCP/9090 publicly."
+echo "Token remains in ${ENV_FILE} with mode 0600."
