@@ -288,11 +288,13 @@ class TestGetAllForProfile:
         assert {"property": "Profile", "select": {"equals": "Harshit"}} in filters
         assert {"property": "Delete", "checkbox": {"equals": False}} in filters
 
-    def test_returns_empty_on_failure(self):
+    def test_raises_on_failure(self):
+        from mediasync.notion_client import NotionError
+
         client = NotionClient("token", "db-id")
         with patch.object(client, "_post", return_value=None):
-            entries = client.get_all_for_profile("Harshit")
-        assert entries == []
+            with pytest.raises(NotionError, match="Failed to query MediaSync entries"):
+                client.get_all_for_profile("Harshit")
 
 
 class TestPlaylistSyncIntegration:

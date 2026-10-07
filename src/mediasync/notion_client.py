@@ -38,6 +38,10 @@ MAX_QUERY_PAGES = 200
 NOTION_VERSION = "2022-06-28"
 
 
+class NotionError(RuntimeError):
+    """Raised when a required Notion read or write fails."""
+
+
 class Format(Enum):
     AUDIO = "audio"
     VIDEO = "video"
@@ -82,7 +86,8 @@ class NotionClient:
         """Fetch rows with Status=pending (or empty) and Delete=false.
 
         Sort order: Priority ascending when the database actually has a Priority
-        number column, then created_time ascending.
+        number column, then created_time ascending. Failure to read the optional
+        database schema only disables Priority sorting; query failures are fatal.
 
         Priority is an optional column (see the README).  This used to be handled
         by always sending the sort and retrying without it when Notion answered
@@ -104,7 +109,10 @@ class NotionClient:
         if self._has_priority_column():
             sorts.append({"property": "Priority", "direction": "ascending"})
         sorts.append({"timestamp": "created_time", "direction": "ascending"})
-        return self._query(filter_obj=filter_obj, sorts=sorts) or []
+        result = self._query(filter_obj=filter_obj, sorts=sorts)
+        if result is None:
+            raise NotionError("Failed to query pending MediaSync entries")
+        return result
 
     def _has_priority_column(self) -> bool:
         """True when the database has a sortable Priority number column.
@@ -115,7 +123,11 @@ class NotionClient:
         """
         if self._priority_sortable is None:
             schema = self._get(f"{NOTION_API}/databases/{self._db_id}")
-            prop = (schema or {}).get("properties", {}).get("Priority", {})
+            if schema is None:
+                logger.warning("Could not read Notion database schema; skipping optional Priority sort")
+                self._priority_sortable = False
+                return False
+            prop = schema.get("properties", {}).get("Priority", {})
             self._priority_sortable = prop.get("type") == "number"
             if not self._priority_sortable:
                 logger.debug("No Priority number column on this database — sorting by created_time only")
@@ -123,18 +135,21 @@ class NotionClient:
 
     def get_deletions(self) -> list[MediaEntry]:
         """Fetch rows marked for deletion that have been processed."""
-        return self._query(
+        result = self._query(
             filter_obj={
                 "and": [
                     {"property": "Delete", "checkbox": {"equals": True}},
                     {"property": "Status", "select": {"equals": "done"}},
                 ]
             }
-        ) or []
+        )
+        if result is None:
+            raise NotionError("Failed to query MediaSync deletions")
+        return result
 
     def get_done_for_profile(self, profile: str) -> list[MediaEntry]:
         """Fetch all done entries for a profile (for deduplication)."""
-        return self._query(
+        result = self._query(
             filter_obj={
                 "and": [
                     {"property": "Profile", "select": {"equals": profile}},
@@ -142,7 +157,10 @@ class NotionClient:
                     {"property": "Delete", "checkbox": {"equals": False}},
                 ]
             }
-        ) or []
+        )
+        if result is None:
+            raise NotionError(f"Failed to query done MediaSync entries for profile {profile!r}")
+        return result
 
     def update_status(
         self,
@@ -168,11 +186,12 @@ class NotionClient:
                 "date": {"start": datetime.now(timezone.utc).isoformat()}
             }
 
-        self._patch(f"{NOTION_API}/pages/{page_id}", {"properties": properties})
+        if self._patch(f"{NOTION_API}/pages/{page_id}", {"properties": properties}) is None:
+            raise NotionError(f"Failed to update Notion page {page_id}")
 
     def get_processed(self) -> list[MediaEntry]:
         """Fetch all rows with Status=done or Status=failed (for reset)."""
-        return self._query(
+        result = self._query(
             filter_obj={
                 "and": [
                     {"or": [
@@ -182,11 +201,14 @@ class NotionClient:
                     {"property": "Delete", "checkbox": {"equals": False}},
                 ]
             }
-        ) or []
+        )
+        if result is None:
+            raise NotionError("Failed to query processed MediaSync entries")
+        return result
 
     def reset_status(self, page_id: str) -> None:
         """Clear status and processing metadata so the entry is re-processed."""
-        self._patch(f"{NOTION_API}/pages/{page_id}", {
+        result = self._patch(f"{NOTION_API}/pages/{page_id}", {
             "properties": {
                 "Status": {"select": None},
                 "File Key": {"rich_text": []},
@@ -195,10 +217,13 @@ class NotionClient:
                 "Processed At": {"date": None},
             }
         })
+        if result is None:
+            raise NotionError(f"Failed to reset Notion page {page_id}")
 
     def archive_page(self, page_id: str) -> None:
         """Archive a page after deletion processing."""
-        self._patch(f"{NOTION_API}/pages/{page_id}", {"archived": True})
+        if self._patch(f"{NOTION_API}/pages/{page_id}", {"archived": True}) is None:
+            raise NotionError(f"Failed to archive Notion page {page_id}")
 
     def create_entry(self, url: str, profile: str, fmt: Format) -> str | None:
         """Create a new pending entry in Notion. Returns page_id or None on failure."""
@@ -219,14 +244,17 @@ class NotionClient:
 
     def get_all_for_profile(self, profile: str) -> list[MediaEntry]:
         """Fetch all non-deleted entries for a profile (any status)."""
-        return self._query(
+        result = self._query(
             filter_obj={
                 "and": [
                     {"property": "Profile", "select": {"equals": profile}},
                     {"property": "Delete", "checkbox": {"equals": False}},
                 ]
             }
-        ) or []
+        )
+        if result is None:
+            raise NotionError(f"Failed to query MediaSync entries for profile {profile!r}")
+        return result
 
     def _query(
         self,
@@ -272,7 +300,9 @@ class NotionClient:
                 break
 
         if has_more and page_num >= MAX_QUERY_PAGES:
-            logger.warning("Notion pagination hit the %d-page limit — results may be truncated", MAX_QUERY_PAGES)
+            raise NotionError(
+                f"Notion query exceeded the {MAX_QUERY_PAGES}-page safety limit; refusing incomplete results"
+            )
 
         return entries
 

@@ -8,6 +8,7 @@ import pytest
 from mediasync.notion_client import (
     Format,
     NotionClient,
+    NotionError,
     Status,
 )
 
@@ -162,15 +163,15 @@ class TestQuery:
         second_payload = mock_post.call_args_list[1][0][1]
         assert second_payload["start_cursor"] == "cursor-1"
 
-    def test_api_failure_returns_empty(self, client):
+    def test_api_failure_raises_instead_of_looking_empty(self, client):
         with patch.object(client, "_post", return_value=None):
-            entries = client.get_pending()
-        assert entries == []
+            with pytest.raises(NotionError, match="Failed to query pending"):
+                client.get_pending()
 
 
 class TestUpdateStatus:
     def test_update_to_downloading(self, client):
-        with patch.object(client, "_patch") as mock_patch:
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
             client.update_status("page-123", Status.DOWNLOADING)
 
         call_args = mock_patch.call_args[0]
@@ -179,7 +180,7 @@ class TestUpdateStatus:
         assert "Processed At" not in payload["properties"]
 
     def test_update_to_done_includes_timestamp(self, client):
-        with patch.object(client, "_patch") as mock_patch:
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
             client.update_status(
                 "page-123", Status.DONE, file_key="/MediaSync/h/audio/t.m4a", duration=180
             )
@@ -192,7 +193,7 @@ class TestUpdateStatus:
         assert "Processed At" in props
 
     def test_update_to_failed_with_error(self, client):
-        with patch.object(client, "_patch") as mock_patch:
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
             client.update_status("page-123", Status.FAILED, error="Network timeout")
 
         payload = mock_patch.call_args[0][1]
@@ -201,7 +202,7 @@ class TestUpdateStatus:
 
     def test_error_truncated_to_2000_chars(self, client):
         long_error = "x" * 5000
-        with patch.object(client, "_patch") as mock_patch:
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
             client.update_status("page-123", Status.FAILED, error=long_error)
 
         payload = mock_patch.call_args[0][1]
@@ -211,12 +212,17 @@ class TestUpdateStatus:
 
 class TestArchivePage:
     def test_archives_page(self, client):
-        with patch.object(client, "_patch") as mock_patch:
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
             client.archive_page("page-123")
 
         call_args = mock_patch.call_args[0]
         assert call_args[1] == {"archived": True}
         assert "page-123" in call_args[0]
+
+    def test_archive_failure_raises(self, client):
+        with patch.object(client, "_patch", return_value=None):
+            with pytest.raises(NotionError, match="Failed to archive"):
+                client.archive_page("page-123")
 
 
 class TestHttpMethods:
@@ -317,7 +323,8 @@ class TestPaginationBounds:
         response = {"results": [], "has_more": True, "next_cursor": "always-more"}
 
         with patch.object(client, "_post", return_value=response) as mock_post:
-            client.get_pending()
+            with pytest.raises(NotionError, match="safety limit"):
+                client.get_pending()
 
         assert mock_post.call_count == MAX_QUERY_PAGES
 
