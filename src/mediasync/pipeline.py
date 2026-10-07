@@ -238,10 +238,7 @@ def _reconcile_playlist_with_storage(
 
             # Lazy-load folder listing
             if remote_folder not in folder_contents:
-                try:
-                    folder_contents[remote_folder] = storage.list_folder(remote_folder)
-                except Exception:
-                    folder_contents[remote_folder] = set()
+                folder_contents[remote_folder] = storage.list_folder(remote_folder)
 
             filename = f"{title}.{ext}"
             if filename not in folder_contents[remote_folder]:

@@ -252,8 +252,8 @@ class TestReconcilePlaylist:
         assert "MediaSync/Harshit/audio/Song.m4a" in file_keys[0]
 
     @patch("mediasync.pipeline._fetch_playlist_items_metadata")
-    def test_reconcile_playlist_list_folder_exception(self, mock_fetch, config):
-        """Cover lines 240-241: exception from list_folder falls back to empty set."""
+    def test_reconcile_playlist_list_folder_exception_propagates(self, mock_fetch, config):
+        """A storage outage must not be treated as a missing playlist folder."""
         from mediasync.pipeline import _reconcile_playlist_with_storage
 
         mock_fetch.return_value = [
@@ -272,11 +272,10 @@ class TestReconcilePlaylist:
         storage = MagicMock()
         storage.list_folder.side_effect = Exception("network error")
 
-        # Track.m4a won't be in the empty set, so returns None
-        result = _reconcile_playlist_with_storage(
-            "https://youtube.com/playlist?list=PLxyz", entry, storage, config
-        )
-        assert result is None
+        with pytest.raises(Exception, match="network error"):
+            _reconcile_playlist_with_storage(
+                "https://youtube.com/playlist?list=PLxyz", entry, storage, config
+            )
 
     @patch("mediasync.pipeline._fetch_playlist_items_metadata")
     def test_reconcile_playlist_progress_logging(self, mock_fetch, config):
