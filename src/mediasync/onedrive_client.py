@@ -154,7 +154,11 @@ class OneDriveClient:
             remote_path: Full path on OneDrive.
 
         Returns:
-            True if the file exists, False otherwise.
+            True if the file exists, False if it is missing. API failures raise
+            OneDriveError so callers never mistake an outage for a missing file.
+
+        Raises:
+            OneDriveError: If the API request or token refresh fails.
         """
         encoded_path = urllib.parse.quote(remote_path)
         url = f"{GRAPH_API}/me/drive/root:/{encoded_path}"
@@ -170,16 +174,23 @@ class OneDriveClient:
             if exc.code == 401:
                 self._access_token = self._refresh_access_token()
                 return self.file_exists(remote_path)
-            return False
-        except Exception:
-            return False
+            raise OneDriveError(
+                f"File existence check failed for {remote_path}: HTTP {exc.code}"
+            ) from exc
+        except OneDriveError:
+            raise
+        except Exception as exc:
+            raise OneDriveError(f"File existence check failed for {remote_path}: {exc}") from exc
 
     def list_folder(self, remote_folder: str) -> set[str]:
         """List filenames in a remote folder on OneDrive.
 
         Returns:
-            Set of filenames (not full paths) in the folder.
-            Returns empty set if the folder doesn't exist or on error.
+            Set of filenames (not full paths) in the folder. A missing folder
+            returns an empty set.
+
+        Raises:
+            OneDriveError: If the listing or token refresh fails.
         """
         encoded_path = urllib.parse.quote(remote_folder)
         url: str | None = (
@@ -202,9 +213,15 @@ class OneDriveClient:
                 if exc.code == 401:
                     self._access_token = self._refresh_access_token()
                     return self.list_folder(remote_folder)
-                return filenames
-            except Exception:
-                return filenames
+                if exc.code == 404:
+                    return set()
+                raise OneDriveError(
+                    f"Folder listing failed for {remote_folder}: HTTP {exc.code}"
+                ) from exc
+            except OneDriveError:
+                raise
+            except Exception as exc:
+                raise OneDriveError(f"Folder listing failed for {remote_folder}: {exc}") from exc
 
         return filenames
 

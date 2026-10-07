@@ -171,6 +171,25 @@ class TestUpload:
                 client.upload(test_file, "folder", "file.m4a")
 
 
+class TestFileExistsErrors:
+    def test_404_returns_false(self, make_client):
+        client = make_client()
+        with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError("url", 404, "Not Found", {}, None)):
+            assert client.file_exists("missing/file.m4a") is False
+
+    def test_server_error_raises(self, make_client):
+        client = make_client()
+        with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError("url", 503, "Unavailable", {}, None)):
+            with pytest.raises(OneDriveError, match="HTTP 503"):
+                client.file_exists("some/file.m4a")
+
+    def test_network_error_raises(self, make_client):
+        client = make_client()
+        with patch("urllib.request.urlopen", side_effect=OSError("network timeout")):
+            with pytest.raises(OneDriveError, match="network timeout"):
+                client.file_exists("some/file.m4a")
+
+
 class TestDelete:
     def test_successful_delete(self, make_client):
         client = make_client()

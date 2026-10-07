@@ -106,22 +106,30 @@ class TestListFolder:
         assert result == {"file.m4a"}
 
     @patch("urllib.request.urlopen")
-    def test_non_401_http_error_returns_partial(self, mock_urlopen, make_client):
+    def test_non_401_http_error_raises(self, mock_urlopen, make_client):
         client = make_client()
 
         http_err = urllib.error.HTTPError("url", 500, "Server Error", {}, None)
         mock_urlopen.side_effect = http_err
 
-        result = client.list_folder("MediaSync/audio")
-        assert result == set()
+        from mediasync.onedrive_client import OneDriveError
+        with pytest.raises(OneDriveError, match="HTTP 500"):
+            client.list_folder("MediaSync/audio")
 
     @patch("urllib.request.urlopen")
-    def test_generic_exception_returns_empty(self, mock_urlopen, make_client):
+    def test_404_returns_empty_set(self, mock_urlopen, make_client):
+        client = make_client()
+        mock_urlopen.side_effect = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        assert client.list_folder("MediaSync/audio") == set()
+
+    @patch("urllib.request.urlopen")
+    def test_generic_exception_raises(self, mock_urlopen, make_client):
         client = make_client()
 
         mock_urlopen.side_effect = OSError("network")
-        result = client.list_folder("MediaSync/audio")
-        assert result == set()
+        from mediasync.onedrive_client import OneDriveError
+        with pytest.raises(OneDriveError, match="network"):
+            client.list_folder("MediaSync/audio")
 
 
 class TestSimpleUploadRetry:
