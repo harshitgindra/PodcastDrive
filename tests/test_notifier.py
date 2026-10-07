@@ -70,7 +70,7 @@ class TestFormatMessage:
         monkeypatch.setenv("RUNNER", "test")
         results = [{"name": "Acquired", "new_episodes": 2, "failed": 0, "splice_failed": 1}]
         msg = _format_message(results, elapsed_secs=30, status="success")
-        assert "⚠️ Acquired — 1 splice failed (ads not removed, will retry)" in msg
+        assert "⚠️ Acquired — 1 splice failed (not published, will retry)" in msg
         assert "1 splice failed" in msg.splitlines()[-1]
 
     def test_splice_failure_downgrades_a_successful_run(self, monkeypatch):

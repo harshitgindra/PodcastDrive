@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import settings
-from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads
+from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
 from downloader import download_and_convert
 from extractor import BotDetectedError, ExtractionError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
@@ -170,6 +170,7 @@ def process_playlist(
         skipped_old = 0
         skipped_unavailable = 0
         failed_count = 0
+        ad_removal_failed_count = 0
         bot_detected = False
 
         for i, video in enumerate(candidates):
@@ -243,25 +244,57 @@ def process_playlist(
                     tmp_dir,
                 )
 
-                # Remove ads (falls back to original file on failure)
-                logger.info("[Step 4] Running ad removal for %s", video.video_id)
                 original_mp3 = mp3_path
-                mp3_path, ad_segments, episode_summary = remove_ads(
-                    mp3_path,
-                    video.video_id,
-                    tmp_dir,
-                    episode_title=video.title,
-                    duration_secs=video.duration,
-                    # No cache_namespace: YouTube video ids are already globally
-                    # unique, so the flat cache layout cannot collide here.
-                )
+                # Validate the downloaded original before using it as any fallback.
+                # A failed probe means we cannot safely claim it is playable.
+                valid_audio, invalid_reason = validate_audio_file(mp3_path)
+                if not valid_audio:
+                    raise RuntimeError(f"downloaded audio failed validation: {invalid_reason}")
 
-                # Track ad removal status, upload_date, and optional AI summary in manifest
+                # Remove ads. If a processing stage returns an error sentinel and
+                # keeps the original path, publish that validated original instead.
+                logger.info("[Step 4] Running ad removal for %s", video.video_id)
+                try:
+                    mp3_path, ad_segments, episode_summary = remove_ads(
+                        mp3_path,
+                        video.video_id,
+                        tmp_dir,
+                        episode_title=video.title,
+                        duration_secs=video.duration,
+                        # No cache_namespace: YouTube video ids are already globally
+                        # unique, so the flat cache layout cannot collide here.
+                    )
+                except Exception as exc:
+                    if os.path.getsize(original_mp3) <= 0:
+                        raise
+                    mp3_path = original_mp3
+                    ad_segments = []
+                    episode_summary = f"REMOVE_ADS_EXCEPTION:{type(exc).__name__}"
+
+                # A processing sentinel with the original still selected means
+                # detection/removal failed. Upload the validated original with no
+                # ad-removed title marker; preserve the failure reason in manifest.
+                ad_removal_failed = (
+                    (episode_summary in REMOVE_ADS_ERROR_CODES or episode_summary.startswith("REMOVE_ADS_EXCEPTION:"))
+                    and mp3_path == original_mp3
+                )
+                if ad_removal_failed:
+                    logger.error(
+                        "[Step 4] Ad removal failed for %s (%s); publishing validated original without suffix",
+                        video.video_id,
+                        episode_summary,
+                    )
                 ads_were_removed = bool(ad_segments) and mp3_path != original_mp3
-                manifest.setdefault(video.video_id, {})["ads_removed"] = ads_were_removed
-                manifest[video.video_id]["upload_date"] = video.upload_date
+                video_manifest = manifest.setdefault(video.video_id, {})
+                video_manifest["ads_removed"] = ads_were_removed
+                video_manifest["ad_removal_failed"] = ad_removal_failed
+                video_manifest["upload_date"] = video.upload_date
+                if ad_removal_failed:
+                    video_manifest["ad_removal_fail_reason"] = episode_summary
+                else:
+                    video_manifest.pop("ad_removal_fail_reason", None)
                 if episode_summary and episode_summary not in REMOVE_ADS_ERROR_CODES:
-                    manifest[video.video_id]["summary"] = episode_summary
+                    video_manifest["summary"] = episode_summary
 
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if mp3_path != original_mp3:
@@ -291,6 +324,8 @@ def process_playlist(
                 s3.upload_episode(mp3_path, video.video_id, max_age_days)
                 os.remove(mp3_path)
                 manifest[video.video_id]["size"] = file_size
+                if ad_removal_failed:
+                    ad_removal_failed_count += 1
                 new_count += 1
 
                 logger.info("[Step 4] Done %s (%d downloaded so far)", video.video_id, new_count)
@@ -405,6 +440,7 @@ def process_playlist(
             "feed_failed": feed_failed,
             "feed_omitted_ids": sorted(feed_omitted_ids),
             "bot_detected": bot_detected,
+            "ad_removal_failed": ad_removal_failed_count,
             "total_episodes": len(final_keys),
             "elapsed_seconds": round(elapsed, 1),
         }

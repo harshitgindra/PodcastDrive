@@ -162,6 +162,7 @@ class TestProcessPlaylistHappyPath:
             patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)),
             patch("sync.extract_video_metadata", return_value=meta),
             patch("sync.download_and_convert") as mock_dl,
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
             patch("sync.shutil.rmtree"),
@@ -192,6 +193,7 @@ class TestProcessPlaylistHappyPath:
             "feed_failed",
             "feed_omitted_ids",
             "bot_detected",
+            "ad_removal_failed",
             "total_episodes",
             "elapsed_seconds",
         }
@@ -294,6 +296,7 @@ class TestProcessPlaylistAgeFiltering:
                 },
             ),
             patch("sync.download_and_convert") as mock_dl,
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
             patch("sync.shutil.rmtree"),
@@ -328,6 +331,7 @@ class TestProcessPlaylistAgeFiltering:
                 },
             ),
             patch("sync.download_and_convert") as mock_dl,
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
             patch("sync.shutil.rmtree"),
@@ -418,6 +422,7 @@ class TestProcessPlaylistSleep:
                     },
                 ),
                 patch("sync.download_and_convert") as mock_dl,
+                patch("sync.validate_audio_file", return_value=(True, "")),
                 patch("sync.remove_ads", side_effect=lambda p, *a, **kw: (p, [], "")),
                 patch("sync.build_episode_metadata", return_value=[]),
                 patch("sync.generate_rss", return_value="<rss/>"),
@@ -457,6 +462,7 @@ class TestProcessPlaylistSleep:
                     },
                 ),
                 patch("sync.download_and_convert") as mock_dl,
+                patch("sync.validate_audio_file", return_value=(True, "")),
                 patch("sync.remove_ads", side_effect=lambda p, *a, **kw: (p, [], "")),
                 patch("sync.build_episode_metadata", return_value=[]),
                 patch("sync.generate_rss", return_value="<rss/>"),
@@ -896,6 +902,7 @@ class TestProcessPlaylistSummaryIntegration:
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
             patch("sync.extract_video_metadata", return_value=meta),
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.remove_ads", side_effect=fake_remove_ads),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
@@ -928,6 +935,7 @@ class TestProcessPlaylistSummaryIntegration:
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
             patch("sync.extract_video_metadata", return_value=meta),
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "Great episode summary")),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
@@ -963,6 +971,7 @@ class TestProcessPlaylistSummaryIntegration:
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
             patch("sync.extract_video_metadata", return_value=meta),
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
@@ -999,6 +1008,7 @@ class TestProcessPlaylistSummaryIntegration:
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
             patch("sync.extract_video_metadata", return_value=meta),
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], error_code)),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
@@ -1040,6 +1050,7 @@ class TestExtractionFaultAccounting:
             patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)),
             patch("sync.extract_video_metadata", side_effect=metadata_side_effect),
             patch("sync.download_and_convert") as mock_dl,
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
             patch("sync.shutil.rmtree"),
@@ -1167,6 +1178,7 @@ class TestPublishedSizeIsPersisted:
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
             patch("sync.extract_video_metadata", return_value=meta),
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", side_effect=generate_rss),
@@ -1251,6 +1263,7 @@ class TestFeedOmissionsAreReported:
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
             patch("sync.extract_video_metadata", return_value=meta),
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
             patch("sync.build_episode_metadata", side_effect=fake_build),
             patch("sync.generate_rss", return_value="<rss/>"),
@@ -1395,3 +1408,69 @@ class TestUnreadableManifestFailsClosed:
         with caplog.at_level(logging.ERROR, logger="sync"):
             self._run()
         assert "Manifest unreadable" in caplog.text
+
+
+class TestAdRemovalFallbackPublication:
+    def _run(self, tmp_path, *, remove_ads_result=None, remove_ads_error=None, valid=True, upload_error=None):
+        video = _make_video("vid-fallback")
+        playlist_meta = _make_playlist_meta()
+        original = tmp_path / "vid-fallback.mp3"
+        original.write_bytes(b"validated-original-audio")
+        if remove_ads_error:
+            remove_ads_effect = RuntimeError(remove_ads_error)
+        else:
+            remove_ads_effect = None
+        with (
+            patch.dict(os.environ, BASE_ENV, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value={
+                "upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": video.title,
+            }),
+            patch("sync.download_and_convert", return_value=str(original)),
+            patch("sync.validate_audio_file", return_value=(valid, "invalid media")),
+            patch("sync.remove_ads", return_value=remove_ads_result or (str(original), [], "TRANSCRIBE_FAILED"), side_effect=remove_ads_effect) as mock_remove,
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
+            s3 = _make_s3_manager()
+            s3.load_manifest.return_value = {}
+            if upload_error:
+                s3.upload_episode.side_effect = RuntimeError(upload_error)
+            mock_s3_cls.return_value = s3
+            result = process_playlist("https://youtube.com/playlist?list=PLtest")
+        return result, s3, mock_remove, original
+
+    def test_error_sentinel_publishes_validated_original_and_records_warning(self, tmp_path):
+        result, s3, remove_ads, original = self._run(tmp_path)
+        assert result["new_episodes"] == 1
+        assert result["ad_removal_failed"] == 1
+        assert result["failed"] == 0
+        s3.upload_episode.assert_called_once_with(str(original), "vid-fallback", 30)
+        saved = s3.save_manifest.call_args[0][0]
+        assert saved["vid-fallback"]["ad_removal_failed"] is True
+        assert saved["vid-fallback"]["ads_removed"] is False
+        remove_ads.assert_called_once()
+
+    def test_exception_publishes_validated_original(self, tmp_path):
+        result, s3, _, original = self._run(tmp_path, remove_ads_error="bedrock unavailable")
+        assert result["ad_removal_failed"] == 1
+        s3.upload_episode.assert_called_once_with(str(original), "vid-fallback", 30)
+
+    def test_invalid_original_fails_closed(self, tmp_path):
+        result, s3, remove_ads, _ = self._run(tmp_path, valid=False)
+        assert result["new_episodes"] == 0
+        assert result["failed"] == 1
+        assert result["ad_removal_failed"] == 0
+        s3.upload_episode.assert_not_called()
+        remove_ads.assert_not_called()
+
+    def test_upload_failure_remains_failure(self, tmp_path):
+        result, s3, _, _ = self._run(tmp_path, upload_error="S3 unavailable")
+        assert result["new_episodes"] == 0
+        assert result["failed"] == 1
+        assert result["ad_removal_failed"] == 0
+        s3.upload_episode.assert_called_once()

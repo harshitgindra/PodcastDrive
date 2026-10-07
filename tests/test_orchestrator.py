@@ -138,6 +138,7 @@ class TestSuccessStatus:
             ({"bot_detected": False}, "Done"),
             ({"splice_failed": 2}, "Splice Failed"),
             ({"splice_failed": 0}, "Done"),
+            ({"ad_removal_failed": 2}, "Ad Removal Warning"),
             ({"failed": 1}, "Failed"),
             ({"new_episodes": 2, "failed": 1}, "Failed"),
             ({"failed": 1, "splice_failed": 1}, "Failed"),
@@ -218,6 +219,7 @@ class TestRunOne:
                 "failed": 1,
                 "unavailable": 0,
                 "splice_failed": 0,
+                "ad_removal_failed": 0,
                 "bot_detected": False,
             }
         ]

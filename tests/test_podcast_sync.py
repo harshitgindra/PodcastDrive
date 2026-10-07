@@ -6,7 +6,9 @@ import os
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from config_provider import PodcastConfig
 from podcast_downloader import EpisodeMeta
@@ -19,7 +21,7 @@ from podcast_sync import (
     detect_cdn,
     process_podcast_feed,
 )
-from s3_manager import ManifestUnavailableError
+from s3_manager import ManifestUnavailableError, S3Manager
 
 # ---------------------------------------------------------------------------
 # _podcast_slug
@@ -910,7 +912,7 @@ class TestSpliceRetryCount:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
-            patch("podcast_sync.download_episode", return_value=str(original)),
+            patch("podcast_sync.download_episode", side_effect=lambda *args: (original.write_bytes(b"ID3"), str(original))[1]),
             # Both attempts return ads found but original path (splice failed)
             patch("podcast_sync.remove_ads", return_value=(str(original), [{"start": 0, "end": 5}], "")),
         ):
@@ -921,8 +923,11 @@ class TestSpliceRetryCount:
             process_podcast_feed(podcast, dry_run=False)
 
         saved = mock_s3.save_manifest.call_args[0][0]
-        assert saved["guid-1"]["splice_failed"] is True
-        assert saved["guid-1"]["splice_failed_count"] == 2  # 1 previous + 1 this run
+        # The validated original is now published after retries are exhausted,
+        # so this is a warning rather than an unpublished splice failure.
+        assert saved["guid-1"]["splice_failed"] is False
+        assert saved["guid-1"]["ad_removal_failed"] is True
+        assert saved["guid-1"]["splice_failed_count"] == 1  # no unpublished retry increment
 
 
 class TestSpliceResetExhausted:
@@ -1263,7 +1268,7 @@ class TestCdnTagInManifest:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-cdn2"),
             patch("podcast_sync.S3Manager") as MockS3,
-            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.download_episode", side_effect=lambda *args: (fake_mp3.write_bytes(b"ID3"), str(fake_mp3))[1]),
             # Detection finds ads but splice keeps returning the original path -> splice_failed
             patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [{"start": 0, "end": 5}], "")),
         ):
@@ -1276,8 +1281,10 @@ class TestCdnTagInManifest:
 
         saved = mock_s3.save_manifest.call_args[0][0]
         assert saved["guid-cdn2"]["cdn"] == "acast"
-        assert saved["guid-cdn2"]["splice_failed"] is True
-        assert "splice crashed" in saved["guid-cdn2"]["fail_reason"]
+        # The validated original is published after splice retries are exhausted.
+        assert saved["guid-cdn2"]["splice_failed"] is False
+        assert saved["guid-cdn2"]["ad_removal_failed"] is True
+        assert "splice failed" in saved["guid-cdn2"]["ad_removal_fail_reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -1340,7 +1347,7 @@ class TestFfprobeValidationRetry:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-bad2"),
             patch("podcast_sync.S3Manager") as MockS3,
-            patch("podcast_sync.download_episode", return_value=str(fake_mp3)),
+            patch("podcast_sync.download_episode", side_effect=lambda *args: (fake_mp3.write_bytes(b"ID3"), str(fake_mp3))[1]),
             patch("podcast_sync.validate_audio_file", return_value=(False, "zero/negative duration (0)")),
             patch("podcast_sync.remove_ads") as mock_remove_ads,
         ):
@@ -1352,10 +1359,8 @@ class TestFfprobeValidationRetry:
             process_podcast_feed(podcast, provider=None, dry_run=False)
 
         mock_remove_ads.assert_not_called()
-        saved = mock_s3.save_manifest.call_args[0][0]
-        assert saved["guid-bad2"]["splice_failed"] is True
-        assert "download validation failed" in saved["guid-bad2"]["fail_reason"]
-        assert "size" not in saved["guid-bad2"]  # never uploaded
+        mock_s3.upload_episode.assert_not_called()
+        mock_s3.save_manifest.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1705,6 +1710,31 @@ class TestManifestSaveFailureIsReported:
         assert result["manifest_failed"] is False
         assert result["failed"] == 0
         provider.update_status.assert_called_once_with(podcast, "Done")
+
+    def test_fallback_publication_sets_ad_removal_warning_status(self, tmp_path):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-warning", "Fallback episode")
+        original = tmp_path / "guid-warning.mp3"
+        original.write_bytes(b"validated-original")
+        provider = MagicMock()
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-warning"),
+            patch("podcast_sync.S3Manager") as mock_s3_cls,
+            patch("podcast_sync.download_episode", return_value=str(original)),
+            patch("podcast_sync.remove_ads", return_value=(str(original), [], "TRANSCRIBE_FAILED")),
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>"),
+        ):
+            s3 = mock_s3_cls.return_value
+            s3.list_existing_episodes.return_value = set()
+            s3.load_manifest.return_value = {}
+            s3.save_manifest.return_value = True
+            process_podcast_feed(podcast, provider=provider, dry_run=False)
+
+        provider.update_status.assert_called_once_with(podcast, "Ad Removal Warning")
 
     def test_refused_save_sets_failed_status(self):
         _, provider, podcast = self._run(save_result=False)
@@ -2107,3 +2137,115 @@ class TestSpliceRetryAgeBypass:
         # Exactly one NEW episode admitted under the cap of 1.
         new_processed = [e for e in processed if e.startswith("guid-n")]
         assert len(new_processed) == 1
+
+
+class TestAdRemovalFallbackPublication:
+    def _run(self, tmp_path, *, result=None, exception=None, valid=True, upload_error=None):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-fallback", "Fallback episode")
+        original = tmp_path / "guid-fallback.mp3"
+        original.write_bytes(b"validated-original-audio")
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", return_value="guid-fallback"),
+            patch("podcast_sync.S3Manager") as mock_s3_cls,
+            patch("podcast_sync.download_episode", side_effect=lambda *args: (original.write_bytes(b"validated-original-audio"), str(original))[1]),
+            patch("podcast_sync.validate_audio_file", return_value=(valid, "invalid media")),
+            patch("podcast_sync.remove_ads", return_value=result or (str(original), [], "TRANSCRIBE_FAILED"), side_effect=exception) as mock_remove,
+            patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>") as mock_build,
+        ):
+            s3 = mock_s3_cls.return_value
+            s3.list_existing_episodes.return_value = set()
+            s3.load_manifest.return_value = {}
+            s3.save_manifest.return_value = True
+            if upload_error:
+                s3.upload_episode.side_effect = RuntimeError(upload_error)
+            response = process_podcast_feed(podcast, dry_run=False)
+        return response, s3, mock_remove, original, mock_build
+
+    def test_error_sentinel_publishes_original_and_feed_without_suffix(self, tmp_path):
+        response, s3, _, original, mock_build = self._run(tmp_path)
+        assert response["new_episodes"] == 1
+        assert response["ad_removal_failed"] == 1
+        assert response["failed"] == 0
+        s3.upload_episode.assert_called_once_with(str(original), "guid-fallback", 7)
+        saved = s3.save_manifest.call_args[0][0]
+        assert saved["guid-fallback"]["ad_removal_failed"] is True
+        assert saved["guid-fallback"]["ads_removed"] is False
+        assert saved["guid-fallback"]["ad_removal_fail_reason"] == "TRANSCRIBE_FAILED: 0 ad segment(s) detected"
+        mock_build.assert_called_once()
+        feed_manifest = mock_build.call_args.kwargs["manifest"]
+        assert feed_manifest["guid-fallback"]["ad_removal_failed"] is True
+        assert feed_manifest["guid-fallback"]["ads_removed"] is False
+
+    def test_exception_publishes_validated_original(self, tmp_path):
+        response, s3, _, original, _ = self._run(tmp_path, exception=RuntimeError("transcribe down"))
+        assert response["ad_removal_failed"] == 1
+        s3.upload_episode.assert_called_once_with(str(original), "guid-fallback", 7)
+
+    def test_invalid_original_does_not_upload(self, tmp_path):
+        response, s3, remove_ads, _, _ = self._run(tmp_path, valid=False)
+        assert response["new_episodes"] == 0
+        assert response["failed"] == 1
+        assert response["ad_removal_failed"] == 0
+        s3.upload_episode.assert_not_called()
+        remove_ads.assert_not_called()
+
+    def test_upload_failure_is_not_treated_as_fallback_success(self, tmp_path):
+        response, s3, _, _, _ = self._run(tmp_path, upload_error="S3 unavailable")
+        assert response["new_episodes"] == 0
+        assert response["failed"] == 1
+        assert response["ad_removal_failed"] == 0
+        s3.upload_episode.assert_called_once()
+
+
+class TestAdRemovalFallbackS3Integration:
+    """Run the actual RSS publication and feed builder against Moto S3."""
+
+    def test_fallback_audio_manifest_and_feed_are_published_together(self, tmp_path, monkeypatch):
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-fallback-integration", "Fallback integration episode")
+        audio = b"validated-source-audio-with-ad-removal-unavailable"
+        source_audio = tmp_path / "fallback-integration.mp3"
+        monkeypatch.setenv("EPISODE_AD_REMOVED_SUFFIX", " [Ad-Free]")
+
+        with mock_aws():
+            client = boto3.client("s3", region_name="us-east-1")
+            client.create_bucket(Bucket="test-bucket")
+            manager = S3Manager(bucket="test-bucket", playlist_id="test-podcast")
+            manager.s3_client = client
+            manager._ping_overcast = lambda: None
+
+            with (
+                patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+                patch("podcast_sync.fetch_feed_xml", return_value=b"<rss><channel/></rss>"),
+                patch("podcast_sync.parse_episodes", return_value=[ep]),
+                patch("podcast_sync.episode_id_from_guid", return_value="guid-fallback-integration"),
+                patch("podcast_sync.S3Manager", return_value=manager),
+                patch(
+                    "podcast_sync.download_episode",
+                    side_effect=lambda *args: (source_audio.write_bytes(audio), str(source_audio))[1],
+                ),
+                patch("podcast_sync.validate_audio_file", return_value=(True, "")),
+                patch("podcast_sync.remove_ads", return_value=(str(source_audio), [], "TRANSCRIBE_FAILED")),
+                patch("podcast_sync.shutil.rmtree"),
+            ):
+                result = process_podcast_feed(podcast, provider=None, dry_run=False)
+
+            episode_key = "test-podcast/episodes/guid-fallback-integration.mp3"
+            stored_audio = client.get_object(Bucket="test-bucket", Key=episode_key)["Body"].read()
+            manifest = manager.load_manifest()
+            feed = client.get_object(Bucket="test-bucket", Key="test-podcast/feed.xml")["Body"].read().decode()
+
+        assert result["new_episodes"] == 1
+        assert result["ad_removal_failed"] == 1
+        assert result["failed"] == 0
+        assert stored_audio == audio
+        assert manifest["guid-fallback-integration"]["ad_removal_failed"] is True
+        assert manifest["guid-fallback-integration"]["ads_removed"] is False
+        assert manifest["guid-fallback-integration"]["ad_removal_fail_reason"].startswith("TRANSCRIBE_FAILED:")
+        assert "Fallback integration episode</title>" in feed
+        assert "Fallback integration episode [Ad-Free]" not in feed
+        assert "guid-fallback-integration.mp3" in feed

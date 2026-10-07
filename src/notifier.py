@@ -69,6 +69,7 @@ def _format_message(
     total_new = 0
     total_failed = 0
     total_splice_failed = 0
+    total_ad_removal_failed = 0
     total_unavailable = 0
 
     for r in results:
@@ -76,6 +77,7 @@ def _format_message(
         new = r.get("new_episodes", 0)
         failed = r.get("failed", 0)
         splice_failed = r.get("splice_failed", 0)
+        ad_removal_failed = r.get("ad_removal_failed", 0)
         unavailable = r.get("unavailable", 0)
         bot = r.get("bot_detected", False)
         error_msg = r.get("error")
@@ -83,6 +85,7 @@ def _format_message(
         total_new += new
         total_failed += failed
         total_splice_failed += splice_failed
+        total_ad_removal_failed += ad_removal_failed
         total_unavailable += unavailable
 
         if error_msg:
@@ -90,9 +93,11 @@ def _format_message(
         elif bot:
             lines.append(f"⚠️ {name} — bot detected")
         elif splice_failed > 0:
-            lines.append(f"⚠️ {name} — {splice_failed} splice failed (ads not removed, will retry)")
+            lines.append(f"⚠️ {name} — {splice_failed} splice failed (not published, will retry)")
         elif failed > 0:
             lines.append(f"❌ {name} — {failed} failed, {new} new")
+        elif ad_removal_failed > 0:
+            lines.append(f"⚠️ {name} — {new} new, {ad_removal_failed} published with ads (removal failed)")
         elif unavailable > 0:
             # Never report this as "up to date": a run that skipped every episode
             # as unavailable is the signature of degraded extraction.
@@ -103,13 +108,15 @@ def _format_message(
             lines.append(f"— {name} — up to date")
 
     # Footer
-    healthy = status == "success" and total_splice_failed == 0 and total_unavailable == 0
+    healthy = status == "success" and total_splice_failed == 0 and total_ad_removal_failed == 0 and total_unavailable == 0
     status_emoji = "✅" if healthy else "⚠️"
     summary_parts = [f"{total_new} downloaded"]
     if total_failed:
         summary_parts.append(f"{total_failed} failed")
     if total_splice_failed:
         summary_parts.append(f"{total_splice_failed} splice failed")
+    if total_ad_removal_failed:
+        summary_parts.append(f"{total_ad_removal_failed} published with ads")
     if total_unavailable:
         summary_parts.append(f"{total_unavailable} unavailable")
     lines.append(f"\n{status_emoji} {', '.join(summary_parts)}")

@@ -640,10 +640,16 @@ def process_podcast_feed(
             ad_segments: list = []
             summary = ""
             splice_failed = False
+            download_validation_failed = False
             fail_reason = ""
+            ad_removal_failed = False
 
             try:
                 for attempt in range(1, _splice_max_attempts + 1):
+                    download_validation_failed = False
+                    splice_failed = False
+                    ad_removal_failed = False
+                    fail_reason = ""
                     if attempt > 1:
                         logger.info(
                             "[PodcastSync] Retrying with fresh download for %s (attempt %d/%d, cdn=%s)",
@@ -659,7 +665,7 @@ def process_podcast_feed(
                     # fetch before paying for Transcribe + Bedrock.
                     is_valid, invalid_reason = validate_audio_file(original_path)
                     if not is_valid:
-                        splice_failed = True
+                        download_validation_failed = True
                         fail_reason = f"download validation failed: {invalid_reason}"
                         logger.warning(
                             "[PodcastSync] Downloaded file failed ffprobe validation for %s "                             "on attempt %d/%d (cdn=%s): %s%s",
@@ -676,45 +682,89 @@ def process_podcast_feed(
                         "[PodcastSync] Running ad removal for %s (attempt %d/%d, cdn=%s)",
                         ep_id, attempt, _splice_max_attempts, cdn,
                     )
-                    cleaned_path, ad_segments, summary = remove_ads(
-                        original_path,
-                        ep_id,
-                        tmp_dir,
-                        ad_hints=podcast.ad_hints,
-                        trim_music_intro=podcast.trim_music_intro,
-                        trim_music_outro=podcast.trim_music_outro,
-                        min_music_intro_secs=podcast.min_music_intro_secs,
-                        min_music_outro_secs=podcast.min_music_outro_secs,
-                        episode_title=ep.title,
-                        duration_secs=ep.duration,
-                        cache_namespace=slug,
-                    )
+                    try:
+                        cleaned_path, ad_segments, summary = remove_ads(
+                            original_path,
+                            ep_id,
+                            tmp_dir,
+                            ad_hints=podcast.ad_hints,
+                            trim_music_intro=podcast.trim_music_intro,
+                            trim_music_outro=podcast.trim_music_outro,
+                            min_music_intro_secs=podcast.min_music_intro_secs,
+                            min_music_outro_secs=podcast.min_music_outro_secs,
+                            episode_title=ep.title,
+                            duration_secs=ep.duration,
+                            cache_namespace=slug,
+                        )
+                    except Exception as exc:
+                        if not os.path.isfile(original_path) or os.path.getsize(original_path) <= 0:
+                            raise
+                        cleaned_path = original_path
+                        ad_segments = []
+                        summary = ""
+                        error_code = "REMOVE_ADS_EXCEPTION"
+                        fail_reason = f"{error_code}: {type(exc).__name__}: {exc}"
+                        if attempt < _splice_max_attempts:
+                            logger.warning(
+                                "[PodcastSync] Ad removal raised for %s on attempt %d/%d (%s) — retrying",
+                                ep_id, attempt, _splice_max_attempts, fail_reason,
+                            )
+                            continue
+                        ad_removal_failed = True
+                        logger.exception(
+                            "[PodcastSync] Ad removal raised for %s after %d attempt(s); "
+                            "publishing validated original without the ad-removed suffix",
+                            ep_id,
+                            attempt,
+                        )
+                        break
 
                     splice_failed = bool(ad_segments) and cleaned_path == original_path
-                    if not splice_failed:
-                        break  # success — exit retry loop
+                    error_code = summary if summary in REMOVE_ADS_ERROR_CODES else ""
+                    if cleaned_path != original_path and error_code:
+                        # Do not discard a valid cleaned output merely because
+                        # summary generation failed afterwards.
+                        logger.warning(
+                            "[PodcastSync] Ad-removal stage returned %s after producing cleaned output for %s; "
+                            "publishing the cleaned output",
+                            error_code,
+                            ep_id,
+                        )
+                        summary = ""
+                        error_code = ""
+                    if splice_failed or error_code:
+                        fail_reason = (
+                            f"{error_code}: {len(ad_segments)} ad segment(s) detected"
+                            if error_code
+                            else f"splice failed ({len(ad_segments)} ads detected; original returned)"
+                        )
+                        if splice_failed and attempt < _splice_max_attempts:
+                            logger.warning(
+                                "[PodcastSync] Splice failed for %s on attempt %d/%d (cdn=%s, reason=%s) "
+                                "— retrying with a fresh download",
+                                ep_id, attempt, _splice_max_attempts, cdn, fail_reason,
+                            )
+                            continue
 
-                    fail_reason = f"splice crashed ({len(ad_segments)} ads detected but original returned)"
-                    logger.warning(
-                        "[PodcastSync] Splice failed for %s on attempt %d/%d (cdn=%s) "                         "(%d ads detected but original returned)%s",
-                        ep_id,
-                        attempt,
-                        _splice_max_attempts,
-                        cdn,
-                        len(ad_segments),
-                        " — will retry with fresh download" if attempt < _splice_max_attempts else " — all attempts exhausted",
-                    )
+                        # The original passed validation before ad removal. Keep it
+                        # as the safe publication fallback after the final retry.
+                        ad_removal_failed = True
+                        cleaned_path = original_path
+                        logger.error(
+                            "[PodcastSync] Ad removal failed for %s after %d attempt(s) (cdn=%s, reason=%s) "
+                            "— publishing the validated original without the ad-removed suffix",
+                            ep_id, attempt, cdn, fail_reason,
+                        )
+                        break
 
-                if splice_failed:
-                    # All attempts exhausted — do NOT upload the original with ads.
-                    # The episode is absent from S3, so the next scheduled run will
-                    # naturally re-queue it (up to the cross-run MAX_SPLICE_RETRIES cap).
-                    logger.error(
-                        "[PodcastSync] Splice permanently failed for %s after %d attempt(s) (cdn=%s, reason=%s) "                         "— episode will NOT be published until splice succeeds",
-                        ep_id, _splice_max_attempts, cdn, fail_reason,
-                    )
-                    # cleaned_path == original_path here (that's the splice-failed
-                    # detection criterion), so only the original download needs removing.
+                    break  # success — exit retry loop
+
+                if download_validation_failed:
+                    ad_removal_failed = False
+                    splice_failed = False
+                if download_validation_failed and not ad_removal_failed:
+                    # Exhausted download validation retries have no safe original
+                    # to publish, so do not upload their last invalid bytes.
                     if original_path and os.path.exists(original_path):
                         with contextlib.suppress(OSError):
                             os.remove(original_path)
@@ -723,7 +773,7 @@ def process_podcast_feed(
                         "ep": ep,
                         "ep_id": ep_id,
                         "uploaded": False,
-                        "splice_failed": True,
+                        "download_validation_failed": True,
                         "ads_detected": len(ad_segments),
                         "cdn": cdn,
                         "fail_reason": fail_reason,
@@ -771,6 +821,8 @@ def process_podcast_feed(
                     "summary": summary,
                     "ads_removed": ads_removed,
                     "splice_failed": False,
+                    "ad_removal_failed": ad_removal_failed,
+                    "fail_reason": fail_reason,
                     "cdn": cdn,
                 }
 
@@ -787,6 +839,7 @@ def process_podcast_feed(
         logger.info("[PodcastSync] Processing %d candidate(s) with %d worker(s)", len(candidates), workers)
 
         splice_failed_this_run = 0
+        ad_removal_failed_this_run = 0
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_process_episode, ep, ep_id): (ep, ep_id) for ep, ep_id in candidates}
@@ -805,16 +858,34 @@ def process_podcast_feed(
                             "duration": ep.duration,
                             "ads_removed": result.get("ads_removed", False),
                             "splice_failed": False,
+                            "ad_removal_failed": bool(result.get("ad_removal_failed", False)),
                             # Preserve historical count so the exhaustion cap still works
                             "splice_failed_count": _prev_fail_count,
                             "cdn": result.get("cdn", "unknown"),
                         }
+                        if result.get("ad_removal_failed"):
+                            manifest[ep_id]["ad_removal_fail_reason"] = result.get("fail_reason", "")
+                            ad_removal_failed_this_run += 1
+                        else:
+                            manifest[ep_id].pop("ad_removal_fail_reason", None)
                         if result.get("summary") and result["summary"] not in REMOVE_ADS_ERROR_CODES:
                             manifest[ep_id]["summary"] = result["summary"]
                         new_count += 1
                         uploaded_pairs.append((ep, ep_id))
+                elif result["ok"] and result.get("download_validation_failed"):
+                    # The downloaded bytes remained invalid after fresh-download
+                    # retries, so there is no safe original to publish. Preserve
+                    # any prior published manifest metadata without marking a
+                    # splice failure or clearing its historical size/ad state.
+                    with manifest_lock:
+                        failed_count += 1
+                        logger.error(
+                            "[PodcastSync] Not publishing %s: %s",
+                            result["ep_id"],
+                            result.get("fail_reason", "download validation failed"),
+                        )
                 elif result["ok"] and result.get("splice_failed"):
-                    # Splice failed after all per-run attempts — episode NOT uploaded.
+                    # Legacy/unexpected splice failure without an original fallback.
                     # Write attempt count to manifest so the cross-run cap is enforced.
                     # Episode is absent from S3, so the next run naturally re-queues it.
                     with manifest_lock:
@@ -1030,6 +1101,8 @@ def process_podcast_feed(
                 status = "Failed"
             elif reported_splice_failed > 0:
                 status = "Splice Failed"
+            elif ad_removal_failed_this_run > 0:
+                status = "Ad Removal Warning"
             elif new_count > 0:
                 status = "Done"
             else:
@@ -1042,12 +1115,13 @@ def process_podcast_feed(
 
         elapsed = time.monotonic() - _run_start
         logger.info(
-            "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d splice_failed=%d "
+            "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d ad_removal_failed=%d splice_failed=%d "
             "splice_exhausted=%d feed_failed=%s manifest_save_failed=%s feed_omitted=%d elapsed=%.1fs",
             slug,
             new_count,
             skipped,
             reported_failed,
+            ad_removal_failed_this_run,
             splice_failed_this_run,
             len(_splice_exhausted),
             feed_failed,
@@ -1061,6 +1135,7 @@ def process_podcast_feed(
             "skipped": skipped,
             "failed": reported_failed,
             "episodes_failed": failed_count,
+            "ad_removal_failed": ad_removal_failed_this_run,
             "splice_failed": reported_splice_failed,
             "splice_failed_this_run": splice_failed_this_run,
             "splice_exhausted": len(_splice_exhausted),
