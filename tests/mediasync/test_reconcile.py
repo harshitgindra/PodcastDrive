@@ -94,6 +94,94 @@ class TestReconcileWithStorage:
         )
 
     @patch("mediasync.pipeline.get_metadata")
+    def test_storage_lookup_failure_propagates(self, mock_meta, audio_entry, config):
+        from mediasync.s3_client import S3Error
+
+        mock_meta.return_value = {"title": "Song", "uploader": "Artist", "duration": 120}
+        mock_storage = MagicMock()
+        mock_storage.file_exists.side_effect = S3Error("access denied")
+
+        with pytest.raises(S3Error, match="access denied"):
+            _reconcile_with_storage(
+                "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
+            )
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            {"title": "Song", "uploader": None, "channel": "Channel"},
+            {"title": "Song", "uploader": None},
+        ],
+    )
+    @patch("mediasync.pipeline.get_metadata")
+    def test_optional_artist_fields_fall_back_to_channel_or_unknown(
+        self, mock_meta, audio_entry, config, meta
+    ):
+        mock_meta.return_value = meta
+        storage = MagicMock()
+        storage.file_exists.return_value = True
+
+        result = _reconcile_with_storage(
+            "https://youtube.com/watch?v=abc123", audio_entry, storage, config
+        )
+
+        assert result is not None
+        expected_artist = meta.get("channel") or "Unknown"
+        expected_folder = (
+            f"MediaSync/Harshit/audio/{expected_artist}/Song.m4a"
+            if expected_artist != "Unknown"
+            else "MediaSync/Harshit/audio/Song.m4a"
+        )
+        assert result[0] == [expected_folder]
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            None,
+            {"title": 123},
+            {"title": "Song", "uploader": [], "channel": 7},
+            {"title": "Song", "duration": "NaN"},
+            {"title": "Song", "duration": -1},
+        ],
+    )
+    @patch("mediasync.pipeline.get_metadata")
+    def test_invalid_single_item_metadata_falls_back_to_download(
+        self, mock_meta, audio_entry, config, meta
+    ):
+        mock_meta.return_value = meta
+        assert _reconcile_with_storage(
+            "https://youtube.com/watch?v=abc123", audio_entry, MagicMock(), config
+        ) is None
+
+    @patch("mediasync.pipeline.get_metadata")
+    def test_invalid_metadata_does_not_escape_reconciliation(self, mock_meta, audio_entry, config):
+        """Malformed metadata must fall through to normal download handling, not abort the run."""
+        mock_meta.return_value = {"title": "Song", "duration": "LIVE"}
+
+        result = _reconcile_with_storage(
+            "https://youtube.com/watch?v=abc123", audio_entry, MagicMock(), config
+        )
+
+        assert result is None
+
+    @patch("mediasync.pipeline.get_metadata")
+    def test_empty_uploader_uses_channel_path_from_download_naming(
+        self, mock_meta, audio_entry, config
+    ):
+        mock_meta.return_value = {
+            "title": "Song", "uploader": "", "channel": "Channel", "duration": 120,
+        }
+        storage = MagicMock()
+        storage.file_exists.return_value = True
+
+        result = _reconcile_with_storage(
+            "https://youtube.com/watch?v=abc123", audio_entry, storage, config
+        )
+
+        assert result == (["MediaSync/Harshit/audio/Channel/Song.m4a"], 120)
+        storage.file_exists.assert_called_once_with("MediaSync/Harshit/audio/Channel/Song.m4a")
+
+    @patch("mediasync.pipeline.get_metadata")
     def test_returns_none_when_file_missing(self, mock_meta, audio_entry, config):
         mock_meta.return_value = {
             "title": "Missing Song",
@@ -184,6 +272,35 @@ class TestReconcileWithStorage:
         file_keys, duration = result
         assert len(file_keys) == 2
         assert duration == 420
+
+    @patch("mediasync.pipeline.get_full_playlist_metadata")
+    def test_invalid_playlist_metadata_returns_reconciliation_miss(
+        self, mock_full_meta, audio_entry, config
+    ):
+        mock_full_meta.return_value = [
+            {"title": "Song 1", "uploader": "Artist", "duration": "LIVE"},
+        ]
+
+        result = _reconcile_with_storage(
+            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, MagicMock(), config
+        )
+
+        assert result is None
+
+    @patch("mediasync.pipeline.get_full_playlist_metadata")
+    def test_reconciles_playlist_listing_failure_propagates(self, mock_full_meta, audio_entry, config):
+        from mediasync.s3_client import S3Error
+
+        mock_full_meta.return_value = [
+            {"title": "Song 1", "uploader": "Artist A", "duration": 180},
+        ]
+        mock_storage = MagicMock()
+        mock_storage.list_folder.side_effect = S3Error("permission denied")
+
+        with pytest.raises(S3Error, match="permission denied"):
+            _reconcile_with_storage(
+                "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
+            )
 
     @patch("mediasync.pipeline.get_full_playlist_metadata")
     def test_reconciles_playlist_item_missing(self, mock_full_meta, audio_entry, config):
@@ -350,6 +467,22 @@ class TestPlaylistReconciliationOptimizations:
         # list_folder called (not file_exists)
         mock_storage.list_folder.assert_called()
         mock_storage.file_exists.assert_not_called()
+
+    @patch("mediasync.pipeline.get_full_playlist_metadata")
+    @patch("mediasync.pipeline.get_playlist_metadata")
+    @patch("mediasync.pipeline.get_metadata")
+    def test_invalid_full_playlist_metadata_uses_flat_fallback(
+        self, _mock_meta, mock_flat_meta, mock_full_meta, audio_entry, config
+    ):
+        from mediasync.pipeline import _fetch_playlist_items_metadata
+
+        mock_full_meta.return_value = [None]
+        mock_flat_meta.return_value = []
+        result = _fetch_playlist_items_metadata(audio_entry.url)
+
+        assert result is None
+        mock_full_meta.assert_called_once()
+        mock_flat_meta.assert_called_once_with(audio_entry.url)
 
     @patch("mediasync.pipeline.get_full_playlist_metadata")
     @patch("mediasync.pipeline.get_playlist_metadata")

@@ -64,11 +64,12 @@ class TestGetPlaylistMetadata:
 
     @patch("mediasync.downloader.cookie_args", return_value=[])
     @patch("subprocess.run")
-    def test_empty_output_raises(self, mock_run, mock_cookies):
+    @pytest.mark.parametrize("stdout", ["", "not-json", "[]"])
+    def test_empty_or_malformed_output_raises(self, mock_run, mock_cookies, stdout):
         mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
+            args=[], returncode=0, stdout=stdout, stderr=""
         )
-        with pytest.raises(DownloadError, match="empty or unavailable"):
+        with pytest.raises(DownloadError):
             get_playlist_metadata("https://youtube.com/playlist?list=PL123")
 
 
@@ -108,15 +109,26 @@ class TestGetFullPlaylistMetadata:
 
     @patch("mediasync.downloader.cookie_args", return_value=[])
     @patch("subprocess.run")
-    def test_bad_json_skipped(self, mock_run, mock_cookies):
-        """Cover line that catches JSONDecodeError."""
+    @pytest.mark.parametrize(
+        "stdout",
+        ['{"id":"a"}\nnot-json\n{"id":"b"}', '[]', 'null'],
+    )
+    def test_malformed_or_non_object_json_raises(self, mock_run, mock_cookies, stdout):
         mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0,
-            stdout='{"id":"a"}\nnot-json\n{"id":"b"}',
-            stderr="",
+            args=[], returncode=0, stdout=stdout, stderr=""
         )
-        result = get_full_playlist_metadata("https://youtube.com/playlist?list=PL123")
-        assert len(result) == 2
+        with pytest.raises(DownloadError, match="invalid JSON|non-object"):
+            get_full_playlist_metadata("https://youtube.com/playlist?list=PL123")
+
+    @pytest.mark.parametrize("method", [get_playlist_metadata, get_full_playlist_metadata])
+    @pytest.mark.parametrize("side_effect", [
+        subprocess.TimeoutExpired("yt-dlp", 120),
+        FileNotFoundError("yt-dlp missing"),
+    ])
+    def test_process_failures_raise_download_error(self, method, side_effect):
+        with patch("subprocess.run", side_effect=side_effect):
+            with pytest.raises(DownloadError, match="metadata fetch failed"):
+                method("https://youtube.com/playlist?list=PL123")
 
 
 class TestIsLeftoverForStem:

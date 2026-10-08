@@ -57,10 +57,24 @@ class TestGetMetadata:
             with pytest.raises(DownloadError, match="Metadata fetch failed"):
                 get_metadata("https://youtube.com/watch?v=bad")
 
-    def test_metadata_timeout(self):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("yt-dlp", 60)):
-            with pytest.raises(subprocess.TimeoutExpired):
+    @pytest.mark.parametrize(
+        ("side_effect", "message"),
+        [
+            (subprocess.TimeoutExpired("yt-dlp", 60), "Metadata fetch failed"),
+            (FileNotFoundError("yt-dlp missing"), "Metadata fetch failed"),
+        ],
+    )
+    def test_process_failure_raises_download_error(self, side_effect, message):
+        with patch("subprocess.run", side_effect=side_effect):
+            with pytest.raises(DownloadError, match=message):
                 get_metadata("https://youtube.com/watch?v=slow")
+
+    @pytest.mark.parametrize("stdout", ["not-json", "[]", "null", "123"])
+    def test_invalid_metadata_json_raises_download_error(self, stdout):
+        result = MagicMock(returncode=0, stdout=stdout, stderr="")
+        with patch("subprocess.run", return_value=result):
+            with pytest.raises(DownloadError, match="Metadata fetch"):
+                get_metadata("https://youtube.com/watch?v=bad-json")
 
 
 class TestDownload:

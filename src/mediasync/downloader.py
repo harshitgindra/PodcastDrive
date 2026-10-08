@@ -98,10 +98,18 @@ def get_metadata(url: str) -> dict:
     cmd += cookie_args()
     cmd += remote_component_args()
     cmd.append(url)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DownloadError(f"Metadata fetch failed: {exc}") from exc
     if result.returncode != 0:
         raise DownloadError(f"Metadata fetch failed: {result.stderr[:500]}")
-    meta = json.loads(result.stdout)
+    try:
+        meta = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise DownloadError(f"Metadata fetch returned invalid JSON: {exc}") from exc
+    if not isinstance(meta, dict):
+        raise DownloadError("Metadata fetch returned a non-object JSON value")
     _metadata_cache[url] = meta
     return meta
 
@@ -124,14 +132,27 @@ def get_playlist_metadata(url: str) -> list[dict]:
     cmd += cookie_args()
     cmd += remote_component_args()
     cmd.append(url)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DownloadError(f"Playlist metadata fetch failed: {exc}") from exc
     if result.returncode != 0:
         raise DownloadError(f"Playlist metadata fetch failed: {result.stderr[:500]}")
 
     entries = []
-    for line in result.stdout.strip().splitlines():
+    for line_number, line in enumerate(result.stdout.strip().splitlines(), 1):
         if line.strip():
-            entries.append(json.loads(line))
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise DownloadError(
+                    f"Playlist metadata returned invalid JSON on line {line_number}: {exc}"
+                ) from exc
+            if not isinstance(item, dict):
+                raise DownloadError(
+                    f"Playlist metadata returned a non-object on line {line_number}"
+                )
+            entries.append(item)
     if not entries:
         raise DownloadError("Playlist is empty or unavailable")
     return entries
@@ -162,17 +183,25 @@ def get_full_playlist_metadata(url: str) -> list[dict]:
     cmd += remote_component_args()
     cmd.append(url)
     # Full resolution is slower; allow up to 10 minutes for large playlists
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DownloadError(f"Full playlist metadata fetch failed: {exc}") from exc
     if result.returncode != 0:
         raise DownloadError(f"Full playlist metadata fetch failed: {result.stderr[:500]}")
 
     entries = []
-    for line in result.stdout.strip().splitlines():
+    for line_number, line in enumerate(result.stdout.strip().splitlines(), 1):
         if line.strip():
             try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise DownloadError(
+                    f"Full playlist metadata returned invalid JSON on line {line_number}: {exc}"
+                ) from exc
+            if not isinstance(item, dict):
+                raise DownloadError("Full playlist metadata returned a non-object JSON value")
+            entries.append(item)
     if not entries:
         raise DownloadError("Playlist is empty or unavailable")
     return entries

@@ -157,9 +157,36 @@ def _reconcile_with_storage(
     except DownloadError:
         return None  # Can't reconcile without metadata; proceed to download
 
-    title = _sanitize_title(meta.get("title", "untitled"))
-    artist = meta.get("uploader") or meta.get("channel") or "Unknown"
-    duration = int(meta.get("duration") or 0)
+    try:
+        return _reconcile_single_metadata(meta, entry, storage, config)
+    except DownloadError:
+        # Invalid metadata must not abort the whole run; let download handle it
+        # as an item-level failure (or succeed if its own extraction can recover).
+        logger.warning("Cannot reconcile invalid metadata for %s", url)
+        return None
+
+
+def _reconcile_single_metadata(
+    meta: dict, entry: MediaEntry, storage: StorageBackend, config: Config
+) -> tuple[list[str], int] | None:
+    if not isinstance(meta, dict):
+        raise DownloadError("Metadata fetch returned a non-object JSON value")
+
+    title_value = meta.get("title", "untitled")
+    if not isinstance(title_value, str):
+        raise DownloadError("Metadata fetch returned an invalid title")
+    title = _sanitize_title(title_value)
+    artist_value = meta.get("uploader") or meta.get("channel") or "Unknown"
+    if not isinstance(artist_value, str):
+        raise DownloadError("Metadata fetch returned an invalid artist")
+    artist = artist_value
+    duration_value = meta.get("duration") or 0
+    try:
+        duration = int(duration_value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DownloadError("Metadata fetch returned an invalid duration") from exc
+    if duration < 0:
+        raise DownloadError("Metadata fetch returned a negative duration")
 
     formats_to_check: list[str] = []
     if entry.format in (Format.AUDIO, Format.BOTH):
@@ -222,38 +249,74 @@ def _reconcile_playlist_with_storage(
     total_duration = 0
 
     for idx, meta in enumerate(items_meta, 1):
-        title = _sanitize_title(meta.get("title", "untitled"))
-        artist = meta.get("uploader") or meta.get("channel") or "Unknown"
-        duration = int(meta.get("duration") or 0)
+        try:
+            item_keys, duration = _reconcile_playlist_item(
+                idx, meta, formats_to_check, folder_contents, entry, storage, config,
+                len(items_meta),
+            )
+        except DownloadError:
+            logger.warning("Cannot reconcile invalid playlist metadata item %d", idx)
+            return None
+        if item_keys is None:
+            return None
+        file_keys.extend(item_keys)
         total_duration += duration
-
-        for fmt in formats_to_check:
-            ext = "m4a" if fmt == "audio" else "mp4"
-            fmt_folder = fmt
-            if config.group_by_channel and artist and artist != "Unknown":
-                channel = _sanitize_folder_name(artist)
-                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}/{channel}"
-            else:
-                remote_folder = f"{config.prefix}/{entry.profile}/{fmt_folder}"
-
-            # Lazy-load folder listing
-            if remote_folder not in folder_contents:
-                folder_contents[remote_folder] = storage.list_folder(remote_folder)
-
-            filename = f"{title}.{ext}"
-            if filename not in folder_contents[remote_folder]:
-                logger.info(
-                    "Playlist item %d/%d not on storage: %s",
-                    idx, len(items_meta), title,
-                )
-                return None  # At least one item missing; need full download
-            file_keys.append(f"{remote_folder}/{filename}")
-
         if idx % 25 == 0:
             logger.info("Reconciliation progress: %d/%d items verified", idx, len(items_meta))
 
     logger.info("All %d playlist items already on storage", len(items_meta))
     return file_keys, total_duration
+
+
+def _reconcile_playlist_item(
+    idx: int,
+    meta: dict,
+    formats_to_check: list[str],
+    folder_contents: dict[str, set[str]],
+    entry: MediaEntry,
+    storage: StorageBackend,
+    config: Config,
+    item_count: int,
+) -> tuple[list[str] | None, int]:
+    if not isinstance(meta, dict):
+        raise DownloadError(f"Playlist metadata item {idx} is not an object")
+    title_value = meta.get("title", "untitled")
+    if not isinstance(title_value, str):
+        raise DownloadError(f"Playlist metadata item {idx} has an invalid title")
+    title = _sanitize_title(title_value)
+    artist_value = meta.get("uploader") or meta.get("channel") or "Unknown"
+    if not isinstance(artist_value, str):
+        raise DownloadError(f"Playlist metadata item {idx} has an invalid artist")
+    artist = artist_value
+    duration_value = meta.get("duration") or 0
+    try:
+        duration = int(duration_value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DownloadError(f"Playlist metadata item {idx} has an invalid duration") from exc
+    if duration < 0:
+        raise DownloadError(f"Playlist metadata item {idx} has a negative duration")
+
+    item_keys: list[str] = []
+    for fmt in formats_to_check:
+        ext = "m4a" if fmt == "audio" else "mp4"
+        if config.group_by_channel and artist and artist != "Unknown":
+            channel = _sanitize_folder_name(artist)
+            remote_folder = f"{config.prefix}/{entry.profile}/{fmt}/{channel}"
+        else:
+            remote_folder = f"{config.prefix}/{entry.profile}/{fmt}"
+
+        if remote_folder not in folder_contents:
+            folder_contents[remote_folder] = storage.list_folder(remote_folder)
+
+        filename = f"{title}.{ext}"
+        if filename not in folder_contents[remote_folder]:
+            logger.info(
+                "Playlist item %d/%d not on storage: %s", idx, item_count, title,
+            )
+            return None, duration
+        item_keys.append(f"{remote_folder}/{filename}")
+
+    return item_keys, duration
 
 
 def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
@@ -268,6 +331,8 @@ def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
     # Strategy 1: single yt-dlp invocation for full metadata
     try:
         items = get_full_playlist_metadata(url)
+        if not items or any(not isinstance(item, dict) for item in items):
+            raise DownloadError("Full playlist metadata contained no items or a non-object item")
         # Cache each item for potential later download
         for item in items:
             video_url = item.get("webpage_url") or item.get("url", "")
@@ -283,7 +348,7 @@ def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
     except DownloadError:
         return None
 
-    if not flat_items:
+    if not flat_items or any(not isinstance(item, dict) for item in flat_items):
         return None
 
     # Build video URLs from flat metadata
@@ -320,7 +385,7 @@ def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
                 except DownloadError:
                     # One item failed; abort reconciliation
                     return None
-    except Exception:
+    except (DownloadError, OSError, RuntimeError, ValueError):
         return None
 
     # Filter out any None entries (shouldn't happen if we return None above)
