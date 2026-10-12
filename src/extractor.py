@@ -93,7 +93,7 @@ def _looks_like_channel_tabs(entries: list) -> bool:
         if not entry:
             continue
         seen += 1
-        url = entry.get("url") or ""
+        url = _entry_url(entry)
         path = (urlparse(url).path or "").rstrip("/").lower()
         suffix = path.rsplit("/", 1)[-1] if path else ""
         if suffix in _CHANNEL_TAB_SUFFIXES:
@@ -101,6 +101,15 @@ def _looks_like_channel_tabs(entries: list) -> bool:
     # Every real entry is a tab -> this was a channel root, not a video list.
     return seen > 0 and tab_like == seen
 
+
+
+def _entry_url(entry: dict) -> str:
+    """The best URL for a flat entry.
+
+    Channel-tab pseudo-entries carry their tab URL in ``webpage_url`` (``url``
+    is ``None``); ordinary video entries use ``url``.  Prefer whichever is set.
+    """
+    return entry.get("webpage_url") or entry.get("url") or ""
 
 
 def _videos_tab_from_entries(entries: list) -> str:
@@ -114,7 +123,7 @@ def _videos_tab_from_entries(entries: list) -> str:
     for entry in entries:
         if not entry:
             continue
-        url = entry.get("url") or ""
+        url = _entry_url(entry)
         path = (urlparse(url).path or "").rstrip("/").lower()
         if path.rsplit("/", 1)[-1] == "videos":
             return url
@@ -122,7 +131,7 @@ def _videos_tab_from_entries(entries: list) -> str:
     for entry in entries:
         if not entry:
             continue
-        url = entry.get("url") or ""
+        url = _entry_url(entry)
         parsed = urlparse(url)
         path = (parsed.path or "").rstrip("/")
         if not path:

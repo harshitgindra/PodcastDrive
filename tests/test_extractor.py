@@ -825,16 +825,44 @@ class TestNormalizeChannelUrl:
         )
 
 
+def _tab_entry(webpage_url, title):
+    """A channel-tab pseudo-entry exactly as yt-dlp flat-extraction returns it.
+
+    The real shape (confirmed against YouTube) is ``_type='playlist'`` with the
+    channel id in ``id``, ``url=None``, and the tab URL only in ``webpage_url``.
+    A naive ``entry['url']`` check misses these entirely.
+    """
+    return {
+        "_type": "playlist",
+        "id": "UCsDTy8jvHcwMvSZf_JGi-FA",
+        "url": None,
+        "webpage_url": webpage_url,
+        "title": title,
+        "duration": None,
+    }
+
+
 class TestChannelTabsSafetyNet:
     """If yt-dlp still returns channel tabs, re-extract the Videos tab once."""
 
-    def test_looks_like_channel_tabs(self):
+    def test_looks_like_channel_tabs_real_shape(self):
+        """Detect tabs via webpage_url since the real entries have url=None."""
+        from extractor import _looks_like_channel_tabs
+
+        tabs = [
+            _tab_entry("https://www.youtube.com/@x/videos", "X - Videos"),
+            _tab_entry("https://www.youtube.com/@x/streams", "X - Live"),
+            _tab_entry("https://www.youtube.com/@x/shorts", "X - Shorts"),
+        ]
+        assert _looks_like_channel_tabs(tabs) is True
+
+    def test_looks_like_channel_tabs_url_fallback(self):
+        """Still works when a tab carries its URL in ``url`` instead."""
         from extractor import _looks_like_channel_tabs
 
         tabs = [
             {"url": "https://www.youtube.com/@x/videos"},
             {"url": "https://www.youtube.com/@x/live"},
-            {"url": "https://www.youtube.com/@x/shorts"},
         ]
         assert _looks_like_channel_tabs(tabs) is True
 
@@ -853,15 +881,15 @@ class TestChannelTabsSafetyNet:
         from extractor import _videos_tab_from_entries
 
         tabs = [
-            {"url": "https://www.youtube.com/@x/live"},
-            {"url": "https://www.youtube.com/@x/videos"},
+            _tab_entry("https://www.youtube.com/@x/streams", "X - Live"),
+            _tab_entry("https://www.youtube.com/@x/videos", "X - Videos"),
         ]
         assert _videos_tab_from_entries(tabs) == "https://www.youtube.com/@x/videos"
 
     def test_videos_tab_derived_when_no_videos_entry(self):
         from extractor import _videos_tab_from_entries
 
-        tabs = [{"url": "https://www.youtube.com/@x/live"}]
+        tabs = [_tab_entry("https://www.youtube.com/@x/streams", "X - Live")]
         assert _videos_tab_from_entries(tabs) == "https://www.youtube.com/@x/videos"
 
     @patch("extractor.yt_dlp.YoutubeDL")
@@ -869,9 +897,9 @@ class TestChannelTabsSafetyNet:
         tab_result = {
             "title": "Abhi and Niyu",
             "entries": [
-                {"id": "UCchan", "url": "https://www.youtube.com/@abhiandniyu/videos"},
-                {"id": "UCchan", "url": "https://www.youtube.com/@abhiandniyu/live"},
-                {"id": "UCchan", "url": "https://www.youtube.com/@abhiandniyu/shorts"},
+                _tab_entry("https://www.youtube.com/@abhiandniyu/videos", "Abhi - Videos"),
+                _tab_entry("https://www.youtube.com/@abhiandniyu/streams", "Abhi - Live"),
+                _tab_entry("https://www.youtube.com/@abhiandniyu/shorts", "Abhi - Shorts"),
             ],
         }
         videos_result = {
