@@ -530,6 +530,35 @@ class TestRunUrlTarget:
         )
         assert orchestrator.run_url_target("https://yt/playlist?list=PL1", dry_run=False) is True
 
+    def test_bare_channel_root_is_normalized_to_videos_tab(self, notify_file, monkeypatch):
+        """A bare channel root must reach process_playlist as its /videos tab.
+
+        Otherwise yt-dlp flat-extracts the channel tabs (Videos/Live/Shorts) as
+        duration-less entries that the pipeline silently skips.
+        """
+        seen = []
+        provider = FakeProvider(find_result=None)
+        _patch_url_mode(
+            monkeypatch,
+            provider=provider,
+            process_playlist=lambda url, dry_run=False: seen.append(url)
+            or {"playlist_id": "@Chan"},
+        )
+        orchestrator.run_url_target("https://www.youtube.com/@Chan", dry_run=False)
+        assert seen == ["https://www.youtube.com/@Chan/videos"]
+
+    def test_already_tabbed_url_passes_through_unchanged(self, notify_file, monkeypatch):
+        seen = []
+        provider = FakeProvider(find_result=None)
+        _patch_url_mode(
+            monkeypatch,
+            provider=provider,
+            process_playlist=lambda url, dry_run=False: seen.append(url)
+            or {"playlist_id": "@Chan"},
+        )
+        orchestrator.run_url_target("https://www.youtube.com/@Chan/videos", dry_run=False)
+        assert seen == ["https://www.youtube.com/@Chan/videos"]
+
 
 # ---------------------------------------------------------------------------
 # run_youtube_sources

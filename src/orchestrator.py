@@ -226,6 +226,11 @@ def run_url_target(url: str, *, dry_run: bool) -> bool:
     from sync import process_playlist
     from utils import extract_playlist_id
 
+    # Mirror the configured-sources path: a bare channel root/@handle must be
+    # resolved to its /videos tab, or yt-dlp flat-extracts the channel tabs
+    # (Videos/Live/Shorts) as duration-less entries that the pipeline skips.
+    url = normalize_youtube_url(url)
+
     provider = get_config_provider()
 
     # Resolve the playlist id so the URL can be matched to a Notion entry.
