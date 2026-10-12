@@ -735,3 +735,157 @@ class TestExtractPlaylistFailures:
         meta, entries = extract_playlist("https://www.youtube.com/playlist?list=PLtest123")
         assert meta.title == "Empty"
         assert entries == []
+
+
+class TestNormalizeChannelUrl:
+    """A bare channel root must resolve to its /videos tab before extraction.
+
+    yt-dlp flat-extracts a channel root into its tabs (Videos/Live/Shorts) as
+    duration-less pseudo-entries, which the sync pipeline silently skips as
+    live streams.  Resolving to /videos yields the real catalog.
+    """
+
+    def test_handle_root_gets_videos_appended(self):
+        from extractor import _normalize_channel_url
+
+        assert (
+            _normalize_channel_url("https://www.youtube.com/@abhiandniyu")
+            == "https://www.youtube.com/@abhiandniyu/videos"
+        )
+
+    def test_handle_root_trailing_slash(self):
+        from extractor import _normalize_channel_url
+
+        assert (
+            _normalize_channel_url("https://www.youtube.com/@abhiandniyu/")
+            == "https://www.youtube.com/@abhiandniyu/videos"
+        )
+
+    def test_handle_root_preserves_query_string(self):
+        from extractor import _normalize_channel_url
+
+        assert (
+            _normalize_channel_url("https://youtube.com/@abhiandniyu?si=abc123")
+            == "https://youtube.com/@abhiandniyu/videos?si=abc123"
+        )
+
+    def test_channel_id_root(self):
+        from extractor import _normalize_channel_url
+
+        assert (
+            _normalize_channel_url("https://www.youtube.com/channel/UCsDTy8jvHcwMvSZf_JGi-FA")
+            == "https://www.youtube.com/channel/UCsDTy8jvHcwMvSZf_JGi-FA/videos"
+        )
+
+    def test_legacy_c_and_user_roots(self):
+        from extractor import _normalize_channel_url
+
+        assert _normalize_channel_url("https://www.youtube.com/c/SomeName") == (
+            "https://www.youtube.com/c/SomeName/videos"
+        )
+        assert _normalize_channel_url("https://www.youtube.com/user/SomeUser") == (
+            "https://www.youtube.com/user/SomeUser/videos"
+        )
+
+    def test_already_tabbed_url_unchanged(self):
+        from extractor import _normalize_channel_url
+
+        for url in (
+            "https://www.youtube.com/@abhiandniyu/videos",
+            "https://www.youtube.com/@abhiandniyu/shorts",
+            "https://www.youtube.com/@abhiandniyu/streams",
+        ):
+            assert _normalize_channel_url(url) == url
+
+    def test_playlist_url_unchanged(self):
+        from extractor import _normalize_channel_url
+
+        url = "https://www.youtube.com/playlist?list=PLtest123"
+        assert _normalize_channel_url(url) == url
+
+    def test_non_youtube_url_unchanged(self):
+        from extractor import _normalize_channel_url
+
+        url = "https://example.com/@abhiandniyu"
+        assert _normalize_channel_url(url) == url
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_extract_playlist_normalizes_before_calling_ytdlp(self, mock_ydl_cls):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {
+            "title": "Abhi and Niyu - Videos",
+            "entries": [_make_entry()],
+        }
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        extract_playlist("https://www.youtube.com/@abhiandniyu")
+
+        ydl.extract_info.assert_called_once_with(
+            "https://www.youtube.com/@abhiandniyu/videos", download=False
+        )
+
+
+class TestChannelTabsSafetyNet:
+    """If yt-dlp still returns channel tabs, re-extract the Videos tab once."""
+
+    def test_looks_like_channel_tabs(self):
+        from extractor import _looks_like_channel_tabs
+
+        tabs = [
+            {"url": "https://www.youtube.com/@x/videos"},
+            {"url": "https://www.youtube.com/@x/live"},
+            {"url": "https://www.youtube.com/@x/shorts"},
+        ]
+        assert _looks_like_channel_tabs(tabs) is True
+
+    def test_videos_are_not_tabs(self):
+        from extractor import _looks_like_channel_tabs
+
+        vids = [{"url": "https://www.youtube.com/watch?v=nU-zv99vOzY", "id": "nU-zv99vOzY"}]
+        assert _looks_like_channel_tabs(vids) is False
+
+    def test_empty_entries_are_not_tabs(self):
+        from extractor import _looks_like_channel_tabs
+
+        assert _looks_like_channel_tabs([]) is False
+
+    def test_videos_tab_prefers_videos_entry(self):
+        from extractor import _videos_tab_from_entries
+
+        tabs = [
+            {"url": "https://www.youtube.com/@x/live"},
+            {"url": "https://www.youtube.com/@x/videos"},
+        ]
+        assert _videos_tab_from_entries(tabs) == "https://www.youtube.com/@x/videos"
+
+    def test_videos_tab_derived_when_no_videos_entry(self):
+        from extractor import _videos_tab_from_entries
+
+        tabs = [{"url": "https://www.youtube.com/@x/live"}]
+        assert _videos_tab_from_entries(tabs) == "https://www.youtube.com/@x/videos"
+
+    @patch("extractor.yt_dlp.YoutubeDL")
+    def test_reextracts_videos_tab_when_result_is_tabs(self, mock_ydl_cls):
+        tab_result = {
+            "title": "Abhi and Niyu",
+            "entries": [
+                {"id": "UCchan", "url": "https://www.youtube.com/@abhiandniyu/videos"},
+                {"id": "UCchan", "url": "https://www.youtube.com/@abhiandniyu/live"},
+                {"id": "UCchan", "url": "https://www.youtube.com/@abhiandniyu/shorts"},
+            ],
+        }
+        videos_result = {
+            "title": "Abhi and Niyu - Videos",
+            "entries": [_make_entry(video_id="realvid001")],
+        }
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = [tab_result, videos_result]
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        # Pass an already-tabbed URL so the up-front normalizer is a no-op and
+        # the safety net is what triggers the re-extract.
+        meta, videos = extract_playlist("https://www.youtube.com/@abhiandniyu/shorts")
+
+        assert ydl.extract_info.call_count == 2
+        assert videos[0].video_id == "realvid001"
+        assert meta.title == "Abhi and Niyu - Videos"

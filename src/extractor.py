@@ -1,6 +1,7 @@
 """Playlist extraction using yt_dlp for YouTube metadata."""
 
 import logging
+import re
 
 import yt_dlp
 
@@ -11,25 +12,132 @@ from ytdlp_runtime import inject_remote_components
 
 logger = logging.getLogger(__name__)
 
+#: Channel-tab path suffixes.  A bare channel root (``/@handle``,
+#: ``/channel/UC...``, ``/c/name``, ``/user/name``) flat-extracts into these
+#: *tabs* as pseudo-entries (``Videos``/``Live``/``Shorts``), each with no
+#: ``duration`` — which the sync pipeline then skips as if they were live
+#: streams.  Resolving the root to its ``/videos`` tab yields the real catalog.
+_CHANNEL_TAB_SUFFIXES = (
+    "videos",
+    "streams",
+    "shorts",
+    "playlists",
+    "featured",
+    "community",
+    "live",
+    "podcasts",
+    "releases",
+    "courses",
+    "store",
+    "search",
+)
 
-def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]:
-    """Extract basic metadata for all videos in a YouTube playlist.
+#: A bare channel-root path: ``/@handle``, ``/channel/UC...``, ``/c/name`` or
+#: ``/user/name`` with no trailing tab segment.
+_CHANNEL_ROOT_RE = re.compile(
+    r"^/(?:@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)/?$"
+)
 
-    Uses flat extraction to quickly list videos without visiting each one.
-    Fields like ``upload_date`` and ``description`` will be empty — use
-    :func:`extract_video_metadata` to fill them in for specific videos.
+
+def _normalize_channel_url(url: str) -> str:
+    """Append ``/videos`` to a bare YouTube channel-root URL.
+
+    A channel root flat-extracts into tab pseudo-entries rather than videos, so
+    the pipeline sees ``duration=None`` entries and skips them all.  Explicit
+    playlist URLs (``?list=``), already-tabbed channel URLs, and non-YouTube
+    URLs are returned unchanged.
 
     Args:
-        playlist_url: Full YouTube playlist URL.
+        url: The configured playlist/channel URL.
 
     Returns:
-        Tuple of (playlist metadata, list of video entries).
+        The URL, with ``/videos`` appended when it was a bare channel root.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+
+    host = (parsed.netloc or "").lower()
+    if "youtube.com" not in host:
+        return url
+    if "list=" in (parsed.query or ""):
+        return url
+    if not _CHANNEL_ROOT_RE.match(parsed.path or ""):
+        return url
+
+    new_path = parsed.path.rstrip("/") + "/videos"
+    normalized = urlunparse(parsed._replace(path=new_path))
+    logger.info(
+        "Normalized channel root %s -> %s (bare roots list tabs, not videos)",
+        url,
+        normalized,
+    )
+    return normalized
+
+
+def _looks_like_channel_tabs(entries: list) -> bool:
+    """Return ``True`` when flat entries are channel tabs, not videos.
+
+    yt-dlp represents a channel root's tabs as ``url``-type entries whose URL
+    path ends in a tab suffix (``/videos``, ``/shorts``, ...).  Real video
+    entries carry an 11-char watch id and never a tab suffix.
+    """
+    from urllib.parse import urlparse
+
+    tab_like = 0
+    seen = 0
+    for entry in entries:
+        if not entry:
+            continue
+        seen += 1
+        url = entry.get("url") or ""
+        path = (urlparse(url).path or "").rstrip("/").lower()
+        suffix = path.rsplit("/", 1)[-1] if path else ""
+        if suffix in _CHANNEL_TAB_SUFFIXES:
+            tab_like += 1
+    # Every real entry is a tab -> this was a channel root, not a video list.
+    return seen > 0 and tab_like == seen
+
+
+
+def _videos_tab_from_entries(entries: list) -> str:
+    """Return the ``/videos`` tab URL from channel-tab entries, or ``""``.
+
+    Given the tab pseudo-entries of a channel root, prefer the Videos tab;
+    fall back to the first entry's channel-root URL with ``/videos`` appended.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    for entry in entries:
+        if not entry:
+            continue
+        url = entry.get("url") or ""
+        path = (urlparse(url).path or "").rstrip("/").lower()
+        if path.rsplit("/", 1)[-1] == "videos":
+            return url
+    # No explicit Videos tab entry: derive it from any tab URL's channel root.
+    for entry in entries:
+        if not entry:
+            continue
+        url = entry.get("url") or ""
+        parsed = urlparse(url)
+        path = (parsed.path or "").rstrip("/")
+        if not path:
+            continue
+        root = path.rsplit("/", 1)[0] or path
+        return urlunparse(parsed._replace(path=root + "/videos"))
+    return ""
+
+
+def _flat_extract(playlist_url: str) -> dict:
+    """Flat-extract *playlist_url* with yt-dlp and return the result dict.
 
     Raises:
         BotDetectedError: YouTube returned a bot-detection challenge.
-        ExtractionError: yt-dlp returned no playlist data, or failed for a
-            potentially transient reason.  Callers must not treat this as an
-            empty playlist (see sync._orphan_deletion_is_safe).
+        ExtractionError: yt-dlp failed or returned no data (treat as retryable).
     """
     ydl_opts = {
         "quiet": True,
@@ -62,6 +170,48 @@ def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]
             f"yt-dlp returned no playlist data for {playlist_url} "
             "(throttling, an unsolved JS challenge, or a deleted playlist)"
         )
+    return result
+
+
+def extract_playlist(playlist_url: str) -> tuple[PlaylistMeta, list[VideoEntry]]:
+    """Extract basic metadata for all videos in a YouTube playlist.
+
+    Uses flat extraction to quickly list videos without visiting each one.
+    Fields like ``upload_date`` and ``description`` will be empty — use
+    :func:`extract_video_metadata` to fill them in for specific videos.
+
+    Args:
+        playlist_url: Full YouTube playlist URL.
+
+    Returns:
+        Tuple of (playlist metadata, list of video entries).
+
+    Raises:
+        BotDetectedError: YouTube returned a bot-detection challenge.
+        ExtractionError: yt-dlp returned no playlist data, or failed for a
+            potentially transient reason.  Callers must not treat this as an
+            empty playlist (see sync._orphan_deletion_is_safe).
+    """
+    # A bare channel root lists tabs, not videos; resolve it to /videos first.
+    playlist_url = _normalize_channel_url(playlist_url)
+
+    result = _flat_extract(playlist_url)
+
+    # Safety net: if yt-dlp still handed back channel tabs (e.g. the URL was a
+    # channel root in a form the normalizer did not match), re-extract the
+    # Videos tab once so the pipeline sees real episodes instead of skipping
+    # every duration-less tab as a live stream.
+    entries_raw = result.get("entries") or []
+    if _looks_like_channel_tabs(entries_raw):
+        videos_tab = _videos_tab_from_entries(entries_raw)
+        if videos_tab and videos_tab != playlist_url:
+            logger.info(
+                "Playlist %s returned channel tabs; re-extracting Videos tab %s",
+                playlist_url,
+                videos_tab,
+            )
+            playlist_url = videos_tab
+            result = _flat_extract(playlist_url)
 
     playlist_id = extract_playlist_id(playlist_url)
 
