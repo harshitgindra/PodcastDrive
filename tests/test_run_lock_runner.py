@@ -13,6 +13,7 @@ What must hold:
 """
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -173,8 +174,13 @@ class TestLocalFlockGuard:
         script = harness(
             'LOCK_FILE="$SCRIPT_DIR/.podcastdrive.lock"\n' + _block(FLOCK_BLOCK) + "echo GOT-LOCK\n",
         )
-        # /usr/bin:/bin has no flock on macOS (it ships via Homebrew only).
-        result = _run(script, env_extra={"PATH": "/usr/bin:/bin"})
+        # A PATH holding only what the guard needs. /usr/bin:/bin is not enough:
+        # Linux ships flock there via util-linux, so it is only absent on macOS.
+        sandbox_bin = tmp_path / "no-flock-bin"
+        sandbox_bin.mkdir()
+        for tool in ("bash", "mkdir"):
+            (sandbox_bin / tool).symlink_to(shutil.which(tool))
+        result = _run(script, env_extra={"PATH": str(sandbox_bin)})
 
         assert result.returncode == 1
         assert "flock not found" in result.stdout
@@ -450,3 +456,43 @@ class TestSecretPermissionsGuard:
     def test_absent_secrets_are_not_an_error(self, harness, tmp_path):
         result = self._run_guard(harness, tmp_path)
         assert result.returncode == 0
+
+    def test_gnu_stat_does_not_misread_private_secrets(self, harness, tmp_path):
+        """On Linux `stat -f` is filesystem status, not a format flag.
+
+        A fake GNU stat answers `-c '%a'` with the real mode and treats `-f`
+        the way coreutils does: print a filesystem report, then fail. The guard
+        must still see 600 and stay quiet.
+        """
+        real_stat = shutil.which("stat")
+        fake_bin = tmp_path / "gnu-bin"
+        fake_bin.mkdir()
+        _write_script(
+            fake_bin,
+            "stat",
+            textwrap.dedent(f"""\
+                #!/bin/bash
+                if [ "$1" = "-c" ]; then
+                    exec {sys.executable} -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$3"
+                fi
+                if [ "$1" = "-f" ]; then
+                    echo "  File: \\"$3\\""
+                    echo "    ID: 0        Namelen: 255     Type: ext2/ext3"
+                    echo "stat: cannot read file system information for '$2'" >&2
+                    exit 1
+                fi
+                exec {real_stat} "$@"
+                """),
+        )
+        config = tmp_path / "config.env"
+        config.write_text("secret", encoding="utf-8")
+        config.chmod(0o600)
+
+        result = _run(
+            harness(_block(SECRETS_BLOCK)),
+            env_extra={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "Tightened permissions" not in result.stdout
+        assert "Could not tighten" not in result.stdout

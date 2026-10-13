@@ -33,7 +33,11 @@ export LOG_DIR
 # are frequently created by editors or downloads with group/world read bits.
 for SECRET_FILE in "${SCRIPT_DIR}/config.env" "${SCRIPT_DIR}/cookies.txt"; do
     if [ -f "$SECRET_FILE" ]; then
-        SECRET_MODE=$(stat -f '%OLp' "$SECRET_FILE" 2>/dev/null || stat -c '%a' "$SECRET_FILE" 2>/dev/null || echo "")
+        # GNU stat first: GNU `stat -f` means filesystem status, so on Linux the
+        # BSD form prints a filesystem report before failing, polluting the mode.
+        SECRET_MODE=$(stat -c '%a' "$SECRET_FILE" 2>/dev/null) \
+            || SECRET_MODE=$(stat -f '%Lp' "$SECRET_FILE" 2>/dev/null) \
+            || SECRET_MODE=""
         if [ "$SECRET_MODE" != "600" ]; then
             chmod 600 "$SECRET_FILE" 2>/dev/null \
                 && info "Tightened permissions on $(basename "$SECRET_FILE") to 600" \
