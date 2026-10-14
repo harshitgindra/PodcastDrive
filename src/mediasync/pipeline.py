@@ -10,9 +10,9 @@ import contextlib
 import logging
 import os
 import shutil
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
+from common.parallel import iter_parallel
 from mediasync.artwork import download_thumbnail
 from mediasync.config import Config
 from mediasync.downloader import (
@@ -371,20 +371,15 @@ def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
         return idx, meta
 
     try:
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {
-                executor.submit(_fetch_one, (i, u)): i
-                for i, u in enumerate(video_urls)
-            }
-            for future in as_completed(futures):
-                try:
-                    idx, meta = future.result()
-                    results_meta[idx] = meta
-                    # Cache for later download
-                    cache_metadata(video_urls[idx], meta)
-                except DownloadError:
-                    # One item failed; abort reconciliation
-                    return None
+        for _, future in iter_parallel(_fetch_one, enumerate(video_urls), max_workers=8):
+            try:
+                idx, meta = future.result()
+                results_meta[idx] = meta
+                # Cache for later download
+                cache_metadata(video_urls[idx], meta)
+            except DownloadError:
+                # One item failed; abort reconciliation
+                return None
     except (DownloadError, OSError, RuntimeError, ValueError):
         return None
 
