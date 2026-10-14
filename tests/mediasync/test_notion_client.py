@@ -181,9 +181,7 @@ class TestUpdateStatus:
 
     def test_update_to_done_includes_timestamp(self, client):
         with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
-            client.update_status(
-                "page-123", Status.DONE, file_key="/MediaSync/h/audio/t.m4a", duration=180
-            )
+            client.update_status("page-123", Status.DONE, file_key="/MediaSync/h/audio/t.m4a", duration=180)
 
         payload = mock_patch.call_args[0][1]
         props = payload["properties"]
@@ -339,3 +337,49 @@ class TestPaginationBounds:
 
         assert mock_post.call_count == 2
         assert len(entries) == 2
+
+
+class TestProcessedAndResetEntries:
+    def test_get_processed_filters_done_and_failed(self, client, done_page):
+        response = {"results": [done_page], "has_more": False, "next_cursor": None}
+        with patch.object(client, "_post", return_value=response) as mock_post:
+            entries = client.get_processed()
+
+        assert len(entries) == 1
+        filters = mock_post.call_args[0][1]["filter"]["and"]
+        assert {"property": "Status", "select": {"equals": "done"}} in filters[0]["or"]
+        assert {"property": "Status", "select": {"equals": "failed"}} in filters[0]["or"]
+        assert {"property": "Delete", "checkbox": {"equals": False}} in filters
+
+    def test_get_processed_raises_on_query_failure(self, client):
+        with patch.object(client, "_post", return_value=None):
+            with pytest.raises(NotionError, match="Failed to query processed"):
+                client.get_processed()
+
+    def test_reset_status_clears_processing_fields(self, client):
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
+            client.reset_status("page-123")
+
+        assert mock_patch.call_args.args[1]["properties"] == {
+            "Status": {"select": None},
+            "File Key": {"rich_text": []},
+            "Duration": {"number": None},
+            "Error": {"rich_text": []},
+            "Processed At": {"date": None},
+        }
+
+    def test_reset_status_raises_on_patch_failure(self, client):
+        with patch.object(client, "_patch", return_value=None):
+            with pytest.raises(NotionError, match="Failed to reset Notion page"):
+                client.reset_status("page-123")
+
+
+class TestNotionErrorHandling:
+    def test_update_status_raises_on_patch_failure(self, client):
+        with patch.object(client, "_patch", return_value=None):
+            with pytest.raises(NotionError, match="Failed to update Notion page"):
+                client.update_status("page-123", Status.FAILED)
+
+    def test_create_entry_without_id_returns_none(self, client):
+        with patch.object(client, "_post", return_value={"object": "page"}):
+            assert client.create_entry("https://example.test", "Harshit", Format.AUDIO) is None

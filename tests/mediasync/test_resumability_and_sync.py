@@ -89,9 +89,7 @@ class TestResumability:
     @patch("mediasync.pipeline._is_duplicate", return_value=False)
     @patch("mediasync.pipeline.create_storage")
     @patch("mediasync.pipeline.NotionClient")
-    def test_interrupted_entry_gets_retried(
-        self, MockNotion, MockStorage, mock_dup, mock_proc, mock_sync, config
-    ):
+    def test_interrupted_entry_gets_retried(self, MockNotion, MockStorage, mock_dup, mock_proc, mock_sync, config):
         """An entry stuck in downloading state is picked up and processed."""
         stuck_entry = _entry("https://youtube.com/watch?v=interrupted", status=Status.DOWNLOADING)
         mock_notion = MockNotion.return_value
@@ -130,9 +128,7 @@ class TestGetPendingPrioritySort:
         # One query, not a failed one plus a retry.
         assert mock_post.call_count == 1
         assert mock_get.call_count == 1
-        assert mock_post.call_args[0][1]["sorts"] == [
-            {"timestamp": "created_time", "direction": "ascending"}
-        ]
+        assert mock_post.call_args[0][1]["sorts"] == [{"timestamp": "created_time", "direction": "ascending"}]
 
     def test_priority_sort_sent_when_column_present(self):
         client = NotionClient("token", "db-id")
@@ -161,9 +157,7 @@ class TestGetPendingPrioritySort:
         ):
             client.get_pending()
 
-        assert mock_post.call_args[0][1]["sorts"] == [
-            {"timestamp": "created_time", "direction": "ascending"}
-        ]
+        assert mock_post.call_args[0][1]["sorts"] == [{"timestamp": "created_time", "direction": "ascending"}]
 
     def test_schema_read_once_per_client(self):
         """The schema cannot change mid-run, and a run calls get_pending repeatedly."""
@@ -191,9 +185,7 @@ class TestGetPendingPrioritySort:
             client.get_pending()
 
         assert mock_post.call_count == 1
-        assert mock_post.call_args[0][1]["sorts"] == [
-            {"timestamp": "created_time", "direction": "ascending"}
-        ]
+        assert mock_post.call_args[0][1]["sorts"] == [{"timestamp": "created_time", "direction": "ascending"}]
 
     def test_entries_are_parsed(self):
         client = NotionClient("token", "db-id")
@@ -219,6 +211,44 @@ class TestGetPendingPrioritySort:
         assert len(entries) == 1
         assert mock_post.call_count == 1
 
+    def test_priority_metadata_is_parsed_when_column_exists(self):
+        client = NotionClient("token", "db-id")
+        page = {
+            "id": "priority-page",
+            "properties": {
+                "Name": {"type": "title", "title": [{"plain_text": "https://youtube.com/watch?v=priority"}]},
+                "Profile": {"type": "select", "select": {"name": "Harshit"}},
+                "Format": {"type": "select", "select": {"name": "audio"}},
+                "Status": {"type": "select", "select": {"name": "pending"}},
+                "Delete": {"type": "checkbox", "checkbox": False},
+                "Priority": {"type": "number", "number": 7.9},
+            },
+        }
+
+        entry = client._parse_page(page)
+
+        assert entry is not None
+        assert entry.priority == 7
+
+    def test_priority_without_number_defaults_to_none(self):
+        client = NotionClient("token", "db-id")
+        page = {
+            "id": "priority-page",
+            "properties": {
+                "Name": {"type": "title", "title": [{"plain_text": "https://youtube.com/watch?v=priority"}]},
+                "Profile": {"type": "select", "select": {"name": "Harshit"}},
+                "Format": {"type": "select", "select": {"name": "audio"}},
+                "Status": {"type": "select", "select": {"name": "pending"}},
+                "Delete": {"type": "checkbox", "checkbox": False},
+                "Priority": {"type": "number", "number": None},
+            },
+        }
+
+        entry = client._parse_page(page)
+
+        assert entry is not None
+        assert entry.priority is None
+
 
 class TestCreateEntry:
     """NotionClient.create_entry creates new pending Notion pages."""
@@ -226,9 +256,7 @@ class TestCreateEntry:
     def test_creates_page_with_correct_properties(self):
         client = NotionClient("token", "db-id")
         with patch.object(client, "_post", return_value={"id": "new-page-123"}) as mock_post:
-            page_id = client.create_entry(
-                "https://youtube.com/watch?v=new", "Harshit", Format.AUDIO
-            )
+            page_id = client.create_entry("https://youtube.com/watch?v=new", "Harshit", Format.AUDIO)
 
         assert page_id == "new-page-123"
         payload = mock_post.call_args[0][1]
@@ -243,9 +271,7 @@ class TestCreateEntry:
     def test_returns_none_on_failure(self):
         client = NotionClient("token", "db-id")
         with patch.object(client, "_post", return_value=None):
-            page_id = client.create_entry(
-                "https://youtube.com/watch?v=fail", "Harshit", Format.VIDEO
-            )
+            page_id = client.create_entry("https://youtube.com/watch?v=fail", "Harshit", Format.VIDEO)
         assert page_id is None
 
     def test_video_format(self):
@@ -320,9 +346,7 @@ class TestPlaylistSyncIntegration:
     @patch("mediasync.pipeline._is_duplicate", return_value=False)
     @patch("mediasync.pipeline.create_storage")
     @patch("mediasync.pipeline.NotionClient")
-    def test_new_entries_from_sync_are_processed(
-        self, MockNotion, MockStorage, mock_dup, mock_proc, mock_sync, config
-    ):
+    def test_new_entries_from_sync_are_processed(self, MockNotion, MockStorage, mock_dup, mock_proc, mock_sync, config):
         """Entries created by playlist sync show up in get_pending and get processed."""
         mock_sync.return_value = 2
         new_entry = _entry("https://youtube.com/watch?v=synced")
