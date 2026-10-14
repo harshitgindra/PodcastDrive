@@ -1,5 +1,6 @@
 """Additional pipeline tests to cover _upload_playlist, _upload_folder_artwork, _derive_playlist_title."""
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -176,6 +177,38 @@ class TestDerivePlaylistTitle:
         title = _derive_playlist_title(results)
         # Falls through to artist check or first title
         assert title is not None
+
+
+class TestParallelMetadataOrder:
+    @patch("mediasync.pipeline.cache_metadata")
+    @patch("mediasync.pipeline.get_metadata")
+    @patch("mediasync.pipeline.get_playlist_metadata")
+    @patch("mediasync.pipeline.get_full_playlist_metadata")
+    def test_parallel_metadata_results_preserve_playlist_order(self, mock_full, mock_flat, mock_meta, mock_cache):
+        """Out-of-order worker completion must not change playlist order."""
+        from mediasync.pipeline import _fetch_playlist_items_metadata
+
+        mock_full.side_effect = DownloadError("full fail")
+        mock_flat.return_value = [
+            {"id": "first", "title": "First"},
+            {"id": "second", "title": "Second"},
+        ]
+        later_finishes_first = threading.Event()
+
+        def fetch_metadata(url):
+            if url.endswith("first"):
+                assert later_finishes_first.wait(timeout=2)
+                return {"id": "first", "title": "First"}
+            later_finishes_first.set()
+            return {"id": "second", "title": "Second"}
+
+        mock_meta.side_effect = fetch_metadata
+
+        result = _fetch_playlist_items_metadata("https://youtube.com/playlist?list=PLxyz")
+
+        assert [item["id"] for item in result] == ["first", "second"]
+        assert mock_cache.call_args_list[0].args == ("https://www.youtube.com/watch?v=second", result[1])
+        assert mock_cache.call_args_list[1].args == ("https://www.youtube.com/watch?v=first", result[0])
 
 
 class TestReconcilePlaylist:
