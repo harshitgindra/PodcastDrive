@@ -130,21 +130,17 @@ def process_playlist(
         existing_keys = s3.list_existing_episodes()
         logger.info("[Step 2] Found %d existing episodes in S3", len(existing_keys))
 
-        # --- Step 3: Build download candidates ---
+        # --- Step 3: Build download and recent-repair candidates ---
         cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
         candidates = []
+        new_candidate_count = 0
         skipped_existing = 0
         skipped_no_duration = 0
         skipped_upcoming = 0
 
         _SKIP_STATUSES = {"is_upcoming", "is_live"}
-
+        eligible_entries = []
         for v in video_entries:
-            if len(candidates) >= max_downloads:
-                break
-            if v.video_id in existing_keys:
-                skipped_existing += 1
-                continue
             if v.live_status in _SKIP_STATUSES:
                 skipped_upcoming += 1
                 logger.debug("[Step 3] Skipping %s — live_status=%r", v.video_id, v.live_status)
@@ -153,7 +149,47 @@ def process_playlist(
                 skipped_no_duration += 1
                 logger.debug("[Step 3] Skipping %s — no duration (live stream)", v.video_id)
                 continue
+            eligible_entries.append(v)
+
+        # Re-check at most two latest published episodes that have never had a
+        # successful ad-removal check. Failed attempts stay eligible next run.
+        retry_enabled = settings.get("REMOVE_ADS") and not settings.get("REMOVE_ADS_DRY_RUN") and not dry_run
+        recent_repair_ids = set()
+        if retry_enabled:
+            manifest = s3.load_manifest()
+            published_in_playlist = [v for v in eligible_entries if v.video_id in existing_keys]
+            # Flat extraction is newest-first. Stable sorting preserves playlist
+            # order when dates are missing or identical.
+            recent_published = sorted(
+                published_in_playlist,
+                key=lambda v: v.upload_date or "",
+                reverse=True,
+            )
+            unchecked_ids = [
+                v.video_id
+                for v in recent_published
+                if not (
+                    isinstance(manifest.get(v.video_id), dict)
+                    and (
+                        manifest[v.video_id].get("ads_removed") is True
+                        or manifest[v.video_id].get("ad_removal_checked") is True
+                    )
+                )
+            ]
+            recent_repair_ids = set(unchecked_ids[:2])
+            if recent_repair_ids:
+                logger.info("[Step 3] Recent episodes queued for ad-removal retry: %s", sorted(recent_repair_ids))
+
+        for v in eligible_entries:
+            is_recent_repair = v.video_id in recent_repair_ids
+            if v.video_id in existing_keys and not is_recent_repair:
+                skipped_existing += 1
+                continue
+            if not is_recent_repair and new_candidate_count >= max_downloads:
+                continue
             candidates.append(v)
+            if not is_recent_repair:
+                new_candidate_count += 1
 
         logger.info(
             "[Step 3] %d candidates to download (skipped %d existing, %d live streams, %d upcoming)",
@@ -172,6 +208,8 @@ def process_playlist(
         failed_count = 0
         ad_removal_failed_count = 0
         bot_detected = False
+        repairs_succeeded = 0
+        repairs_failed = 0
 
         for i, video in enumerate(candidates):
             logger.info(
@@ -284,10 +322,32 @@ def process_playlist(
                         video.video_id,
                         episode_summary,
                     )
-                ads_were_removed = bool(ad_segments) and mp3_path != original_mp3
+                ads_were_removed = bool(ad_segments) and mp3_path != original_mp3 and not ad_removal_failed
+                is_recent_repair = video.video_id in recent_repair_ids
+                repair_failed = ad_removal_failed or (bool(ad_segments) and mp3_path == original_mp3)
+                if is_recent_repair and repair_failed:
+                    repairs_failed += 1
+                    video_manifest = manifest.setdefault(video.video_id, {})
+                    video_manifest["repair_last_attempt_at"] = datetime.now(UTC).isoformat()
+                    video_manifest["repair_last_attempt_result"] = episode_summary or "ad removal/splice failed"
+                    video_manifest["ad_removal_checked"] = False
+                    video_manifest["ad_removal_failed"] = ad_removal_failed
+                    if ad_removal_failed:
+                        video_manifest["ad_removal_fail_reason"] = episode_summary
+                    logger.warning(
+                        "[Step 4] Repair of %s failed; keeping current S3 object",
+                        video.video_id,
+                    )
+                    if mp3_path and os.path.exists(mp3_path):
+                        os.remove(mp3_path)
+                    if original_mp3 != mp3_path and os.path.exists(original_mp3):
+                        os.remove(original_mp3)
+                    continue
                 video_manifest = manifest.setdefault(video.video_id, {})
                 video_manifest["ads_removed"] = ads_were_removed
+                video_manifest["ad_removal_checked"] = not repair_failed
                 video_manifest["ad_removal_failed"] = ad_removal_failed
+                video_manifest["splice_failed"] = bool(ad_segments) and mp3_path == original_mp3 and not ad_removal_failed
                 video_manifest["upload_date"] = video.upload_date
                 if ad_removal_failed:
                     video_manifest["ad_removal_fail_reason"] = episode_summary
@@ -324,6 +384,10 @@ def process_playlist(
                 s3.upload_episode(mp3_path, video.video_id, max_age_days)
                 os.remove(mp3_path)
                 manifest[video.video_id]["size"] = file_size
+                if is_recent_repair:
+                    # A no-ads result is a completed check; only the marker
+                    # indicates an actual successful splice.
+                    repairs_succeeded += 1
                 if ad_removal_failed:
                     ad_removal_failed_count += 1
                 new_count += 1
@@ -365,7 +429,12 @@ def process_playlist(
 
         # Persist manifest with ads_removed metadata and published sizes
         manifest_save_failed = False
-        if new_count > 0 and not s3.save_manifest(manifest):
+        if (
+            new_count > 0
+            or repairs_succeeded > 0
+            or repairs_failed > 0
+            or (retry_enabled and recent_repair_ids)
+        ) and not s3.save_manifest(manifest):
             # The MP3s are in S3 but nothing records their size, so the next feed
             # build has no fallback when a HEAD fails.  Not a healthy run.
             manifest_save_failed = True
@@ -441,6 +510,8 @@ def process_playlist(
             "feed_omitted_ids": sorted(feed_omitted_ids),
             "bot_detected": bot_detected,
             "ad_removal_failed": ad_removal_failed_count,
+            "repairs_succeeded": repairs_succeeded,
+            "repairs_failed": repairs_failed,
             "total_episodes": len(final_keys),
             "elapsed_seconds": round(elapsed, 1),
         }

@@ -194,7 +194,7 @@ cp config.env.example config.env
 | **Feed Customisation** | | | |
 | `FEED_TITLE_SUFFIX` | | ` ✂️` | Suffix appended to the **channel** title in the RSS feed (e.g. "My Podcast ✂️"). Set to empty string to disable |
 | `FEED_SUBTITLE` | | `Ad-free · PodcastDrive` | iTunes subtitle shown below the channel title in podcast apps |
-| `EPISODE_AD_REMOVED_SUFFIX` | | ` ✂️` | Suffix appended to individual **episode** titles when ads were successfully removed. Helps distinguish cleaned episodes at a glance. Set to empty string to disable |
+| `EPISODE_AD_REMOVED_SUFFIX` | | ` ✂️` | Deprecated. The fixed scissors marker appears only when detected ads were successfully spliced out |
 | **Config Provider** | | | |
 | `CONFIG_PROVIDER` | | `yaml` | Config source: `yaml` or `notion` |
 | `PODCASTS_YAML` | | `podcasts.yaml` | Path to YAML subscriptions file (when `CONFIG_PROVIDER=yaml`) |

@@ -405,6 +405,15 @@ class TestUnavailableReporting:
         assert footer.startswith("✅")
         assert "unavailable" not in msg
 
+    def test_failed_repair_makes_overall_status_a_warning(self):
+        msg = _format_message(
+            [{"name": "A", "new_episodes": 0, "repairs_failed": 1}],
+            status="success",
+        )
+        assert "existing audio kept" in msg
+        assert "1 repair warnings" in msg
+        assert msg.strip().splitlines()[-1].startswith("⚠️")
+
     def test_up_to_date_still_used_when_nothing_is_wrong(self):
         msg = _format_message([{"name": "A", "new_episodes": 0, "unavailable": 0}])
         assert "up to date" in msg

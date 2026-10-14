@@ -206,7 +206,8 @@ class TestBuildPodcastFeedXml:
             _SIZES,
             manifest={"ep-001": {"ads_removed": True}},
         )
-        assert "My Episode [Ad-Free]" in xml
+        assert "My Episode ✂️" in xml
+        assert "My Episode [Ad-Free]" not in xml
 
     def test_no_suffix_when_ads_not_removed(self):
         """Episode title is unchanged when manifest does not mark ads_removed."""
@@ -318,6 +319,36 @@ class TestProcessPodcastFeedDryRun:
 
 
 class TestProcessPodcastFeedLive:
+    def test_recent_no_ads_check_is_persisted_and_not_retried(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("REMOVE_ADS", "true")
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "false")
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-recent", "Recent")
+        original = tmp_path / "recent.mp3"
+        original.write_bytes(b"ID3")
+        manifest = {"guid-recent": {"size": 3, "title": "Recent"}}
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda guid: guid),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(original)),
+            patch("podcast_sync.remove_ads", return_value=(str(original), [], "")) as remove_ads,
+        ):
+            s3 = MockS3.return_value
+            s3.list_existing_episodes.return_value = {"guid-recent"}
+            s3.load_manifest.return_value = manifest
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        remove_ads.assert_called_once()
+        assert result["repairs_succeeded"] == 1
+        assert result["new_episodes"] == 1
+        assert manifest["guid-recent"]["ad_removal_checked"] is True
+        assert manifest["guid-recent"]["ads_removed"] is False
+        assert s3.upload_episode.called
+
     def test_new_episode_downloaded_and_uploaded(self, tmp_path):
         podcast = _make_podcast(max_downloads=1)
         ep = _make_episode_meta("guid-1", "Ep 1")
@@ -343,6 +374,37 @@ class TestProcessPodcastFeedLive:
         assert result["failed"] == 0
         mock_s3.upload_episode.assert_called_once()
         mock_s3.upload_feed.assert_called_once()
+
+    def test_failed_recent_repair_preserves_published_object_and_manifest(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("REMOVE_ADS", "true")
+        monkeypatch.setenv("REMOVE_ADS_DRY_RUN", "false")
+        podcast = _make_podcast(max_downloads=1)
+        ep = _make_episode_meta("guid-recent", "Recent")
+        original = tmp_path / "recent.mp3"
+        original.write_bytes(b"ID3")
+        manifest = {"guid-recent": {"size": 321, "title": "Recent", "guid": "guid-recent", "pub_date": ep.pub_date.isoformat(), "duration": ep.duration}}
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[ep]),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda guid: guid),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", return_value=str(original)),
+            patch("podcast_sync.remove_ads", return_value=(str(original), [{"start": 1, "end": 2}], "")),
+        ):
+            s3 = MockS3.return_value
+            s3.list_existing_episodes.return_value = {"guid-recent"}
+            s3.load_manifest.return_value = manifest
+            result = process_podcast_feed(podcast, dry_run=False)
+
+        assert result["repairs_failed"] == 1
+        assert result["new_episodes"] == 0
+        s3.upload_episode.assert_not_called()
+        assert manifest["guid-recent"]["size"] == 321
+        assert manifest["guid-recent"]["ads_removed"] is False
+        assert manifest["guid-recent"]["ad_removal_checked"] is False
+        assert manifest["guid-recent"]["repair_last_attempt_result"]
 
     def test_failed_download_increments_failed_count(self, tmp_path):
         podcast = _make_podcast(max_downloads=1)
@@ -707,7 +769,7 @@ class TestProcessPodcastFeedEdgeCases:
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = {"guid-1"}
-            mock_s3.load_manifest.return_value = {}
+            mock_s3.load_manifest.return_value = {"guid-1": {"ad_removal_checked": True}}
             mock_s3.get_object_size.side_effect = RuntimeError("S3 error")
 
             result = process_podcast_feed(podcast, dry_run=False)
@@ -1756,7 +1818,7 @@ class TestNonPositiveSizeIsOmittedAndReported:
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = {"guid-1"}
-            mock_s3.load_manifest.return_value = {}
+            mock_s3.load_manifest.return_value = {"guid-1": {"ad_removal_checked": True}}
             mock_s3.get_object_size.return_value = size
             mock_s3.save_manifest.return_value = True
             result = process_podcast_feed(podcast, dry_run=False)
@@ -1789,7 +1851,7 @@ class TestNonPositiveSizeIsOmittedAndReported:
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = {"guid-1"}
-            mock_s3.load_manifest.return_value = {"guid-1": {"size": 0}}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 0, "ad_removal_checked": True}}
             mock_s3.get_object_size.return_value = 5555
             mock_s3.save_manifest.return_value = True
             result = process_podcast_feed(podcast, dry_run=False)
@@ -1991,7 +2053,7 @@ class TestBuilderOmissionsReachTheResult:
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = {"guid-1"}
-            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242}}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242, "ad_removal_checked": True}}
             mock_s3.save_manifest.return_value = True
             result = process_podcast_feed(podcast, dry_run=False)
 
@@ -2014,7 +2076,7 @@ class TestBuilderOmissionsReachTheResult:
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = {"guid-1"}
-            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242}}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242, "ad_removal_checked": True}}
             mock_s3.save_manifest.return_value = True
             result = process_podcast_feed(podcast, dry_run=False)
 
@@ -2040,7 +2102,7 @@ class TestBuilderOmissionsReachTheResult:
         ):
             mock_s3 = MockS3.return_value
             mock_s3.list_existing_episodes.return_value = {"guid-1"}
-            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242}}
+            mock_s3.load_manifest.return_value = {"guid-1": {"size": 4242, "ad_removal_checked": True}}
             mock_s3.save_manifest.return_value = True
             mock_s3.upload_feed.side_effect = RuntimeError("S3 down")
             result = process_podcast_feed(podcast, dry_run=False)

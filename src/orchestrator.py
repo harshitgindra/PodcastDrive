@@ -86,8 +86,10 @@ def success_status(result: dict[str, Any]) -> str:
         return "Failed"
     if result.get("splice_failed", 0):
         return "Splice Failed"
-    if result.get("ad_removal_failed", 0):
+    if result.get("ad_removal_failed", 0) or result.get("repairs_failed", 0):
         return "Ad Removal Warning"
+    if result.get("repairs_succeeded", 0):
+        return "Repair Succeeded"
     return "Done"
 
 
@@ -179,6 +181,8 @@ def run_one(
             "unavailable": result.get("unavailable", 0),
             "splice_failed": result.get("splice_failed", 0),
             "ad_removal_failed": result.get("ad_removal_failed", 0),
+            "repairs_succeeded": result.get("repairs_succeeded", 0),
+            "repairs_failed": result.get("repairs_failed", 0),
             "bot_detected": bool(result.get("bot_detected", False)),
         }
     )

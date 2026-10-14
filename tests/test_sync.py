@@ -194,6 +194,8 @@ class TestProcessPlaylistHappyPath:
             "feed_omitted_ids",
             "bot_detected",
             "ad_removal_failed",
+            "repairs_succeeded",
+            "repairs_failed",
             "total_episodes",
             "elapsed_seconds",
         }
@@ -204,9 +206,43 @@ class TestProcessPlaylistHappyPath:
         assert mock_dl.call_count == 1
         assert result["new_episodes"] == 1
 
+    def test_recent_published_no_ads_check_is_persisted(self, monkeypatch):
+        video = _make_video("vid001")
+        playlist_meta = _make_playlist_meta()
+        with (
+            patch.dict(os.environ, {**BASE_ENV, "REMOVE_ADS": "true", "REMOVE_ADS_DRY_RUN": "false"}, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
+            patch("sync.extract_video_metadata", return_value={
+                "upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": "",
+            }),
+            patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
+            patch("sync.validate_audio_file", return_value=(True, "")),
+            patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
+            s3 = _make_s3_manager(existing=["vid001"])
+            s3.load_manifest.return_value = {"vid001": {"size": 123}}
+            mock_s3_cls.return_value = s3
+            result = process_playlist("https://youtube.com/playlist?list=PLtest")
+
+        s3.upload_episode.assert_called_once()
+        saved_manifest = s3.save_manifest.call_args[0][0]
+        assert saved_manifest["vid001"]["ad_removal_checked"] is True
+        assert saved_manifest["vid001"]["ads_removed"] is False
+        assert result["repairs_succeeded"] == 1
+
     def test_skips_already_existing_episode(self):
         videos = [_make_video("vid001")]
-        result, mock_dl, _ = self._run(videos, existing=["vid001"])
+        result, mock_dl, _ = self._run(
+            videos,
+            existing=["vid001"],
+            env_override={**BASE_ENV, "REMOVE_ADS": "false"},
+        )
         assert mock_dl.call_count == 0
         assert result["new_episodes"] == 0
 

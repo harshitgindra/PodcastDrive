@@ -139,6 +139,9 @@ class TestSuccessStatus:
             ({"splice_failed": 2}, "Splice Failed"),
             ({"splice_failed": 0}, "Done"),
             ({"ad_removal_failed": 2}, "Ad Removal Warning"),
+            ({"repairs_failed": 1}, "Ad Removal Warning"),
+            ({"repairs_succeeded": 1}, "Repair Succeeded"),
+            ({"repairs_succeeded": 1, "repairs_failed": 1}, "Ad Removal Warning"),
             ({"failed": 1}, "Failed"),
             ({"new_episodes": 2, "failed": 1}, "Failed"),
             ({"failed": 1, "splice_failed": 1}, "Failed"),
@@ -210,7 +213,7 @@ class TestRunOne:
         orchestrator.run_one(
             name="Show",
             identifier_key="playlist_id",
-            pipeline=lambda: {"new_episodes": 2, "failed": 1},
+            pipeline=lambda: {"new_episodes": 2, "failed": 1, "repairs_succeeded": 1, "repairs_failed": 2},
         )
         assert read_notify(notify_file) == [
             {
@@ -220,6 +223,8 @@ class TestRunOne:
                 "unavailable": 0,
                 "splice_failed": 0,
                 "ad_removal_failed": 0,
+                "repairs_succeeded": 1,
+                "repairs_failed": 2,
                 "bot_detected": False,
             }
         ]

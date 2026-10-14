@@ -445,23 +445,14 @@ class TestGenerateRssItems:
         root = ET.fromstring(xml_str)
         assert root.find(".//item/title").text == "Great Show ✂️"
 
-    def test_ads_removed_custom_suffix(self, monkeypatch):
-        """EPISODE_AD_REMOVED_SUFFIX env var customises the suffix."""
+    def test_ads_removed_suffix_cannot_be_overridden(self, monkeypatch):
+        """The scissors marker is fixed because it carries a processing guarantee."""
         monkeypatch.setenv("EPISODE_AD_REMOVED_SUFFIX", " [clean]")
         meta = _make_playlist_meta()
         ep = _make_episode(title="Great Show", ads_removed=True)
         xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
         root = ET.fromstring(xml_str)
-        assert root.find(".//item/title").text == "Great Show [clean]"
-
-    def test_ads_removed_empty_suffix_no_change(self, monkeypatch):
-        """When EPISODE_AD_REMOVED_SUFFIX is empty the title is unchanged."""
-        monkeypatch.setenv("EPISODE_AD_REMOVED_SUFFIX", "")
-        meta = _make_playlist_meta()
-        ep = _make_episode(title="Great Show", ads_removed=True)
-        xml_str = generate_rss(meta, [ep], CLOUDFRONT_BASE, PLAYLIST_ID)
-        root = ET.fromstring(xml_str)
-        assert root.find(".//item/title").text == "Great Show"
+        assert root.find(".//item/title").text == "Great Show ✂️"
 
     def test_summary_prepended_to_description(self):
         """When episode.summary is set it should be prepended to the description."""

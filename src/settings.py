@@ -319,7 +319,7 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
             _s(
                 "EPISODE_AD_REMOVED_SUFFIX",
                 " \u2702\ufe0f",
-                'Suffix added to episode titles whose ads were removed. Set to "" to disable.',
+                'Deprecated. The scissors marker is fixed and only shown after detected ads are successfully spliced.',
             ),
         ),
     ),

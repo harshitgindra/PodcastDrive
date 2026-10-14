@@ -221,7 +221,7 @@ def _build_podcast_feed_xml(
         img_el = ET.SubElement(channel, f"{{{_ITUNES_NS}}}image")
         img_el.set("href", xml_safe(artwork_url))
 
-    ep_ad_suffix = settings.get("EPISODE_AD_REMOVED_SUFFIX")
+    ep_ad_suffix = " ✂️"
 
     for ep, ep_id in zip(episodes, episode_ids, strict=True):
         size = ep_sizes.get(ep_id)
@@ -241,7 +241,7 @@ def _build_podcast_feed_xml(
 
         item = ET.SubElement(channel, "item")
         title = ep.title
-        if ep_ad_suffix and manifest.get(ep_id, {}).get("ads_removed"):
+        if manifest.get(ep_id, {}).get("ads_removed"):
             title += ep_ad_suffix
         ET.SubElement(item, "title").text = xml_safe(title)
 
@@ -538,47 +538,62 @@ def process_podcast_feed(
                 )
                 episodes = list(episodes) + _readmit
 
-        # Build (episode, episode_id) pairs for candidates.  The max_episodes cap
-        # applies only to genuinely NEW downloads; splice retries are known work
-        # and are never capped (and never trigger an early break, so a retry that
-        # sorts after the cap-th new episode is still collected).
+        # Re-check only the newest two published episodes per podcast. A stored
+        # successful no-ads check is complete too; failures remain retryable.
+        retry_enabled = settings.get("REMOVE_ADS") and not settings.get("REMOVE_ADS_DRY_RUN")
+        recent_repair_ids: set[str] = set()
+        if retry_enabled and not dry_run:
+            recent_existing = sorted(
+                (ep for ep in all_feed_episodes if episode_id_from_guid(ep.guid) in existing_ids),
+                key=lambda ep: (ep.pub_date, episode_id_from_guid(ep.guid)),
+                reverse=True,
+            )
+            unchecked_ids = [
+                episode_id_from_guid(ep.guid)
+                for ep in recent_existing
+                if episode_id_from_guid(ep.guid) not in splice_retry_ids
+                and not (
+                    isinstance(manifest.get(episode_id_from_guid(ep.guid)), dict)
+                    and (
+                        manifest[episode_id_from_guid(ep.guid)].get("ads_removed") is True
+                        or manifest[episode_id_from_guid(ep.guid)].get("ad_removal_checked") is True
+                    )
+                )
+            ]
+            # Limit unchecked published episodes to the latest two; splice-failed
+            # episodes continue through their existing bounded retry mechanism.
+            recent_repair_ids = set(unchecked_ids[:2])
+            if recent_repair_ids:
+                logger.info("[PodcastSync] Recent episodes queued for ad-removal retry: %s", sorted(recent_repair_ids))
+
+        # Build (episode, episode_id) pairs for candidates. The new-episode cap
+        # remains separate from bounded retries of already-published episodes.
         candidates: list[tuple[EpisodeMeta, str]] = []
         skipped = 0
         new_count = 0
         for ep in episodes:
             ep_id = episode_id_from_guid(ep.guid)
-            # Permanently exhausted — never uploaded, no infinite retry loop
-            if ep_id in _splice_exhausted:
+            if ep_id in _splice_exhausted and ep_id not in recent_repair_ids:
                 logger.warning(
-                    "[PodcastSync] Skipping %s permanently — splice failed %d time(s), "                     "reached MAX_SPLICE_RETRIES=%d; manual intervention required",
+                    "[PodcastSync] Skipping %s permanently — splice failed %d time(s), "
+                    "reached MAX_SPLICE_RETRIES=%d; manual intervention required",
                     ep_id,
                     manifest.get(ep_id, {}).get("splice_failed_count", 0),
                     _max_splice_retries,
                 )
                 skipped += 1
                 continue
-            # Successfully published in a prior run — skip unless eligible for splice retry.
-            # The splice_retry_ids bypass handles both new behaviour (episode never
-            # uploaded) and the migration case where the old code uploaded the original
-            # file with ads and we still need to re-process it.
-            if ep_id in existing_ids and ep_id not in splice_retry_ids:
+
+            is_retry = ep_id in splice_retry_ids or ep_id in recent_repair_ids
+            if ep_id in existing_ids and not is_retry:
                 skipped += 1
                 logger.debug("[PodcastSync] Already in S3, skipping: %s", ep_id)
                 continue
-            is_retry = ep_id in splice_retry_ids
-            # Cap NEW downloads only; keep scanning (no break) so retries that sort
-            # after the cap-th new episode are still collected.
             if not is_retry and new_count >= max_episodes:
                 skipped += 1
                 continue
-            # New episode, or previously splice-failed (under or over retries threshold)
             if is_retry:
-                logger.info(
-                    "[PodcastSync] Re-queuing %s for splice retry (run attempt %d/%d)",
-                    ep_id,
-                    manifest.get(ep_id, {}).get("splice_failed_count", 0) + 1,
-                    _max_splice_retries,
-                )
+                logger.info("[PodcastSync] Re-queuing %s for ad-removal retry", ep_id)
             else:
                 new_count += 1
             candidates.append((ep, ep_id))
@@ -779,6 +794,36 @@ def process_podcast_feed(
                         "fail_reason": fail_reason,
                     }
 
+                # A repair must never downgrade an already-published episode.
+                # If this retry did not actually splice detected ads, retain the
+                # current S3 object and its manifest state unchanged.
+                is_repair = ep_id in existing_ids
+                retry_proved_clean = bool(ad_segments) and cleaned_path != original_path and not ad_removal_failed
+                repair_failed = ep_id in recent_repair_ids and (
+                    ad_removal_failed or (bool(ad_segments) and not retry_proved_clean)
+                )
+                if is_repair and repair_failed:
+                    # A failed detection/removal pass must never downgrade an
+                    # already-published episode. Keep it for retry next run.
+                    fail_reason = fail_reason or "ad removal failed"
+                    logger.warning(
+                        "[PodcastSync] Repair of %s did not prove ads removed; preserving the published object",
+                        ep_id,
+                    )
+                    for path in (original_path, cleaned_path):
+                        if path and os.path.exists(path):
+                            with contextlib.suppress(OSError):
+                                os.remove(path)
+                    return {
+                        "ok": True,
+                        "ep": ep,
+                        "ep_id": ep_id,
+                        "uploaded": False,
+                        "repair_failed": True,
+                        "fail_reason": fail_reason,
+                        "cdn": cdn,
+                    }
+
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if cleaned_path != original_path:
                     try:
@@ -811,7 +856,8 @@ def process_podcast_feed(
                     os.remove(cleaned_path)
 
                 logger.info("[PodcastSync] Done: %s", ep_id)
-                ads_removed = bool(ad_segments) and cleaned_path != original_path
+                ads_removed = bool(ad_segments) and cleaned_path != original_path and not ad_removal_failed
+                ad_removal_checked = not repair_failed
                 return {
                     "ok": True,
                     "ep": ep,
@@ -820,6 +866,7 @@ def process_podcast_feed(
                     "file_size": file_size,
                     "summary": summary,
                     "ads_removed": ads_removed,
+                    "ad_removal_checked": ad_removal_checked,
                     "splice_failed": False,
                     "ad_removal_failed": ad_removal_failed,
                     "fail_reason": fail_reason,
@@ -840,6 +887,8 @@ def process_podcast_feed(
 
         splice_failed_this_run = 0
         ad_removal_failed_this_run = 0
+        repairs_succeeded = 0
+        repairs_failed = 0
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_process_episode, ep, ep_id): (ep, ep_id) for ep, ep_id in candidates}
@@ -849,14 +898,23 @@ def process_podcast_feed(
                     # Episode successfully cleaned and uploaded
                     with manifest_lock:
                         ep, ep_id = result["ep"], result["ep_id"]
-                        _prev_fail_count = manifest.get(ep_id, {}).get("splice_failed_count", 0)
+                        _prev_entry = manifest.get(ep_id, {})
+                        _prev_fail_count = _prev_entry.get("splice_failed_count", 0)
+                        if ep_id in recent_repair_ids:
+                            repairs_succeeded += 1
                         manifest[ep_id] = {
+                            **{k: v for k, v in _prev_entry.items() if k not in {
+                                "size", "title", "guid", "pub_date", "duration", "ads_removed", "ad_removal_checked",
+                                "splice_failed", "ad_removal_failed", "splice_failed_count", "cdn",
+                                "ad_removal_fail_reason",
+                            }},
                             "size": result["file_size"],
                             "title": ep.title,
                             "guid": ep.guid,
                             "pub_date": ep.pub_date.isoformat(),
                             "duration": ep.duration,
                             "ads_removed": result.get("ads_removed", False),
+                            "ad_removal_checked": result.get("ad_removal_checked", False),
                             "splice_failed": False,
                             "ad_removal_failed": bool(result.get("ad_removal_failed", False)),
                             # Preserve historical count so the exhaustion cap still works
@@ -872,6 +930,24 @@ def process_podcast_feed(
                             manifest[ep_id]["summary"] = result["summary"]
                         new_count += 1
                         uploaded_pairs.append((ep, ep_id))
+                elif result.get("repair_failed"):
+                    with manifest_lock:
+                        repairs_failed += 1
+                        ep_id = result["ep_id"]
+                        # Keep the published manifest data intact, including the
+                        # last-attempt diagnostics for the next bounded retry.
+                        repair_entry = manifest.setdefault(ep_id, {})
+                        repair_entry.update({
+                            "repair_last_attempt_at": datetime.now(UTC).isoformat(),
+                            "repair_last_attempt_result": result.get("fail_reason", "ad removal failed"),
+                        })
+                        repair_entry.setdefault("ads_removed", False)
+                        repair_entry["ad_removal_checked"] = False
+                        logger.warning(
+                            "[PodcastSync] Repair failed for %s; existing publication remains unchanged: %s",
+                            ep_id,
+                            result.get("fail_reason", "ad removal not confirmed"),
+                        )
                 elif result["ok"] and result.get("download_validation_failed"):
                     # The downloaded bytes remained invalid after fresh-download
                     # retries, so there is no safe original to publish. Preserve
@@ -910,7 +986,7 @@ def process_podcast_feed(
 
         # Persist manifest whenever something changed — uploads or splice-fail count updates
         manifest_save_failed = False
-        if (new_count > 0 or splice_failed_this_run > 0) and not s3.save_manifest(manifest):
+        if (new_count > 0 or splice_failed_this_run > 0 or repairs_succeeded > 0 or repairs_failed > 0) and not s3.save_manifest(manifest):
             # The episodes are in S3 but their sizes and splice counters are
             # not, so the run is not healthy: a later feed build would see no
             # size for them and the retry cap would be computed from stale data.
@@ -929,7 +1005,7 @@ def process_podcast_feed(
         # Rebuild on failures too: a run where every episode failed still has to
         # republish feed.xml, because a previous run may have uploaded episodes
         # and then failed to publish the feed that lists them.
-        if new_count > 0 or skipped > 0 or failed_count > 0 or splice_failed_this_run > 0:
+        if new_count > 0 or skipped > 0 or failed_count > 0 or splice_failed_this_run > 0 or repairs_succeeded > 0 or repairs_failed > 0:
             # Collect all episodes currently in S3 for the feed
             all_existing_ids = s3.list_existing_episodes()
 
@@ -1101,8 +1177,10 @@ def process_podcast_feed(
                 status = "Failed"
             elif reported_splice_failed > 0:
                 status = "Splice Failed"
-            elif ad_removal_failed_this_run > 0:
+            elif ad_removal_failed_this_run > 0 or repairs_failed > 0:
                 status = "Ad Removal Warning"
+            elif repairs_succeeded > 0:
+                status = "Repair Succeeded"
             elif new_count > 0:
                 status = "Done"
             else:
@@ -1116,7 +1194,8 @@ def process_podcast_feed(
         elapsed = time.monotonic() - _run_start
         logger.info(
             "=== PODCAST SUMMARY === slug=%s new=%d skipped=%d failed=%d ad_removal_failed=%d splice_failed=%d "
-            "splice_exhausted=%d feed_failed=%s manifest_save_failed=%s feed_omitted=%d elapsed=%.1fs",
+            "splice_exhausted=%d repairs_succeeded=%d repairs_failed=%d feed_failed=%s "
+            "manifest_save_failed=%s feed_omitted=%d elapsed=%.1fs",
             slug,
             new_count,
             skipped,
@@ -1124,6 +1203,8 @@ def process_podcast_feed(
             ad_removal_failed_this_run,
             splice_failed_this_run,
             len(_splice_exhausted),
+            repairs_succeeded,
+            repairs_failed,
             feed_failed,
             manifest_save_failed,
             len(feed_omitted_ids),
@@ -1136,6 +1217,8 @@ def process_podcast_feed(
             "failed": reported_failed,
             "episodes_failed": failed_count,
             "ad_removal_failed": ad_removal_failed_this_run,
+            "repairs_succeeded": repairs_succeeded,
+            "repairs_failed": repairs_failed,
             "splice_failed": reported_splice_failed,
             "splice_failed_this_run": splice_failed_this_run,
             "splice_exhausted": len(_splice_exhausted),

@@ -250,9 +250,7 @@ def _add_item(
 
     ep_title = xml_safe(episode.title)
     if episode.ads_removed:
-        ep_ad_suffix = settings.get("EPISODE_AD_REMOVED_SUFFIX")
-        if ep_ad_suffix:
-            ep_title += ep_ad_suffix
+        ep_title += " ✂️"
     ET.SubElement(item, "title").text = ep_title
 
     guid = ET.SubElement(item, "guid")

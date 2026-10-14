@@ -70,6 +70,8 @@ def _format_message(
     total_failed = 0
     total_splice_failed = 0
     total_ad_removal_failed = 0
+    total_repairs_failed = 0
+    total_repairs_succeeded = 0
     total_unavailable = 0
 
     for r in results:
@@ -78,6 +80,8 @@ def _format_message(
         failed = r.get("failed", 0)
         splice_failed = r.get("splice_failed", 0)
         ad_removal_failed = r.get("ad_removal_failed", 0)
+        repairs_succeeded = r.get("repairs_succeeded", 0)
+        repairs_failed = r.get("repairs_failed", 0)
         unavailable = r.get("unavailable", 0)
         bot = r.get("bot_detected", False)
         error_msg = r.get("error")
@@ -86,6 +90,8 @@ def _format_message(
         total_failed += failed
         total_splice_failed += splice_failed
         total_ad_removal_failed += ad_removal_failed
+        total_repairs_failed += repairs_failed
+        total_repairs_succeeded += repairs_succeeded
         total_unavailable += unavailable
 
         if error_msg:
@@ -96,8 +102,12 @@ def _format_message(
             lines.append(f"⚠️ {name} — {splice_failed} splice failed (not published, will retry)")
         elif failed > 0:
             lines.append(f"❌ {name} — {failed} failed, {new} new")
+        elif repairs_failed > 0:
+            lines.append(f"⚠️ {name} — {repairs_failed} recent episode repair(s) failed; existing audio kept")
         elif ad_removal_failed > 0:
             lines.append(f"⚠️ {name} — {new} new, {ad_removal_failed} published with ads (removal failed)")
+        elif repairs_succeeded > 0:
+            lines.append(f"✅ {name} — repaired {repairs_succeeded} recent episode(s)")
         elif unavailable > 0:
             # Never report this as "up to date": a run that skipped every episode
             # as unavailable is the signature of degraded extraction.
@@ -108,7 +118,13 @@ def _format_message(
             lines.append(f"— {name} — up to date")
 
     # Footer
-    healthy = status == "success" and total_splice_failed == 0 and total_ad_removal_failed == 0 and total_unavailable == 0
+    healthy = (
+        status == "success"
+        and total_splice_failed == 0
+        and total_ad_removal_failed == 0
+        and total_repairs_failed == 0
+        and total_unavailable == 0
+    )
     status_emoji = "✅" if healthy else "⚠️"
     summary_parts = [f"{total_new} downloaded"]
     if total_failed:
@@ -117,6 +133,10 @@ def _format_message(
         summary_parts.append(f"{total_splice_failed} splice failed")
     if total_ad_removal_failed:
         summary_parts.append(f"{total_ad_removal_failed} published with ads")
+    if total_repairs_succeeded:
+        summary_parts.append(f"{total_repairs_succeeded} repaired")
+    if total_repairs_failed:
+        summary_parts.append(f"{total_repairs_failed} repair warnings")
     if total_unavailable:
         summary_parts.append(f"{total_unavailable} unavailable")
     lines.append(f"\n{status_emoji} {', '.join(summary_parts)}")
