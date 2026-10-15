@@ -318,10 +318,14 @@ if [ "$DRY_RUN" = false ]; then
   # Renew the lease in the background so runs longer than the TTL keep it.
   # If renewal loses the lease, stop this shell immediately: continuing could
   # write concurrently with the runner that acquired the replacement lease.
-  # The flag file distinguishes a lost lease from an operator's Ctrl-C, and the
-  # foreground child is signalled first because bash defers traps until the
-  # foreground command returns — without that, an in-flight sync would keep
-  # running for hours with no lease.
+  # The flag file distinguishes a lost lease from an operator's Ctrl-C. The
+  # runner is signalled FIRST, while it is still blocked waiting on its
+  # foreground child: bash defers the trap until that command returns, so the
+  # TERM is queued rather than racing against normal execution (on Linux the
+  # racing TERM killed the shell before on_terminate could run, which left the
+  # lease to be wrongly released). Only then is the foreground child killed, so
+  # the wait returns and bash runs the queued trap. pkill also matches this
+  # subshell, which is harmless now that the runner has already been signalled.
   (
       # Cleanup must stop and reap the actual heartbeat before releasing the
       # lease. Killing just this wrapper subshell would orphan its Python child.
@@ -350,8 +354,8 @@ if [ "$DRY_RUN" = false ]; then
       else
           : > "$LEASE_LOST_FLAG"
           warn "Distributed lock heartbeat failed; stopping this run to avoid concurrent writes. See ${LOG_DIR}/lock_renewal.log"
-          pkill -TERM -P "$RUNNER_PID" 2>/dev/null || true
           kill -TERM "$RUNNER_PID" 2>/dev/null || true
+          pkill -TERM -P "$RUNNER_PID" 2>/dev/null || true
       fi
   ) &
   LOCK_RENEW_PID=$!
