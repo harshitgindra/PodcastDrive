@@ -71,7 +71,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import math
 import os
 import re
 import ssl
@@ -85,17 +84,36 @@ import certifi
 from botocore.exceptions import BotoCoreError, ClientError
 
 import settings
+
+# Pure, dependency-light helpers extracted into submodules. They are imported
+# into the package namespace so existing callers and tests keep referring to
+# them as ``ad_remover.<name>`` and ``patch("ad_remover.<name>")`` still works.
+from ad_remover._cachekeys import (
+    _cache_key,
+    _cache_read_keys,
+    _safe_namespace,
+    _transcript_cache_key,  # noqa: F401 - re-exported for callers/tests
+)
+from ad_remover._prompts import (
+    _AD_DETECTION_PROMPT,
+    _AD_HINTS_SECTION,
+    _AD_NARROW_PROMPT,
+    _AD_VERIFICATION_PROMPT,
+)
+from ad_remover._segments import (
+    AdSegment,
+    _clamp_ad_segments,
+    _coerce_ad_segment,
+    _merge_overlapping_ads,
+    _parse_ad_response,
+    _split_segments_into_chunks,
+)
 from utils import retry_aws_call
 
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# ---------------------------------------------------------------------------
-# Internal type alias
-# ---------------------------------------------------------------------------
-AdSegment = dict  # {"start": float, "end": float}
 
 
 class NoUsableAdSegments(ValueError):
@@ -418,56 +436,6 @@ def detect_music_bookends(
 # ---------------------------------------------------------------------------
 # Step 1 – Transcription (AWS Transcribe)
 # ---------------------------------------------------------------------------
-
-
-def _safe_namespace(namespace: str) -> str:
-    """Return *namespace* reduced to characters that are safe in an S3 key."""
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", namespace).strip("-.")
-    return cleaned[:80]
-
-
-def _cache_key(video_id: str, suffix: str, namespace: str = "") -> str:
-    """Return the S3 cache key for *video_id* under *namespace*.
-
-    Episode identifiers are only unique *within* a feed.  RSS ``<guid>`` values
-    are frequently bare integers, so ``episode_id_from_guid`` produces ids like
-    ``"1"`` or ``"12345"`` that collide across podcasts.  Without a namespace,
-    two different episodes shared one transcript and one ad-segment cache entry,
-    and the second podcast had another show's ad timestamps spliced out of it.
-
-    Args:
-        video_id:  Episode identifier (unique within the namespace).
-        suffix:    Key suffix, e.g. ``".json"``, ``"_ads.json"``.
-        namespace: Per-podcast namespace, usually the S3 slug.  Empty means the
-            legacy flat layout.
-
-    Returns:
-        The S3 object key.
-    """
-    prefix = settings.get("TRANSCRIBE_CACHE_PREFIX")
-    ns = _safe_namespace(namespace)
-    if ns:
-        return f"{prefix}/{ns}/{video_id}{suffix}"
-    return f"{prefix}/{video_id}{suffix}"
-
-
-def _cache_read_keys(video_id: str, suffix: str, namespace: str = "") -> list[str]:
-    """Return the keys to try when *reading* a cache entry, best match first.
-
-    The flat (un-namespaced) key is included as a fallback so entries written
-    before namespacing are still honoured instead of forcing a re-transcription
-    of the whole back catalogue.
-    """
-    keys = [_cache_key(video_id, suffix, namespace)]
-    flat = _cache_key(video_id, suffix, "")
-    if flat != keys[0]:
-        keys.append(flat)
-    return keys
-
-
-def _transcript_cache_key(video_id: str, namespace: str = "") -> str:
-    """Return the S3 key used for caching a transcript."""
-    return _cache_key(video_id, ".json", namespace)
 
 
 def _get_cached_bytes(s3_client, bucket: str, keys: list[str], label: str, video_id: str) -> bytes | None:
@@ -1097,95 +1065,6 @@ def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[di
 # Step 2 – Ad detection (AWS Bedrock)
 # ---------------------------------------------------------------------------
 
-_AD_DETECTION_PROMPT = """You are an expert podcast audio editor specialising in ad removal.
-
-Below is the word-level transcript of a podcast episode. Each line has the
-format:  [start_seconds - end_seconds]  text
-
-## Your task
-Identify EVERY advertisement and sponsored segment, including host-read ads
-where the host personally delivers the ad copy in their own voice.
-
-## Common ad signals to look for
-- Sponsor introductions: "brought to you by", "this episode is sponsored by",
-  "our sponsor", "a word from our sponsor", "thanks to X for supporting us",
-  "partnered with", "presented by"
-- Discount / promo language: "use code", "promo code", "get X% off",
-  "first month free", "free trial", "limited time offer", "sign up today",
-  "visit X dot com slash"
-- URL / website mentions in a promotional context: "dot com slash podcast",
-  website names followed by offers or calls to action
-- Price mentions: "for just $X", "starting at", "plans from"
-- Ad outros / transitions back to content: "now back to", "and we're back",
-  "alright let's get into it", "back to the show", "let's continue"
-
-## What is NOT an ad
-Do NOT flag these as ads:
-- Calls to subscribe, follow, or leave a review ("subscribe to the podcast",
-  "five-star review", "follow us on Twitter/X", "hit the like button")
-- Mentions of the host's own book, course, or newsletter without external
-  sponsor language or discount codes
-- Casual organic product mentions without promotion ("I use Notion for this",
-  "I love my AeroPress")
-- News discussion, editorial commentary, or analysis about a company or brand
-- Introductions or transitions between topics, guests, or segments
-{hints_section}
-## Rules
-1. Only flag segments where you have clear evidence of advertising. Do NOT flag
-   editorial discussion, interview content, or product mentions unless they are
-   clearly promotional with a call-to-action. If a segment is ambiguous, leave it out.
-2. Return each ad break as a separate segment. Do NOT merge adjacent ad breaks —
-   the code will handle merging. Keeping them separate lets each be verified independently.
-3. Host-read ads blend naturally into the show's tone — look for the signals
-   above even when the voice and style match the rest of the episode.
-4. A single ad segment should rarely exceed 3 minutes (180 seconds). If you find
-   yourself marking a very long stretch as an ad, double-check it is not content.
-
-## Reasoning step (do NOT include in output)
-Before writing the JSON, briefly note each candidate segment and why you
-think it is an ad. Then output ONLY the final JSON array.
-
-## Output format
-Return ONLY a valid JSON array. Each element must have "start" and "end"
-keys as floating-point seconds. If there are no ads return [].
-
-Example:
-[{{"start": 118.5, "end": 197.0}}, {{"start": 2308.0, "end": 2407.5}}]
-
-Transcript:
-{transcript}
-"""
-
-_AD_HINTS_SECTION = """
-## Podcast-specific ad patterns
-The following notes describe known advertising patterns for this podcast.
-Use them as extra guidance — do not limit detection to only these patterns.
-{hints}
-
-"""
-
-
-_AD_VERIFICATION_PROMPT = """You are reviewing a candidate ad segment extracted from a podcast transcript.
-The segment below was flagged as a possible advertisement.
-
-Segment [{start:.1f}s – {end:.1f}s]:
-{text}
-
-Is this segment an advertisement or sponsored content?
-Answer with ONLY a JSON object on a single line:
-{{"is_ad": true, "reason": "one-sentence explanation"}}
-
-Criteria for YES (is_ad=true):
-- Clear sponsor language, discount codes, promo URLs, or calls-to-action
-- Explicit mention of a product/service being sold, with pricing or sign-up incentive
-
-Criteria for NO (is_ad=false):
-- Editorial discussion, interview, news analysis, or opinion content
-- Casual product mention without promotion (e.g. "I used Notion for this")
-- Content about the podcast itself (subscribe, leave a review)
-"""
-
-
 def _verify_ad_segment(
     segment: AdSegment,
     transcript_segments: list[dict],
@@ -1280,18 +1159,6 @@ def _verify_ad_segment(
             exc,
         )
         return True
-
-
-_AD_NARROW_PROMPT = """ You previously identified an ad segment in a podcast transcript from {start:.1f}s to  {end:.1f}s ({duration:.0f}s total). However, this segment is too long to be a single ad —  it likely contains both regular content and one or more embedded ad reads.
-
-Below is the transcript text for ONLY that time range. Identify the EXACT ad portion(s)  within it. Return a JSON array of the narrowed ad boundaries. If there is no actual ad  in this text, return [].
-
-TRANSCRIPT ({start:.1f}s – {end:.1f}s):
-{text}
-
-Return ONLY a JSON array like: [{{"start": 123.4, "end": 234.5}}]
-Use the original timestamps from the transcript. Be precise — only include the ad read itself,  not the surrounding content.
-"""
 
 
 def _narrow_oversized_segment(
@@ -1558,173 +1425,6 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
 
     logger.info("[AdRemover] Detected %d ad segment(s): %s", len(valid), valid)
     return valid
-
-
-def _split_segments_into_chunks(segments: list[dict], max_chars: int, overlap_secs: float) -> list[list[dict]]:
-    """Split transcript segments into chunks that fit within max_chars.
-
-    Each chunk overlaps with the next by at least *overlap_secs* worth of
-    segments so ads at chunk boundaries are seen by both chunks.
-    """
-    all_lines = [(s, f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}") for s in segments]
-
-    total_chars = sum(len(line) + 1 for _, line in all_lines)
-    if total_chars <= max_chars:
-        return [segments]
-
-    chunks: list[list[dict]] = []
-    i = 0
-    while i < len(all_lines):
-        chunk_segments: list[dict] = []
-        char_count = 0
-
-        j = i
-        while j < len(all_lines):
-            line_len = len(all_lines[j][1]) + 1
-            if char_count + line_len > max_chars and chunk_segments:
-                break
-            chunk_segments.append(all_lines[j][0])
-            char_count += line_len
-            j += 1
-
-        chunks.append(chunk_segments)
-
-        if j >= len(all_lines):
-            break
-
-        # Walk back from j to find the overlap start point
-        overlap_start_time = all_lines[j][0]["start"] - overlap_secs
-        next_i = j
-        while next_i > i and all_lines[next_i - 1][0]["start"] >= overlap_start_time:
-            next_i -= 1
-
-        # Ensure forward progress
-        i = max(next_i, i + 1) if next_i <= i else next_i
-
-    return chunks
-
-
-def _coerce_ad_segment(seg: object) -> AdSegment | None:
-    """Return *seg* as a well-formed ad segment, or ``None`` if it is unusable.
-
-    Bedrock output is untrusted: it can contain nulls, strings, NaN, negative
-    offsets, and inverted intervals.  An inverted segment is the dangerous case
-    -- ``{"start": 500, "end": 100}`` yields keep intervals ``(0, 500)`` and
-    ``(100, duration)``, so splice_audio *duplicates* 400 seconds of audio into
-    the published episode instead of removing anything, with no error raised.
-
-    Args:
-        seg: A candidate segment from a parsed model response.
-
-    Returns:
-        ``{"start": float, "end": float}`` with ``0 <= start < end``, or ``None``.
-    """
-    if not isinstance(seg, dict) or "start" not in seg or "end" not in seg:
-        logger.warning("[AdRemover] Ignoring malformed ad segment: %s", seg)
-        return None
-    try:
-        start = float(seg["start"])
-        end = float(seg["end"])
-    except (TypeError, ValueError):
-        logger.warning("[AdRemover] Ignoring ad segment with non-numeric bounds: %s", seg)
-        return None
-    if not (math.isfinite(start) and math.isfinite(end)):
-        logger.warning("[AdRemover] Ignoring ad segment with non-finite bounds: %s", seg)
-        return None
-    if start < 0:
-        logger.warning("[AdRemover] Clamping negative ad segment start %.1f to 0 (%s)", start, seg)
-        start = 0.0
-    if end <= start:
-        logger.warning("[AdRemover] Ignoring inverted or empty ad segment: %s", seg)
-        return None
-    return {"start": start, "end": end}
-
-
-def _clamp_ad_segments(segments: list[AdSegment], total_duration: float) -> list[AdSegment]:
-    """Clamp *segments* to ``[0, total_duration]``, dropping any that fall outside.
-
-    A segment past the end of the file makes ffmpeg's atrim produce an empty
-    stream, which fails the splice or silently truncates the episode.
-
-    Args:
-        segments:       Already-coerced ad segments.
-        total_duration: Probed duration of the audio file in seconds.
-
-    Returns:
-        The subset of *segments* that overlaps the file, with ends clamped.
-    """
-    if total_duration <= 0:
-        return list(segments)
-
-    clamped: list[AdSegment] = []
-    for seg in segments:
-        if seg["start"] >= total_duration:
-            logger.warning(
-                "[AdRemover] Dropping ad segment %.1f-%.1fs — starts past the end of the file (%.1fs)",
-                seg["start"],
-                seg["end"],
-                total_duration,
-            )
-            continue
-        end = min(seg["end"], total_duration)
-        if end <= seg["start"]:
-            continue
-        if end != seg["end"]:
-            logger.warning(
-                "[AdRemover] Clamping ad segment end %.1fs to the file duration %.1fs",
-                seg["end"],
-                total_duration,
-            )
-        clamped.append({"start": seg["start"], "end": end})
-    return clamped
-
-
-def _parse_ad_response(raw: str) -> list[AdSegment]:
-    """Extract a JSON array of ad segments from a model response string."""
-    end_idx = raw.rfind("]")
-    if end_idx == -1:
-        logger.warning("[AdRemover] Bedrock response contained no JSON array — assuming no ads.")
-        return []
-
-    search_end = end_idx
-    while search_end >= 0:
-        start_idx = raw.rfind("[", 0, search_end)
-        if start_idx == -1:
-            break
-        candidate = raw[start_idx : end_idx + 1]
-        try:
-            result = json.loads(candidate)
-            if isinstance(result, list):
-                valid = []
-                for seg in result:
-                    coerced = _coerce_ad_segment(seg)
-                    if coerced is not None:
-                        valid.append(coerced)
-                return valid
-        except json.JSONDecodeError:
-            pass
-        search_end = start_idx
-
-    logger.warning("[AdRemover] Could not extract valid JSON array from Bedrock response — assuming no ads.")
-    return []
-
-
-def _merge_overlapping_ads(ads: list[AdSegment]) -> list[AdSegment]:
-    """Merge overlapping or adjacent ad segments from multiple chunks."""
-    if not ads:
-        return []
-
-    merge_gap = settings.get("AD_MERGE_GAP_SECS")
-    sorted_ads = sorted(ads, key=lambda s: s["start"])
-    merged: list[AdSegment] = [{"start": sorted_ads[0]["start"], "end": sorted_ads[0]["end"]}]
-
-    for seg in sorted_ads[1:]:
-        if seg["start"] <= merged[-1]["end"] + merge_gap:
-            merged[-1]["end"] = max(merged[-1]["end"], seg["end"])
-        else:
-            merged.append({"start": seg["start"], "end": seg["end"]})
-
-    return merged
 
 
 # ---------------------------------------------------------------------------

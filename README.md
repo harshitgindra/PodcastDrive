@@ -41,8 +41,8 @@ A self-hosted podcast pipeline that does two things:
 The ad-removal pipeline runs automatically for both YouTube and RSS episodes:
 
 1. **Transcribe** — Uploads the MP3 to a temporary S3 prefix and submits it to AWS Transcribe for word-level transcription
-2. **Detect** — Sends the transcript to AWS Bedrock (Claude Sonnet by default) to identify ad segments as `[{start, end}, ...]`
-3. **Guard** — Segments longer than `MAX_AD_SEGMENT_SECS` (default 180 s) are silently dropped as false positives before any cutting happens
+2. **Detect** — Sends the transcript to AWS Bedrock (Claude Haiku by default; override with `BEDROCK_DETECT_MODEL_ID`) to identify ad segments as `[{start, end}, ...]`
+3. **Guard** — Segments longer than `MAX_AD_SEGMENT_SECS` (default 300 s) are silently dropped as false positives before any cutting happens
 4. **Verify** — Segments longer than `AD_VERIFY_THRESHOLD_SECS` (default 90 s) trigger a second Bedrock call with supporting transcript context to confirm they are genuinely ads
 5. **Snap** — When `AD_SNAP_TO_SILENCE=true` (default), each cut boundary is moved to the nearest silence gap within ±3 s, producing cleaner audio transitions
 6. **Splice** — Uses FFmpeg `atrim` + `concat` to cut out confirmed ad segments and stitch the remaining audio into a clean MP3
@@ -162,6 +162,21 @@ cp config.env.example config.env
 
 ### All environment variables
 
+> Every knob is declared once in [`src/settings.py`](src/settings.py), which also
+> generates [`config.env.example`](config.env.example) (`make config-example`).
+> That registry is the authoritative source of names and defaults. The table
+> below covers the settings you are most likely to change; the generated
+> `config.env.example` additionally documents download/retry tuning
+> (`MP3_QUALITY`, `DOWNLOAD_MAX_RETRIES`, `DOWNLOAD_RETRY_WAIT_MIN/MAX`),
+> cookies (`COOKIES_FILE`, `YTDLP_COOKIES`, `YTDLP_REMOTE_COMPONENTS`),
+> S3 reconciliation (`RECONCILE_MIN_ORPHANS`, `RECONCILE_MAX_ORPHAN_RATIO`),
+> splice-retry controls (`MAX_SPLICE_RETRIES`, `SPLICE_RESET_EXHAUSTED`,
+> `SPLICE_MAX_ATTEMPTS_PER_RUN`, `SPLICE_CRASH_RETRIES`), feed/iTunes size caps
+> (`MAX_FEED_BYTES`, `MAX_ITUNES_BYTES`), AWS timeouts (`AWS_CONNECT_TIMEOUT`,
+> `AWS_READ_TIMEOUT`), ffmpeg/ffprobe binaries and timeouts (`FFMPEG_BIN`,
+> `FFPROBE_BIN`, `FFMPEG_*_TIMEOUT_SECS`, `FFPROBE_TIMEOUT_SECS`), and
+> `LOG_FORMAT`.
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `S3_BUCKET` | ✅ | — | S3 bucket name |
@@ -181,14 +196,27 @@ cp config.env.example config.env
 | `REMOVE_ADS` | | `true` | Set to `false` to disable ad removal entirely |
 | `REMOVE_ADS_DRY_RUN` | | `false` | Set to `true` to detect and log ad segments without cutting the audio — useful for evaluating detection quality before enabling full removal |
 | `TRANSCRIBE_LANGUAGE_CODE` | | `en-US` | BCP-47 language code for AWS Transcribe |
-| `BEDROCK_MODEL_ID` | | `us.anthropic.claude-sonnet-4-6` | Bedrock model ID for **second-pass verification** of long segments — accuracy matters here, Sonnet recommended |
-| `BEDROCK_DETECT_MODEL_ID` | | *(same as `BEDROCK_MODEL_ID`)* | Bedrock model ID for **first-pass detection** across all transcript chunks. Override with a cheaper model (e.g. Claude Haiku) to reduce per-episode detection cost by ~80% with minimal quality loss |
+| `BEDROCK_MODEL_ID` | | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model used for **second-pass verification** of long segments and for episode summaries. The detection model falls back to this when `BEDROCK_DETECT_MODEL_ID` is unset |
+| `BEDROCK_DETECT_MODEL_ID` | | *(same as `BEDROCK_MODEL_ID`)* | Bedrock model ID for **first-pass detection** across all transcript chunks. Set a different model here (e.g. a cheaper one for detection, a stronger one in `BEDROCK_MODEL_ID` for verification) to tune the cost/accuracy split |
 | `TRANSCRIBE_POLL_INTERVAL` | | `10` | Seconds between Transcribe job status polls |
 | `TRANSCRIBE_MAX_WAIT` | | `3600` | Max seconds to wait for a Transcribe job before giving up |
-| `MAX_AD_SEGMENT_SECS` | | `180` | Segments longer than this are treated as false positives and skipped — legitimate ads rarely exceed 3 minutes |
+| `TRANSCRIBE_CACHE_ENABLED` | | `true` | Reuse transcripts cached in S3 instead of paying to transcribe again |
+| `TRANSCRIBE_CACHE_PREFIX` | | `transcribe-cache` | S3 key prefix for cached transcripts |
+| `MIN_AD_SEGMENT_SECS` | | `5` | Discard detected ad segments shorter than this (likely a detection artefact) |
+| `MAX_AD_SEGMENT_SECS` | | `300` | Segments longer than this are treated as false positives and skipped — legitimate ads rarely exceed a few minutes |
+| `AD_MERGE_GAP_SECS` | | `2.0` | Merge two detected ad segments separated by less than this gap into one |
 | `AD_VERIFY_THRESHOLD_SECS` | | `90` | Segments longer than this trigger a second Bedrock confirmation call before cutting — set to `0` to verify every segment, or a large number to skip verification |
+| `AD_DETECT_MAX_CHARS` | | `60000` | Transcript characters per Bedrock detection request. Longer transcripts are split into overlapping chunks |
+| `AD_DETECT_OVERLAP_SECS` | | `60.0` | Seconds of overlap between consecutive detection chunks, so an ad straddling a chunk seam is seen by both |
+| `AD_TRANSCRIBE_WINDOWS` | | — | Comma-separated `start:end` second ranges to transcribe instead of the whole episode. Either bound may be `end` (total duration) or `end-N` (total minus N). Example: `0:300,end-600:end` |
 | `AD_SNAP_TO_SILENCE` | | `true` | Snap cut boundaries to the nearest silence gap within ±3 s for cleaner audio transitions. Segment **starts** snap to the earlier candidate (avoids cutting into content); **ends** snap to the later candidate (avoids clipping the ad outro) |
+| `TRIM_MUSIC_INTRO` | | `false` | Also trim a music-only intro from the start of each episode |
+| `TRIM_MUSIC_OUTRO` | | `false` | Also trim a music-only outro from the end of each episode |
+| `MUSIC_INTRO_MIN_SECS` | | `8.0` | Shortest music intro worth trimming, in seconds |
+| `MUSIC_OUTRO_MIN_SECS` | | `5.0` | Shortest music outro worth trimming, in seconds |
 | `SPLICE_LOUDNORM` | | `true` | Apply EBU R128 loudness normalisation (ffmpeg `loudnorm` filter) after splicing to equalise volume across all kept intervals. Set to `false` to skip (saves ~10–20% ffmpeg time) |
+| `GENERATE_SUMMARIES` | | `false` | Generate an AI episode summary via Bedrock (one extra call per episode) |
+| `SUMMARY_MAX_DURATION_SECS` | | `1800` | Skip summaries for episodes longer than this many seconds. `0` disables the guard |
 | `EVALUATE_AD_REMOVAL` | | `false` | Set to `true` to re-transcribe cleaned episodes and check for residual ads. Writes a JSON report to `reports/{slug}/{episode_id}_eval.json`. Disabled by default to avoid extra AWS costs. |
 | `EVAL_REPORTS_DIR` | | `reports` | Local directory where ad-removal evaluation JSON reports are written |
 | **Feed Customisation** | | | |
@@ -434,12 +462,12 @@ MP3 file
   │         │
   │         └─► AWS Transcribe ──► word-level transcript
   │                                         │
-  │                              AWS Bedrock (Claude Sonnet)
+  │                              AWS Bedrock (BEDROCK_DETECT_MODEL_ID)
   │                              "identify ad segments"
   │                                         │
   │                              [{start, end}, ...]
   │                                         │
-  │                         MAX_AD_SEGMENT_SECS guard (drop >180 s)
+  │                         MAX_AD_SEGMENT_SECS guard (drop >300 s)
   │                                         │
   │                         AD_VERIFY_THRESHOLD_SECS check
   │                         ├─ short segment → keep
@@ -458,8 +486,8 @@ The following improvements were made to address known failure modes observed in 
 
 | # | Fix | Env var | Why it matters |
 |---|---|---|---|
-| 1 | **Duration guard** | `MAX_AD_SEGMENT_SECS=180` | Prevents false positives where Bedrock marks an entire content block (e.g. 341 s) as an ad |
-| 2 | **Tighter merge gap** | Hard-coded 2 s (down from 5 s) | Avoids merging two distinct ads into one oversized segment that would then be verified |
+| 1 | **Duration guard** | `MAX_AD_SEGMENT_SECS=300` | Prevents false positives where Bedrock marks an entire content block (e.g. 341 s) as an ad |
+| 2 | **Tighter merge gap** | `AD_MERGE_GAP_SECS=2.0` (down from 5 s) | Avoids merging two distinct ads into one oversized segment that would then be verified |
 | 3 | **Verification pass** | `AD_VERIFY_THRESHOLD_SECS=90` | For borderline long segments, a second Bedrock prompt with transcript context confirms or rejects the segment before cutting |
 | 4 | **Silence snapping** | `AD_SNAP_TO_SILENCE=true` | Moves cut boundaries to genuine silence gaps so the splice is inaudible |
 | 5 | **Coordinate translation** | Internal (evaluator) | After splicing, timestamps in the cleaned file differ from the originals; the evaluator now translates residual timestamps back to the original timeline before classifying them as partial/missed |
