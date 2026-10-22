@@ -213,9 +213,16 @@ class TestProcessPlaylistHappyPath:
             patch.dict(os.environ, {**BASE_ENV, "REMOVE_ADS": "true", "REMOVE_ADS_DRY_RUN": "false"}, clear=True),
             patch("sync.S3Manager") as mock_s3_cls,
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
-            patch("sync.extract_video_metadata", return_value={
-                "upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": "",
-            }),
+            patch(
+                "sync.extract_video_metadata",
+                return_value={
+                    "upload_date": _RECENT_DATE,
+                    "description": "",
+                    "thumbnail": "",
+                    "duration": 300,
+                    "title": "",
+                },
+            ),
             patch("sync.download_and_convert", return_value="/tmp/vid001.mp3"),
             patch("sync.validate_audio_file", return_value=(True, "")),
             patch("sync.remove_ads", return_value=("/tmp/vid001.mp3", [], "")),
@@ -1096,15 +1103,11 @@ class TestExtractionFaultAccounting:
             s3 = _make_s3_manager()
             mock_s3_cls.return_value = s3
             mock_dl.side_effect = lambda url, vid, tmp: f"/tmp/PLtest/{vid}.mp3"
-            result = process_playlist(
-                "https://youtube.com/playlist?list=PLtest", dry_run=dry_run
-            )
+            result = process_playlist("https://youtube.com/playlist?list=PLtest", dry_run=dry_run)
             return result, mock_dl
 
     def test_extraction_error_counts_as_failure_not_unavailable(self):
-        result, mock_dl = self._run(
-            ExtractionError("Requested format is not available")
-        )
+        result, mock_dl = self._run(ExtractionError("Requested format is not available"))
 
         assert result["failed"] == 1
         assert result["unavailable"] == 0
@@ -1150,9 +1153,7 @@ class TestExtractionFaultAccounting:
         summaries = [r for r in caplog.records if "SYNC SUMMARY" in r.getMessage()]
         assert len(summaries) == 1
         assert "unavailable=1" in summaries[0].getMessage()
-        assert summaries[0].levelno == logging.WARNING, (
-            "a silent skip must be escalated above INFO so it is visible"
-        )
+        assert summaries[0].levelno == logging.WARNING, "a silent skip must be escalated above INFO so it is visible"
 
     def test_clean_run_summary_stays_at_info(self, caplog):
         good = {
@@ -1448,8 +1449,15 @@ class TestUnreadableManifestFailsClosed:
 
 class TestAdRemovalFallbackPublication:
     def _run(
-        self, tmp_path, *, remove_ads_result=None, remove_ads_error=None, valid=True, upload_error=None,
-        existing=None, manifest=None,
+        self,
+        tmp_path,
+        *,
+        remove_ads_result=None,
+        remove_ads_error=None,
+        valid=True,
+        upload_error=None,
+        existing=None,
+        manifest=None,
     ):
         video = _make_video("vid-fallback")
         playlist_meta = _make_playlist_meta()
@@ -1463,12 +1471,23 @@ class TestAdRemovalFallbackPublication:
             patch.dict(os.environ, BASE_ENV, clear=True),
             patch("sync.S3Manager") as mock_s3_cls,
             patch("sync.extract_playlist", return_value=(playlist_meta, [video])),
-            patch("sync.extract_video_metadata", return_value={
-                "upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": video.title,
-            }),
+            patch(
+                "sync.extract_video_metadata",
+                return_value={
+                    "upload_date": _RECENT_DATE,
+                    "description": "",
+                    "thumbnail": "",
+                    "duration": 300,
+                    "title": video.title,
+                },
+            ),
             patch("sync.download_and_convert", return_value=str(original)) as mock_download,
             patch("sync.validate_audio_file", return_value=(valid, "invalid media")),
-            patch("sync.remove_ads", return_value=remove_ads_result or (str(original), [], "TRANSCRIBE_FAILED"), side_effect=remove_ads_effect) as mock_remove,
+            patch(
+                "sync.remove_ads",
+                return_value=remove_ads_result or (str(original), [], "TRANSCRIBE_FAILED"),
+                side_effect=remove_ads_effect,
+            ) as mock_remove,
             patch("sync.build_episode_metadata", return_value=[]),
             patch("sync.generate_rss", return_value="<rss/>"),
             patch("sync.shutil.rmtree"),

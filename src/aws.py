@@ -87,8 +87,7 @@ def configure(*, force: bool = False) -> boto3.Session:
         _configured = True
 
         logger.debug(
-            "AWS clients configured: connect_timeout=%.1fs read_timeout=%.1fs "
-            "retries=%s/%d attempts",
+            "AWS clients configured: connect_timeout=%.1fs read_timeout=%.1fs retries=%s/%d attempts",
             settings.get(_ENV_CONNECT_TIMEOUT),
             settings.get(_ENV_READ_TIMEOUT),
             DEFAULT_RETRY_MODE,

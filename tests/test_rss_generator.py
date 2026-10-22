@@ -712,9 +712,7 @@ class TestBuildEpisodeMetadata:
         mock_s3.get_object_size.side_effect = Exception("S3 error")
 
         omitted: list[str] = []
-        result = build_episode_metadata(
-            entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, omitted_ids=omitted
-        )
+        result = build_episode_metadata(entries, {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, omitted_ids=omitted)
 
         assert result == []
         assert omitted == ["v1"]
@@ -722,6 +720,7 @@ class TestBuildEpisodeMetadata:
     def test_omission_does_not_drop_the_sized_episodes(self):
         entries = [self._make_video_entry("v1"), self._make_video_entry("v2")]
         mock_s3 = MagicMock()
+
         def size_for(key):
             if "v1" in key:
                 raise Exception("S3 error")
@@ -824,9 +823,7 @@ class TestDuplicateTitleDeterminism:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1000
 
-        result = build_episode_metadata(
-            entries, {"old_id", "new_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"old_id", "new_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert [e.video_id for e in result] == ["new_id"]
 
@@ -839,9 +836,7 @@ class TestDuplicateTitleDeterminism:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1000
 
-        result = build_episode_metadata(
-            entries, {"aaa", "zzz"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"aaa", "zzz"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert [e.video_id for e in result] == ["zzz"]
 
@@ -854,9 +849,7 @@ class TestDuplicateTitleDeterminism:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1000
 
-        forward = build_episode_metadata(
-            pair, {"old_id", "new_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        forward = build_episode_metadata(pair, {"old_id", "new_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
         reverse = build_episode_metadata(
             list(reversed(pair)), {"new_id", "old_id"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
         )
@@ -932,9 +925,7 @@ class TestDuplicateTitleDeterminism:
         mock_s3 = MagicMock()
         mock_s3.get_object_size.return_value = 1000
 
-        result = build_episode_metadata(
-            entries, {"a", "b", "c"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3
-        )
+        result = build_episode_metadata(entries, {"a", "b", "c"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3)
 
         assert [e.video_id for e in result] == ["c", "b", "a"]
 
@@ -1038,9 +1029,7 @@ class TestFileSizeFallback:
         mock_s3.get_object_size.return_value = 0
 
         omitted: list[str] = []
-        build_episode_metadata(
-            [self._entry()], {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, omitted_ids=omitted
-        )
+        build_episode_metadata([self._entry()], {"v1"}, CLOUDFRONT_BASE, PLAYLIST_ID, mock_s3, omitted_ids=omitted)
 
         assert omitted == ["v1"]
 
@@ -1055,9 +1044,7 @@ class TestFileSizeFallback:
 
     def test_enclosure_keeps_length_when_size_known(self):
         meta = _make_playlist_meta()
-        xml_str = generate_rss(
-            meta, [_make_episode(file_size=4242)], CLOUDFRONT_BASE, PLAYLIST_ID
-        )
+        xml_str = generate_rss(meta, [_make_episode(file_size=4242)], CLOUDFRONT_BASE, PLAYLIST_ID)
         enc = ET.fromstring(xml_str).find(".//item/enclosure")
 
         assert enc.get("length") == "4242"

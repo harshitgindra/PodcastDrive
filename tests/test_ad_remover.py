@@ -2164,9 +2164,7 @@ class TestWindowedTranscriptionSharesMainPathBehaviour:
         tc = MagicMock()
         tc.get_transcription_job.return_value = self._completed_job()
         s3 = MagicMock()
-        monkeypatch.setattr(
-            ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc)
-        )
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc))
         monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
         monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
         monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=self._fake_transcript_resp()))
@@ -2198,9 +2196,7 @@ class TestWindowedTranscriptionSharesMainPathBehaviour:
         tc = MagicMock()
         tc.get_transcription_job.side_effect = [throttle, throttle, self._completed_job()]
         s3 = MagicMock()
-        monkeypatch.setattr(
-            ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc)
-        )
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc))
         monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
         monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
         monkeypatch.setattr(ur, "urlopen", MagicMock(return_value=self._fake_transcript_resp()))
@@ -2231,9 +2227,7 @@ class TestWindowedTranscriptionSharesMainPathBehaviour:
             {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "GetTranscriptionJob"
         )
         s3 = MagicMock()
-        monkeypatch.setattr(
-            ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc)
-        )
+        monkeypatch.setattr(ad_remover, "boto3", MagicMock(client=lambda svc, **kw: s3 if svc == "s3" else tc))
         monkeypatch.setattr(ad_remover, "_get_audio_duration", lambda p: 3600.0)
         monkeypatch.setattr(ad_remover, "_extract_audio_window", lambda *a: None)
 
@@ -2241,6 +2235,7 @@ class TestWindowedTranscriptionSharesMainPathBehaviour:
             ad_remover.transcribe_audio(str(fake_mp3), "ep_broken_poll")
 
         assert tc.get_transcription_job.call_count == ad_remover._MAX_POLL_ERRORS
+
 
 class TestDetectMusicBookends:
     """Tests for detect_music_bookends()."""
@@ -3898,9 +3893,7 @@ class TestSpliceConcatDemuxer:
             return subprocess.CompletedProcess(cmd, 0, stdout="120.0", stderr="")
 
         monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
-        monkeypatch.setattr(
-            ad_remover, "_splice_concat_demuxer", lambda *a, **k: fallback_called.append(a)
-        )
+        monkeypatch.setattr(ad_remover, "_splice_concat_demuxer", lambda *a, **k: fallback_called.append(a))
 
         ad_remover.splice_audio(str(src), [{"start": 30.0, "end": 60.0}], str(out))
 
@@ -3929,9 +3922,7 @@ class TestSpliceConcatDemuxer:
             return subprocess.CompletedProcess(cmd, 0, stdout="120.0", stderr="")
 
         monkeypatch.setattr(ad_remover.subprocess, "run", fake_run)
-        monkeypatch.setattr(
-            ad_remover, "_splice_concat_demuxer", lambda *a, **k: fallback_called.append(a)
-        )
+        monkeypatch.setattr(ad_remover, "_splice_concat_demuxer", lambda *a, **k: fallback_called.append(a))
 
         ad_remover.splice_audio(str(src), [{"start": 30.0, "end": 60.0}], str(out))
 

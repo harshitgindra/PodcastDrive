@@ -88,8 +88,12 @@ class TestMoveFileFailed:
         with patch("mediasync.migrate._get_channel_for_url", return_value="Channel"):
             with patch("mediasync.migrate._move_file", return_value=False):
                 result = _migrate_entry(
-                    entry, config, notion, storage,
-                    artwork_uploaded=set(), dry_run=False,
+                    entry,
+                    config,
+                    notion,
+                    storage,
+                    artwork_uploaded=set(),
+                    dry_run=False,
                 )
 
         assert result == "skipped"
@@ -125,9 +129,7 @@ class TestOneDriveMove:
         import urllib.error
 
         # First call: 401, second call: success
-        http_err = urllib.error.HTTPError(
-            "url", 401, "Unauthorized", {}, None
-        )
+        http_err = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
         mock_resp = MagicMock()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
@@ -145,9 +147,7 @@ class TestOneDriveMove:
     def test_http_error_500_returns_false(self, mock_urlopen):
         import urllib.error
 
-        http_err = urllib.error.HTTPError(
-            "url", 500, "Server Error", {}, None
-        )
+        http_err = urllib.error.HTTPError("url", 500, "Server Error", {}, None)
         mock_urlopen.side_effect = http_err
 
         client = MagicMock()

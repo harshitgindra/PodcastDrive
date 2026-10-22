@@ -93,6 +93,7 @@ class TestCheckHealth:
 
     def test_onedrive_init_failure(self, onedrive_config, capsys):
         from mediasync.onedrive_client import OneDriveError
+
         with patch("mediasync.onedrive_client.OneDriveClient", side_effect=OneDriveError("token expired")):
             result = _check_health(onedrive_config)
         assert result == 1
@@ -133,8 +134,10 @@ class TestMainMigrateFlag:
     @patch("mediasync.cli.Config.from_env")
     def test_migrate_flag(self, mock_env, mock_run_mig):
         mock_env.return_value = Config(
-            notion_token="t", notion_database_id="d",
-            profiles=[Profile("x")], herald_enabled=False,
+            notion_token="t",
+            notion_database_id="d",
+            profiles=[Profile("x")],
+            herald_enabled=False,
         )
         assert main(["--migrate"]) == 0
         mock_run_mig.assert_called_once()
@@ -143,8 +146,10 @@ class TestMainMigrateFlag:
     @patch("mediasync.cli.Config.from_env")
     def test_regenerate_flag(self, mock_env, mock_regen):
         mock_env.return_value = Config(
-            notion_token="t", notion_database_id="d",
-            profiles=[Profile("x")], herald_enabled=False,
+            notion_token="t",
+            notion_database_id="d",
+            profiles=[Profile("x")],
+            herald_enabled=False,
         )
         assert main(["--regenerate-playlists"]) == 0
         mock_regen.assert_called_once()
@@ -153,8 +158,10 @@ class TestMainMigrateFlag:
     @patch("mediasync.cli.Config.from_env")
     def test_check_flag(self, mock_env, mock_check):
         mock_env.return_value = Config(
-            notion_token="t", notion_database_id="d",
-            profiles=[Profile("x")], herald_enabled=False,
+            notion_token="t",
+            notion_database_id="d",
+            profiles=[Profile("x")],
+            herald_enabled=False,
         )
         assert main(["--check"]) == 0
         mock_check.assert_called_once()
@@ -165,8 +172,10 @@ class TestMainMigrateFlag:
     @patch("mediasync.cli.Config.from_env")
     def test_reset_flag(self, mock_env, mock_run, mock_notify, mock_reset):
         cfg = Config(
-            notion_token="t", notion_database_id="d",
-            profiles=[Profile("x")], herald_enabled=False,
+            notion_token="t",
+            notion_database_id="d",
+            profiles=[Profile("x")],
+            herald_enabled=False,
         )
         mock_env.return_value = cfg
         mock_run.return_value = RunStats()

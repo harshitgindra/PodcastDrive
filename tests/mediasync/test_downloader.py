@@ -268,15 +268,18 @@ class TestSanitizeTitle:
 class TestIsPlaylist:
     def test_playlist_url(self):
         from mediasync.downloader import is_playlist
+
         assert is_playlist("https://www.youtube.com/playlist?list=PLxxx") is True
 
     def test_video_with_list_param(self):
         from mediasync.downloader import is_playlist
+
         # watch?v=X&list=Y is a video in a playlist context, treat as single
         assert is_playlist("https://www.youtube.com/watch?v=abc&list=PLxxx") is False
 
     def test_single_video_url(self):
         from mediasync.downloader import is_playlist
+
         assert is_playlist("https://www.youtube.com/watch?v=abc") is False
 
 
@@ -499,9 +502,7 @@ class TestPlaylistFilenameCollisions:
 
     def test_three_same_titled_items_are_all_distinct(self, tmp_path):
         entries = [{"id": f"vid{i}", "title": "Part 1"} for i in range(1, 4)]
-        metas = {
-            f"vid{i}": {"title": "Part 1", "duration": 10, "uploader": "A", "thumbnail": ""} for i in range(1, 4)
-        }
+        metas = {f"vid{i}": {"title": "Part 1", "duration": 10, "uploader": "A", "thumbnail": ""} for i in range(1, 4)}
 
         with patch("subprocess.run", side_effect=self._mock_run(tmp_path, entries, metas)):
             results = download(
@@ -727,8 +728,9 @@ class TestPartialDownloadCleanup:
             thumbnail_url="",
             format_type="audio",
         )
-        with patch("mediasync.downloader.is_playlist", return_value=False), patch(
-            "mediasync.downloader._download_single", return_value=[ghost]
+        with (
+            patch("mediasync.downloader.is_playlist", return_value=False),
+            patch("mediasync.downloader._download_single", return_value=[ghost]),
         ):
             with pytest.raises(MissingDownloadError) as exc:
                 download(
@@ -751,8 +753,9 @@ class TestPartialDownloadCleanup:
             thumbnail_url="",
             format_type="audio",
         )
-        with patch("mediasync.downloader.is_playlist", return_value=False), patch(
-            "mediasync.downloader._download_single", return_value=[ok]
+        with (
+            patch("mediasync.downloader.is_playlist", return_value=False),
+            patch("mediasync.downloader._download_single", return_value=[ok]),
         ):
             assert download(
                 "https://youtu.be/x",

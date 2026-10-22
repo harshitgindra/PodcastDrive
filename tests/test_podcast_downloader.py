@@ -644,9 +644,7 @@ class TestDownloadEpisodeRangeResume:
         partial.write_bytes(b"complete-data")  # 13 bytes
 
         def fake_urlopen(req, **kwargs):
-            raise urllib.error.HTTPError(
-                "url", 416, "Range Not Satisfiable", {"Content-Range": "bytes */13"}, None
-            )
+            raise urllib.error.HTTPError("url", 416, "Range Not Satisfiable", {"Content-Range": "bytes */13"}, None)
 
         with patch("podcast_downloader._urlopen", side_effect=fake_urlopen):
             result = download_episode("https://example.com/ep.mp3", "ep001", str(tmp_path))
@@ -827,7 +825,7 @@ class TestEpisodeIdNeverEmpty:
 
 class TestEpisodeIdCollisions:
     def test_wordpress_style_guids_do_not_all_collide(self):
-        """"https://example.com/?p=N" has its identity in the query string."""
+        """ "https://example.com/?p=N" has its identity in the query string."""
         ids = {episode_id_from_guid(f"https://example.com/?p={n}") for n in range(5)}
         assert len(ids) == 5
 
@@ -966,9 +964,7 @@ class TestItunesResponseSizeLimit:
 
 
 def _http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(
-        "https://example.com/ep.mp3", code, "boom", headers or {}, None
-    )
+    return urllib.error.HTTPError("https://example.com/ep.mp3", code, "boom", headers or {}, None)
 
 
 def _resp(data: bytes = b"audio", status: int = 200, headers: dict | None = None) -> MagicMock:
@@ -1149,6 +1145,7 @@ class TestDownloadEpisodeContentLength:
 
     def test_truncated_body_fails_and_removes_the_file(self, tmp_path):
         """A body shorter than Content-Length must not be published as complete."""
+
         def fake_urlopen(req, **kwargs):
             return _resp(b"x" * 10, headers={"Content-Length": "100"})
 
@@ -1341,12 +1338,8 @@ class TestRedirectSchemeGuard:
         handler = self._handler()
         req = urllib.request.Request("https://example.com/ep.mp3")
 
-        with patch.object(
-            urllib.request.HTTPRedirectHandler, "redirect_request", return_value="ok"
-        ) as parent:
-            result = handler.redirect_request(
-                req, None, 302, "Found", {}, "https://cdn.example.com/ep.mp3"
-            )
+        with patch.object(urllib.request.HTTPRedirectHandler, "redirect_request", return_value="ok") as parent:
+            result = handler.redirect_request(req, None, 302, "Found", {}, "https://cdn.example.com/ep.mp3")
 
         assert result == "ok"
         assert parent.called

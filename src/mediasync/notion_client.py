@@ -108,11 +108,13 @@ class NotionClient:
         """
         filter_obj = {
             "and": [
-                {"or": [
-                    {"property": "Status", "select": {"equals": "pending"}},
-                    {"property": "Status", "select": {"equals": "downloading"}},
-                    {"property": "Status", "select": {"is_empty": True}},
-                ]},
+                {
+                    "or": [
+                        {"property": "Status", "select": {"equals": "pending"}},
+                        {"property": "Status", "select": {"equals": "downloading"}},
+                        {"property": "Status", "select": {"is_empty": True}},
+                    ]
+                },
                 {"property": "Delete", "checkbox": {"equals": False}},
             ]
         }
@@ -193,9 +195,7 @@ class NotionClient:
         if error is not None:
             properties["Error"] = {"rich_text": [{"text": {"content": error[:2000]}}]}
         if status == Status.DONE:
-            properties["Processed At"] = {
-                "date": {"start": datetime.now(timezone.utc).isoformat()}
-            }
+            properties["Processed At"] = {"date": {"start": datetime.now(timezone.utc).isoformat()}}
 
         if self._patch(f"{NOTION_API}/pages/{page_id}", {"properties": properties}) is None:
             raise NotionError(f"Failed to update Notion page {page_id}")
@@ -205,10 +205,12 @@ class NotionClient:
         result = self._query(
             filter_obj={
                 "and": [
-                    {"or": [
-                        {"property": "Status", "select": {"equals": "done"}},
-                        {"property": "Status", "select": {"equals": "failed"}},
-                    ]},
+                    {
+                        "or": [
+                            {"property": "Status", "select": {"equals": "done"}},
+                            {"property": "Status", "select": {"equals": "failed"}},
+                        ]
+                    },
                     {"property": "Delete", "checkbox": {"equals": False}},
                 ]
             }
@@ -219,15 +221,18 @@ class NotionClient:
 
     def reset_status(self, page_id: str) -> None:
         """Clear status and processing metadata so the entry is re-processed."""
-        result = self._patch(f"{NOTION_API}/pages/{page_id}", {
-            "properties": {
-                "Status": {"select": None},
-                "File Key": {"rich_text": []},
-                "Duration": {"number": None},
-                "Error": {"rich_text": []},
-                "Processed At": {"date": None},
-            }
-        })
+        result = self._patch(
+            f"{NOTION_API}/pages/{page_id}",
+            {
+                "properties": {
+                    "Status": {"select": None},
+                    "File Key": {"rich_text": []},
+                    "Duration": {"number": None},
+                    "Error": {"rich_text": []},
+                    "Processed At": {"date": None},
+                }
+            },
+        )
         if result is None:
             raise NotionError(f"Failed to reset Notion page {page_id}")
 

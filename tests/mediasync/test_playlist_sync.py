@@ -107,6 +107,7 @@ class TestSyncPlaylists:
     @patch("mediasync.playlist_sync.get_playlist_metadata")
     def test_handles_fetch_failure_gracefully(self, mock_meta):
         from mediasync.downloader import DownloadError
+
         mock_meta.side_effect = DownloadError("Network error")
 
         notion = MagicMock()

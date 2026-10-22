@@ -70,7 +70,9 @@ class OneDriveClient:
                     pct = (used / total) * 100
                     logger.info(
                         "OneDrive healthy: %.1f%% used (%d/%d bytes)",
-                        pct, used, total,
+                        pct,
+                        used,
+                        total,
                     )
                 else:
                     logger.info("OneDrive healthy: connected")
@@ -87,13 +89,15 @@ class OneDriveClient:
 
     def _refresh_access_token(self) -> str:
         """Exchange refresh token for a new access token."""
-        data = urllib.parse.urlencode({
-            "client_id": self._client_id,
-            "client_secret": self._client_secret,
-            "refresh_token": self._refresh_token,
-            "grant_type": "refresh_token",
-            "scope": "Files.ReadWrite offline_access",
-        }).encode()
+        data = urllib.parse.urlencode(
+            {
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "refresh_token": self._refresh_token,
+                "grant_type": "refresh_token",
+                "scope": "Files.ReadWrite offline_access",
+            }
+        ).encode()
 
         req = urllib.request.Request(
             TOKEN_URL,
@@ -174,9 +178,7 @@ class OneDriveClient:
             if exc.code == 401 and not _retried:
                 self._access_token = self._refresh_access_token()
                 return self.file_exists(remote_path, _retried=True)
-            raise OneDriveError(
-                f"File existence check failed for {remote_path}: HTTP {exc.code}"
-            ) from exc
+            raise OneDriveError(f"File existence check failed for {remote_path}: HTTP {exc.code}") from exc
         except OneDriveError:
             raise
         except Exception as exc:
@@ -193,10 +195,7 @@ class OneDriveClient:
             OneDriveError: If the listing or token refresh fails.
         """
         encoded_path = urllib.parse.quote(remote_folder)
-        url: str | None = (
-            f"{GRAPH_API}/me/drive/root:/{encoded_path}:/children"
-            "?$select=name&$top=1000"
-        )
+        url: str | None = f"{GRAPH_API}/me/drive/root:/{encoded_path}:/children?$select=name&$top=1000"
         filenames: set[str] = set()
 
         while url:
@@ -215,9 +214,7 @@ class OneDriveClient:
                     return self.list_folder(remote_folder, _retried=True)
                 if exc.code == 404:
                     return set()
-                raise OneDriveError(
-                    f"Folder listing failed for {remote_folder}: HTTP {exc.code}"
-                ) from exc
+                raise OneDriveError(f"Folder listing failed for {remote_folder}: HTTP {exc.code}") from exc
             except OneDriveError:
                 raise
             except Exception as exc:
@@ -324,9 +321,11 @@ class OneDriveClient:
         url = f"{GRAPH_API}/me/drive/root:/{encoded_path}:/createUploadSession"
 
         # Create upload session
-        session_body = json.dumps({
-            "item": {"@microsoft.graph.conflictBehavior": "replace"},
-        }).encode()
+        session_body = json.dumps(
+            {
+                "item": {"@microsoft.graph.conflictBehavior": "replace"},
+            }
+        ).encode()
 
         req = urllib.request.Request(url, data=session_body, method="POST")
         req.add_header("Authorization", f"Bearer {self._access_token}")
@@ -363,8 +362,6 @@ class OneDriveClient:
                     if exc.code in (200, 201, 202):
                         pass  # Success or accepted
                     else:
-                        raise OneDriveError(
-                            f"Chunk upload failed at offset {offset}: HTTP {exc.code}"
-                        ) from exc
+                        raise OneDriveError(f"Chunk upload failed at offset {offset}: HTTP {exc.code}") from exc
 
                 offset += chunk_size

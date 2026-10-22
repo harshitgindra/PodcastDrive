@@ -61,6 +61,7 @@ class TestTagMp4:
         mock_mp4.tags.get.return_value = None
         with patch("mutagen.mp4.MP4", return_value=mock_mp4):
             from mediasync.tagger import _tag_mp4
+
             _tag_mp4(Path("/fake/song.m4a"), "My Song", "My Artist")
 
         mock_mp4.__setitem__.assert_any_call("\xa9nam", ["My Song"])
@@ -73,6 +74,7 @@ class TestTagMp4:
         mock_mp4.tags.get.return_value = ["Existing"]
         with patch("mutagen.mp4.MP4", return_value=mock_mp4):
             from mediasync.tagger import _tag_mp4
+
             _tag_mp4(Path("/fake/song.m4a"), "My Song", "My Artist")
 
         mock_mp4.__setitem__.assert_not_called()
@@ -86,6 +88,7 @@ class TestTagMp3:
         mock_tags.get.return_value = None
         with patch("mutagen.easyid3.EasyID3", return_value=mock_tags):
             from mediasync.tagger import _tag_mp3
+
             _tag_mp3(Path("/fake/song.mp3"), "My Song", "My Artist")
 
         mock_tags.__setitem__.assert_any_call("title", "My Song")
@@ -97,6 +100,7 @@ class TestTagMp3:
         mock_tags.get.side_effect = lambda k: ["Existing"] if k in ("title", "artist") else None
         with patch("mutagen.easyid3.EasyID3", return_value=mock_tags):
             from mediasync.tagger import _tag_mp3
+
             _tag_mp3(Path("/fake/song.mp3"), "My Song", "My Artist")
 
         mock_tags.__setitem__.assert_not_called()
@@ -111,6 +115,7 @@ class TestTagMp3:
         with patch("mutagen.easyid3.EasyID3", side_effect=[ID3NoHeaderError(), mock_tags]):
             with patch("mutagen.id3.ID3", return_value=mock_id3):
                 from mediasync.tagger import _tag_mp3
+
                 _tag_mp3(Path("/fake/song.mp3"), "Title", "Artist")
 
         mock_id3.save.assert_called_once()

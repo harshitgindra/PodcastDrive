@@ -331,9 +331,9 @@ def _generate_summary(
 # episode in their own handler, so a real bug surfaces as one failed episode in
 # the run summary instead of a silent, ad-laden upload.
 _OPERATIONAL_ERRORS = (
-    OSError,          # file/IO, and the base of ConnectionError / TimeoutError
-    RuntimeError,     # what this module raises for AWS/ffmpeg failures
-    ValueError,       # includes json.JSONDecodeError
+    OSError,  # file/IO, and the base of ConnectionError / TimeoutError
+    RuntimeError,  # what this module raises for AWS/ffmpeg failures
+    ValueError,  # includes json.JSONDecodeError
     subprocess.SubprocessError,
     BotoCoreError,
     ClientError,
@@ -401,12 +401,8 @@ def remove_ads(
     # Resolve music trimming flags (kwargs override env vars)
     _trim_intro = trim_music_intro or settings.get("TRIM_MUSIC_INTRO")
     _trim_outro = trim_music_outro or settings.get("TRIM_MUSIC_OUTRO")
-    _min_intro = (
-        min_music_intro_secs if min_music_intro_secs != 8.0 else settings.get("MUSIC_INTRO_MIN_SECS")
-    )
-    _min_outro = (
-        min_music_outro_secs if min_music_outro_secs != 5.0 else settings.get("MUSIC_OUTRO_MIN_SECS")
-    )
+    _min_intro = min_music_intro_secs if min_music_intro_secs != 8.0 else settings.get("MUSIC_INTRO_MIN_SECS")
+    _min_outro = min_music_outro_secs if min_music_outro_secs != 5.0 else settings.get("MUSIC_OUTRO_MIN_SECS")
 
     logger.info("[AdRemover] Starting ad removal for %s", video_id)
 
@@ -455,7 +451,9 @@ def remove_ads(
                 return (
                     mp3_path,
                     [],
-                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
+                    _generate_summary(
+                        _cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace
+                    ),
                 )
             if settings.get("AD_SNAP_TO_SILENCE"):
                 all_cached = snap_ad_boundaries(all_cached, mp3_path)
@@ -483,20 +481,26 @@ def remove_ads(
                 return (
                     mp3_path,
                     [],
-                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
+                    _generate_summary(
+                        _cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace
+                    ),
                 )
             except _OPERATIONAL_ERRORS as exc:
                 logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
                 return (
                     mp3_path,
                     all_cached,
-                    _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
+                    _generate_summary(
+                        _cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace
+                    ),
                 )
             logger.info("[AdRemover] Ad removal complete (cached) for %s → %s", video_id, cleaned_path)
             return (
                 cleaned_path,
                 all_cached,
-                _generate_summary(_cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace),
+                _generate_summary(
+                    _cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace
+                ),
             )
 
     try:

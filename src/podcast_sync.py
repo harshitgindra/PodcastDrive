@@ -482,13 +482,11 @@ def process_podcast_feed(
             _readmit = [
                 ep
                 for ep in all_feed_episodes
-                if episode_id_from_guid(ep.guid) in splice_retry_ids
-                and episode_id_from_guid(ep.guid) not in _present
+                if episode_id_from_guid(ep.guid) in splice_retry_ids and episode_id_from_guid(ep.guid) not in _present
             ]
             if _readmit:
                 logger.info(
-                    "[PodcastSync] Re-admitting %d aged-out splice-retry episode(s) past the "
-                    "%s-day age filter: %s",
+                    "[PodcastSync] Re-admitting %d aged-out splice-retry episode(s) past the %s-day age filter: %s",
                     len(_readmit),
                     max_age_days,
                     sorted(episode_id_from_guid(ep.guid) for ep in _readmit),
@@ -646,7 +644,10 @@ def process_podcast_feed(
                     if attempt > 1:
                         logger.info(
                             "[PodcastSync] Retrying with fresh download for %s (attempt %d/%d, cdn=%s)",
-                            ep_id, attempt, _splice_max_attempts, cdn,
+                            ep_id,
+                            attempt,
+                            _splice_max_attempts,
+                            cdn,
                         )
                         if original_path and os.path.exists(original_path):
                             with contextlib.suppress(OSError):
@@ -661,19 +662,25 @@ def process_podcast_feed(
                         download_validation_failed = True
                         fail_reason = f"download validation failed: {invalid_reason}"
                         logger.warning(
-                            "[PodcastSync] Downloaded file failed ffprobe validation for %s "                             "on attempt %d/%d (cdn=%s): %s%s",
+                            "[PodcastSync] Downloaded file failed ffprobe validation for %s "
+                            "on attempt %d/%d (cdn=%s): %s%s",
                             ep_id,
                             attempt,
                             _splice_max_attempts,
                             cdn,
                             invalid_reason,
-                            " — will retry with fresh download" if attempt < _splice_max_attempts else " — all attempts exhausted",
+                            " — will retry with fresh download"
+                            if attempt < _splice_max_attempts
+                            else " — all attempts exhausted",
                         )
                         continue  # skip Transcribe/Bedrock entirely — retry download
 
                     logger.info(
                         "[PodcastSync] Running ad removal for %s (attempt %d/%d, cdn=%s)",
-                        ep_id, attempt, _splice_max_attempts, cdn,
+                        ep_id,
+                        attempt,
+                        _splice_max_attempts,
+                        cdn,
                     )
                     try:
                         cleaned_path, ad_segments, summary = remove_ads(
@@ -700,7 +707,10 @@ def process_podcast_feed(
                         if attempt < _splice_max_attempts:
                             logger.warning(
                                 "[PodcastSync] Ad removal raised for %s on attempt %d/%d (%s) — retrying",
-                                ep_id, attempt, _splice_max_attempts, fail_reason,
+                                ep_id,
+                                attempt,
+                                _splice_max_attempts,
+                                fail_reason,
                             )
                             continue
                         ad_removal_failed = True
@@ -740,7 +750,11 @@ def process_podcast_feed(
                             logger.warning(
                                 "[PodcastSync] Splice failed for %s on attempt %d/%d (cdn=%s, reason=%s) "
                                 "— retrying with a fresh download",
-                                ep_id, attempt, _splice_max_attempts, cdn, fail_reason,
+                                ep_id,
+                                attempt,
+                                _splice_max_attempts,
+                                cdn,
+                                fail_reason,
                             )
                             continue
 
@@ -751,7 +765,10 @@ def process_podcast_feed(
                         logger.error(
                             "[PodcastSync] Ad removal failed for %s after %d attempt(s) (cdn=%s, reason=%s) "
                             "— publishing the validated original without the ad-removed suffix",
-                            ep_id, attempt, cdn, fail_reason,
+                            ep_id,
+                            attempt,
+                            cdn,
+                            fail_reason,
                         )
                         break
 
@@ -895,11 +912,25 @@ def process_podcast_feed(
                         if ep_id in recent_repair_ids:
                             repairs_succeeded += 1
                         manifest[ep_id] = {
-                            **{k: v for k, v in _prev_entry.items() if k not in {
-                                "size", "title", "guid", "pub_date", "duration", "ads_removed", "ad_removal_checked",
-                                "splice_failed", "ad_removal_failed", "splice_failed_count", "cdn",
-                                "ad_removal_fail_reason",
-                            }},
+                            **{
+                                k: v
+                                for k, v in _prev_entry.items()
+                                if k
+                                not in {
+                                    "size",
+                                    "title",
+                                    "guid",
+                                    "pub_date",
+                                    "duration",
+                                    "ads_removed",
+                                    "ad_removal_checked",
+                                    "splice_failed",
+                                    "ad_removal_failed",
+                                    "splice_failed_count",
+                                    "cdn",
+                                    "ad_removal_fail_reason",
+                                }
+                            },
                             "size": result["file_size"],
                             "title": ep.title,
                             "guid": ep.guid,
@@ -929,10 +960,12 @@ def process_podcast_feed(
                         # Keep the published manifest data intact, including the
                         # last-attempt diagnostics for the next bounded retry.
                         repair_entry = manifest.setdefault(ep_id, {})
-                        repair_entry.update({
-                            "repair_last_attempt_at": datetime.now(UTC).isoformat(),
-                            "repair_last_attempt_result": result.get("fail_reason", "ad removal failed"),
-                        })
+                        repair_entry.update(
+                            {
+                                "repair_last_attempt_at": datetime.now(UTC).isoformat(),
+                                "repair_last_attempt_result": result.get("fail_reason", "ad removal failed"),
+                            }
+                        )
                         repair_entry.setdefault("ads_removed", False)
                         repair_entry["ad_removal_checked"] = False
                         logger.warning(
@@ -971,8 +1004,11 @@ def process_podcast_feed(
                         ep, ep_id = result["ep"], result["ep_id"]
                         _prev_fail_count = manifest.get(ep_id, {}).get("splice_failed_count", 0)
                         manifest[ep_id] = {
-                            **{k: v for k, v in manifest.get(ep_id, {}).items()
-                               if k not in ("size", "ads_removed", "splice_failed", "splice_failed_count")},
+                            **{
+                                k: v
+                                for k, v in manifest.get(ep_id, {}).items()
+                                if k not in ("size", "ads_removed", "splice_failed", "splice_failed_count")
+                            },
                             "title": ep.title,
                             "guid": ep.guid,
                             "pub_date": ep.pub_date.isoformat(),
@@ -989,7 +1025,9 @@ def process_podcast_feed(
 
         # Persist manifest whenever something changed — uploads or splice-fail count updates
         manifest_save_failed = False
-        if (new_count > 0 or splice_failed_this_run > 0 or repairs_succeeded > 0 or repairs_failed > 0) and not s3.save_manifest(manifest):
+        if (
+            new_count > 0 or splice_failed_this_run > 0 or repairs_succeeded > 0 or repairs_failed > 0
+        ) and not s3.save_manifest(manifest):
             # The episodes are in S3 but their sizes and splice counters are
             # not, so the run is not healthy: a later feed build would see no
             # size for them and the retry cap would be computed from stale data.
@@ -1008,7 +1046,14 @@ def process_podcast_feed(
         # Rebuild on failures too: a run where every episode failed still has to
         # republish feed.xml, because a previous run may have uploaded episodes
         # and then failed to publish the feed that lists them.
-        if new_count > 0 or skipped > 0 or failed_count > 0 or splice_failed_this_run > 0 or repairs_succeeded > 0 or repairs_failed > 0:
+        if (
+            new_count > 0
+            or skipped > 0
+            or failed_count > 0
+            or splice_failed_this_run > 0
+            or repairs_succeeded > 0
+            or repairs_failed > 0
+        ):
             # Collect all episodes currently in S3 for the feed
             all_existing_ids = s3.list_existing_episodes()
 
@@ -1141,8 +1186,7 @@ def process_podcast_feed(
                     # publishing a quietly shorter feed.  Recorded before the
                     # upload so a failed upload cannot also lose the omission.
                     logger.error(
-                        "[PodcastSync] feed.xml built without %d prefiltered episode(s) "
-                        "the builder could not size: %s",
+                        "[PodcastSync] feed.xml built without %d prefiltered episode(s) the builder could not size: %s",
                         len(builder_omitted),
                         sorted(builder_omitted),
                     )

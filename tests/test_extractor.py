@@ -472,9 +472,7 @@ class TestExtractVideoMetadataErrorClassification:
 
         self._ydl(
             mock_ydl_cls,
-            yt_dlp.utils.DownloadError(
-                "ERROR: [youtube] 0MDuF2Pn2TQ: Requested format is not available."
-            ),
+            yt_dlp.utils.DownloadError("ERROR: [youtube] 0MDuF2Pn2TQ: Requested format is not available."),
         )
 
         with pytest.raises(ExtractionError, match="Requested format is not available"):
@@ -820,9 +818,7 @@ class TestNormalizeChannelUrl:
 
         extract_playlist("https://www.youtube.com/@abhiandniyu")
 
-        ydl.extract_info.assert_called_once_with(
-            "https://www.youtube.com/@abhiandniyu/videos", download=False
-        )
+        ydl.extract_info.assert_called_once_with("https://www.youtube.com/@abhiandniyu/videos", download=False)
 
 
 def _tab_entry(webpage_url, title):

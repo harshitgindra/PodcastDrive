@@ -297,20 +297,22 @@ class TestRunOne:
             ({"splice_failed": 1}, False),  # legacy results still fail closed
         ],
     )
-    def test_exhausted_backlog_is_visible_but_only_new_failures_fail_run(
-        self, notify_file, result, expected_ok
-    ):
+    def test_exhausted_backlog_is_visible_but_only_new_failures_fail_run(self, notify_file, result, expected_ok):
         provider = FakeProvider()
         podcast = FakePodcast("RSS Show", "https://feed")
         _, ok = orchestrator.run_one(
-            name="RSS Show", identifier_key="slug",
+            name="RSS Show",
+            identifier_key="slug",
             pipeline=lambda: {"slug": "rss-show", **result},
-            provider=provider, podcast=podcast,
+            provider=provider,
+            podcast=podcast,
         )
         assert ok is expected_ok
         assert read_notify(notify_file)[0]["splice_failed"] == result["splice_failed"]
-        expected_status = "Error: Bot Detection" if result.get("bot_detected") else (
-            "Failed" if result.get("failed") else "Splice Failed"
+        expected_status = (
+            "Error: Bot Detection"
+            if result.get("bot_detected")
+            else ("Failed" if result.get("failed") else "Splice Failed")
         )
         assert provider.statuses[-1] == ("RSS Show", expected_status)
 
@@ -331,9 +333,7 @@ class TestRunOne:
 
         assert (result, ok) == (None, False)
         assert provider.statuses == [("Show", "Running"), ("Show", "Failed")]
-        assert read_notify(notify_file) == [
-            {"name": "Show", "new_episodes": 0, "failed": 0, "error": "kaboom"}
-        ]
+        assert read_notify(notify_file) == [{"name": "Show", "new_episodes": 0, "failed": 0, "error": "kaboom"}]
         assert "ERROR: kaboom" in capsys.readouterr().err
 
     def test_dry_run_skips_all_provider_writes(self, notify_file):
@@ -525,9 +525,7 @@ class TestRunUrlTarget:
         assert "Notion lookup failed" in caplog.text
 
     def test_provider_without_find_page_by_url(self, notify_file, monkeypatch):
-        provider = types.SimpleNamespace(
-            update_status=lambda *a: None, update_last_run=lambda *a, **k: None
-        )
+        provider = types.SimpleNamespace(update_status=lambda *a: None, update_last_run=lambda *a, **k: None)
         _patch_url_mode(
             monkeypatch,
             provider=provider,
@@ -546,8 +544,7 @@ class TestRunUrlTarget:
         _patch_url_mode(
             monkeypatch,
             provider=provider,
-            process_playlist=lambda url, dry_run=False: seen.append(url)
-            or {"playlist_id": "@Chan"},
+            process_playlist=lambda url, dry_run=False: seen.append(url) or {"playlist_id": "@Chan"},
         )
         orchestrator.run_url_target("https://www.youtube.com/@Chan", dry_run=False)
         assert seen == ["https://www.youtube.com/@Chan/videos"]
@@ -558,8 +555,7 @@ class TestRunUrlTarget:
         _patch_url_mode(
             monkeypatch,
             provider=provider,
-            process_playlist=lambda url, dry_run=False: seen.append(url)
-            or {"playlist_id": "@Chan"},
+            process_playlist=lambda url, dry_run=False: seen.append(url) or {"playlist_id": "@Chan"},
         )
         orchestrator.run_url_target("https://www.youtube.com/@Chan/videos", dry_run=False)
         assert seen == ["https://www.youtube.com/@Chan/videos"]
@@ -569,9 +565,7 @@ class TestRunUrlTarget:
 # run_youtube_sources
 # ---------------------------------------------------------------------------
 class TestRunYoutubeSources:
-    def test_processes_only_enabled_and_forwards_per_podcast_options(
-        self, notify_file, monkeypatch, capsys
-    ):
+    def test_processes_only_enabled_and_forwards_per_podcast_options(self, notify_file, monkeypatch, capsys):
         calls = []
 
         def fake_process(url, **kwargs):
@@ -605,9 +599,7 @@ class TestRunYoutubeSources:
                 raise RuntimeError("bad source")
             return {"playlist_id": "PL", "new_episodes": 0}
 
-        provider = FakeProvider(
-            podcasts=[FakePodcast("Bad", "bad"), FakePodcast("Good", "good")]
-        )
+        provider = FakeProvider(podcasts=[FakePodcast("Bad", "bad"), FakePodcast("Good", "good")])
         _patch_url_mode(monkeypatch, provider=provider, process_playlist=fake_process)
 
         assert orchestrator.run_youtube_sources(dry_run=False) is False
@@ -694,15 +686,16 @@ class TestRunRssSources:
         assert read_notify(notify_file)[0]["splice_failed"] == 1
 
     @pytest.mark.parametrize("fresh_failures, expected", [(0, True), (1, False)])
-    def test_exhausted_backlog_only_fails_rss_on_fresh_splice(
-        self, notify_file, monkeypatch, fresh_failures, expected
-    ):
+    def test_exhausted_backlog_only_fails_rss_on_fresh_splice(self, notify_file, monkeypatch, fresh_failures, expected):
         provider = FakeProvider(podcasts=[FakePodcast("RSS Show", "https://feed")])
         _patch_rss_mode(
-            monkeypatch, provider=provider,
+            monkeypatch,
+            provider=provider,
             process_feed=lambda p, provider=None, dry_run=False: {
-                "slug": "s", "splice_failed": 96 + fresh_failures,
-                "splice_failed_this_run": fresh_failures, "splice_exhausted": 96,
+                "slug": "s",
+                "splice_failed": 96 + fresh_failures,
+                "splice_failed_this_run": fresh_failures,
+                "splice_exhausted": 96,
             },
         )
         assert orchestrator.run_rss_sources(dry_run=False) is expected
@@ -757,9 +750,7 @@ class TestMain:
 
     def test_urls_mode_processes_each_url(self, monkeypatch):
         seen = []
-        monkeypatch.setattr(
-            orchestrator, "run_url_target", lambda url, dry_run: seen.append((url, dry_run)) or True
-        )
+        monkeypatch.setattr(orchestrator, "run_url_target", lambda url, dry_run: seen.append((url, dry_run)) or True)
         assert orchestrator.main(["urls", "a", "b"]) == 0
         assert seen == [("a", False), ("b", False)]
 
@@ -781,9 +772,7 @@ class TestMain:
         # error direction is safe.
         monkeypatch.setenv("PODCAST_DRY_RUN", value)
         seen = []
-        monkeypatch.setattr(
-            orchestrator, "run_url_target", lambda url, dry_run: seen.append(dry_run) or True
-        )
+        monkeypatch.setattr(orchestrator, "run_url_target", lambda url, dry_run: seen.append(dry_run) or True)
         orchestrator.main(["urls", "a"])
         assert seen == [True]
 
@@ -791,17 +780,13 @@ class TestMain:
     def test_falsey_values_do_not_enable_dry_run(self, monkeypatch, value):
         monkeypatch.setenv("PODCAST_DRY_RUN", value)
         seen = []
-        monkeypatch.setattr(
-            orchestrator, "run_url_target", lambda url, dry_run: seen.append(dry_run) or True
-        )
+        monkeypatch.setattr(orchestrator, "run_url_target", lambda url, dry_run: seen.append(dry_run) or True)
         orchestrator.main(["urls", "a"])
         assert seen == [False]
 
     def test_youtube_mode(self, monkeypatch):
         seen = []
-        monkeypatch.setattr(
-            orchestrator, "run_youtube_sources", lambda dry_run: seen.append(dry_run) or True
-        )
+        monkeypatch.setattr(orchestrator, "run_youtube_sources", lambda dry_run: seen.append(dry_run) or True)
         assert orchestrator.main(["youtube"]) == 0
         assert seen == [False]
 
@@ -812,9 +797,7 @@ class TestMain:
 
     def test_rss_mode(self, monkeypatch):
         seen = []
-        monkeypatch.setattr(
-            orchestrator, "run_rss_sources", lambda dry_run: seen.append(dry_run) or True
-        )
+        monkeypatch.setattr(orchestrator, "run_rss_sources", lambda dry_run: seen.append(dry_run) or True)
         assert orchestrator.main(["rss"]) == 0
         assert seen == [False]
 

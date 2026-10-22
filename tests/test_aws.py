@@ -137,8 +137,7 @@ class TestBareCallSitesInheritTheConfig:
     def test_all_services_share_one_session(self):
         aws.configure()
         clients = [
-            boto3.client(svc, region_name="us-west-2")
-            for svc in ("s3", "cloudfront", "transcribe", "bedrock-runtime")
+            boto3.client(svc, region_name="us-west-2") for svc in ("s3", "cloudfront", "transcribe", "bedrock-runtime")
         ]
         for c in clients:
             assert c.meta.config.connect_timeout == aws.DEFAULT_CONNECT_TIMEOUT
@@ -216,9 +215,7 @@ class TestEntryPointsConfigureAws:
 
         calls = []
         monkeypatch.setattr(cli.aws, "configure", lambda *a, **k: calls.append("aws"))
-        monkeypatch.setattr(
-            cli.Config, "from_env", classmethod(lambda cls: (_ for _ in ()).throw(ValueError("x")))
-        )
+        monkeypatch.setattr(cli.Config, "from_env", classmethod(lambda cls: (_ for _ in ()).throw(ValueError("x"))))
 
         assert cli.main([]) == 1
         assert calls == ["aws"]

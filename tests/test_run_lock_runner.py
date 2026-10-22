@@ -225,7 +225,8 @@ class TestDistributedLockGate:
         stopped_file = tmp_path / "heartbeat.stopped"
         release_file = tmp_path / "release.ok"
         stub = _write_script(
-            tmp_path, "heartbeat_stub.py",
+            tmp_path,
+            "heartbeat_stub.py",
             textwrap.dedent(f"""\
                 #!{sys.executable}
                 import os
@@ -377,12 +378,15 @@ class TestLeaseLossTerminatesRun:
             _block(TRAPS_BLOCK)
             + _dist_lock_block()
             + f'while [ ! -f "{ready}" ]; do sleep 0.05; done\n'
-            + "echo READY\nwait \"$LOCK_RENEW_PID\"\n",
+            + 'echo READY\nwait "$LOCK_RENEW_PID"\n',
             prelude=f'DRY_RUN=false\nVENV_PYTHON="{stub}"\n',
         )
         proc = subprocess.Popen(
-            ["bash", str(script)], stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, start_new_session=True,
+            ["bash", str(script)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
         try:
             assert "Distributed lock held" in proc.stdout.readline()

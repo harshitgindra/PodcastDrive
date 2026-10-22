@@ -35,10 +35,7 @@ def sync_playlists(notion: NotionClient, profiles: list[str]) -> int:
         known_urls = _build_known_set(all_entries)
 
         # Find done entries that are playlists
-        playlist_entries = [
-            e for e in all_entries
-            if e.status.value == "done" and is_playlist(e.url)
-        ]
+        playlist_entries = [e for e in all_entries if e.status.value == "done" and is_playlist(e.url)]
 
         for entry in playlist_entries:
             new = _sync_single_playlist(entry, notion, known_urls)
@@ -82,7 +79,9 @@ def _sync_single_playlist(
     if created:
         logger.info(
             "Playlist %s: added %d new entries for profile %s",
-            entry.url, created, entry.profile,
+            entry.url,
+            created,
+            entry.profile,
         )
     return created
 

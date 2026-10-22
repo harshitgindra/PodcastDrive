@@ -146,8 +146,12 @@ class TestProcessDeletions:
 
     def test_handles_multiple_file_keys(self):
         entry = MediaEntry(
-            page_id="p1", url="u", profile="h", format=Format.BOTH,
-            status=Status.DONE, delete=True,
+            page_id="p1",
+            url="u",
+            profile="h",
+            format=Format.BOTH,
+            status=Status.DONE,
+            delete=True,
             file_key="MediaSync/h/audio/s.m4a; MediaSync/h/video/s.mp4",
         )
         mock_notion = MagicMock()
@@ -171,8 +175,13 @@ class TestProcessDeletions:
 
     def test_empty_file_key_still_archives(self):
         entry = MediaEntry(
-            page_id="p1", url="u", profile="h", format=Format.AUDIO,
-            status=Status.DONE, delete=True, file_key="",
+            page_id="p1",
+            url="u",
+            profile="h",
+            format=Format.AUDIO,
+            status=Status.DONE,
+            delete=True,
+            file_key="",
         )
         mock_notion = MagicMock()
         mock_notion.get_deletions.return_value = [entry]
@@ -226,7 +235,9 @@ class TestDuplicateLookupIsBatched:
     @patch("mediasync.pipeline._process_entry", return_value=True)
     @patch("mediasync.pipeline.create_storage")
     @patch("mediasync.pipeline.NotionClient")
-    def test_run_queries_once_and_dedupes_within_the_run(self, MockNotion, MockStorage, mock_proc, config, pending_entry):
+    def test_run_queries_once_and_dedupes_within_the_run(
+        self, MockNotion, MockStorage, mock_proc, config, pending_entry
+    ):
         first = self._entry(pending_entry, pending_entry.url, "a")
         second = self._entry(pending_entry, pending_entry.url, "b")
         other = self._entry(pending_entry, "https://youtube.com/watch?v=other", "c")
@@ -235,8 +246,9 @@ class TestDuplicateLookupIsBatched:
         notion.get_pending.return_value = [first, second, other]
         notion.get_done_for_profile.return_value = []
 
-        with patch("mediasync.pipeline.sync_playlists", return_value=0), patch(
-            "mediasync.pipeline.generate_standing_playlists"
+        with (
+            patch("mediasync.pipeline.sync_playlists", return_value=0),
+            patch("mediasync.pipeline.generate_standing_playlists"),
         ):
             stats = run(config)
 
@@ -281,9 +293,7 @@ class TestProcessEntry:
             success = _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert success is False
-        mock_notion.update_status.assert_any_call(
-            pending_entry.page_id, Status.FAILED, error="too long"
-        )
+        mock_notion.update_status.assert_any_call(pending_entry.page_id, Status.FAILED, error="too long")
 
     def test_download_error(self, pending_entry, config):
         mock_notion = MagicMock()
@@ -303,8 +313,12 @@ class TestProcessEntry:
         mock_storage.upload.side_effect = StorageError("access denied")
 
         dl_result = DownloadResult(
-            path=audio_path, title="Song", artist="A",
-            duration_secs=100, thumbnail_url="", format_type="audio",
+            path=audio_path,
+            title="Song",
+            artist="A",
+            duration_secs=100,
+            thumbnail_url="",
+            format_type="audio",
         )
 
         with patch("mediasync.pipeline.download", return_value=[dl_result]):
@@ -316,8 +330,12 @@ class TestProcessEntry:
 
     def test_both_format_uploads_two_files(self, config, tmp_path):
         entry = MediaEntry(
-            page_id="p1", url="https://youtube.com/watch?v=x",
-            profile="Harshit", format=Format.BOTH, status=Status.PENDING, delete=False,
+            page_id="p1",
+            url="https://youtube.com/watch?v=x",
+            profile="Harshit",
+            format=Format.BOTH,
+            status=Status.PENDING,
+            delete=False,
         )
         audio_path = tmp_path / "song.m4a"
         video_path = tmp_path / "song.mp4"
@@ -332,8 +350,12 @@ class TestProcessEntry:
         ]
 
         results = [
-            DownloadResult(path=audio_path, title="Song", artist="A", duration_secs=100, thumbnail_url="", format_type="audio"),
-            DownloadResult(path=video_path, title="Song", artist="A", duration_secs=100, thumbnail_url="", format_type="video"),
+            DownloadResult(
+                path=audio_path, title="Song", artist="A", duration_secs=100, thumbnail_url="", format_type="audio"
+            ),
+            DownloadResult(
+                path=video_path, title="Song", artist="A", duration_secs=100, thumbnail_url="", format_type="video"
+            ),
         ]
 
         with patch("mediasync.pipeline.download", return_value=results):
@@ -355,8 +377,12 @@ class TestProcessEntry:
         mock_storage.upload.return_value = "key"
 
         dl_result = DownloadResult(
-            path=audio_path, title="S", artist="A",
-            duration_secs=60, thumbnail_url="", format_type="audio",
+            path=audio_path,
+            title="S",
+            artist="A",
+            duration_secs=60,
+            thumbnail_url="",
+            format_type="audio",
         )
 
         with patch("mediasync.pipeline.download", return_value=[dl_result]):
@@ -374,8 +400,12 @@ class TestReset:
         from mediasync.cli import _reset
 
         mock_get.return_value = [
-            MediaEntry(page_id="p1", url="u1", profile="Harshit", format=Format.AUDIO, status=Status.DONE, delete=False),
-            MediaEntry(page_id="p2", url="u2", profile="Harshit", format=Format.AUDIO, status=Status.FAILED, delete=False),
+            MediaEntry(
+                page_id="p1", url="u1", profile="Harshit", format=Format.AUDIO, status=Status.DONE, delete=False
+            ),
+            MediaEntry(
+                page_id="p2", url="u2", profile="Harshit", format=Format.AUDIO, status=Status.FAILED, delete=False
+            ),
         ]
 
         _reset(config)
@@ -720,13 +750,16 @@ class TestSanitizeFolderName:
 
     def test_removes_unsafe_chars(self):
         from mediasync.pipeline import _sanitize_folder_name
-        assert _sanitize_folder_name('Artist: "The Best"') == 'Artist The Best'
+
+        assert _sanitize_folder_name('Artist: "The Best"') == "Artist The Best"
 
     def test_truncates_long_names(self):
         from mediasync.pipeline import _sanitize_folder_name
+
         assert len(_sanitize_folder_name("A" * 200)) == 100
 
     def test_empty_returns_unknown(self):
         from mediasync.pipeline import _sanitize_folder_name
+
         assert _sanitize_folder_name("") == "Unknown"
         assert _sanitize_folder_name("???") == "Unknown"

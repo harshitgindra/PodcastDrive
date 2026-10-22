@@ -78,7 +78,15 @@ class TestDryRunOutput:
             MediaEntry("p1", "https://youtube.com/watch?v=x", "Harshit", Format.AUDIO, Status.PENDING, False),
         ]
         mock_notion.get_deletions.return_value = [
-            MediaEntry("p2", "https://youtube.com/watch?v=y", "Dishita", Format.VIDEO, Status.DONE, True, "MediaSync/Dishita/video/f.mp4"),
+            MediaEntry(
+                "p2",
+                "https://youtube.com/watch?v=y",
+                "Dishita",
+                Format.VIDEO,
+                Status.DONE,
+                True,
+                "MediaSync/Dishita/video/f.mp4",
+            ),
         ]
 
         result = main(["--dry-run"])
@@ -93,20 +101,28 @@ class TestDryRunOutput:
 class TestNotify:
     def test_herald_disabled_skips(self):
         config = Config(
-            notion_token="t", notion_database_id="d",
-            s3_bucket="b", s3_region="r", s3_prefix="p",
+            notion_token="t",
+            notion_database_id="d",
+            s3_bucket="b",
+            s3_region="r",
+            s3_prefix="p",
             profiles=[Profile("x")],
-            herald_enabled=False, herald_job_id="j",
+            herald_enabled=False,
+            herald_job_id="j",
         )
         _notify(config, RunStats(), 10)
 
     @staticmethod
     def _config(**kw):
         base = dict(
-            notion_token="t", notion_database_id="d",
-            s3_bucket="b", s3_region="r", s3_prefix="p",
+            notion_token="t",
+            notion_database_id="d",
+            s3_bucket="b",
+            s3_region="r",
+            s3_prefix="p",
             profiles=[Profile("x")],
-            herald_enabled=True, herald_job_id="j",
+            herald_enabled=True,
+            herald_job_id="j",
         )
         base.update(kw)
         return Config(**base)
@@ -172,10 +188,14 @@ class TestNotifyException:
         """A failed summary must not fail an otherwise successful run — but it must
         leave a trace, which it previously did not (`except Exception: pass`)."""
         config = Config(
-            notion_token="t", notion_database_id="d",
-            s3_bucket="b", s3_region="r", s3_prefix="p",
+            notion_token="t",
+            notion_database_id="d",
+            s3_bucket="b",
+            s3_region="r",
+            s3_prefix="p",
             profiles=[Profile("x")],
-            herald_enabled=True, herald_job_id="j",
+            herald_enabled=True,
+            herald_job_id="j",
         )
         with caplog.at_level("WARNING", logger="mediasync.cli"):
             _notify(config, RunStats(processed=1), 10)
@@ -185,9 +205,13 @@ class TestNotifyException:
     @patch("shutil.which", return_value="/usr/local/bin/herald")
     def test_subprocess_error_swallowed(self, mock_which, mock_run):
         config = Config(
-            notion_token="t", notion_database_id="d",
-            s3_bucket="b", s3_region="r", s3_prefix="p",
+            notion_token="t",
+            notion_database_id="d",
+            s3_bucket="b",
+            s3_region="r",
+            s3_prefix="p",
             profiles=[Profile("x")],
-            herald_enabled=True, herald_job_id="j",
+            herald_enabled=True,
+            herald_job_id="j",
         )
         _notify(config, RunStats(processed=1), 10)

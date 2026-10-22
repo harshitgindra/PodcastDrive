@@ -184,7 +184,7 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 "YTDLP_REMOTE_COMPONENTS",
                 "ejs:github",
                 "Comma-separated yt-dlp remote components. The JavaScript n-challenge solver "
-                'ships as an opt-in remote component; without it yt-dlp returns storyboard '
+                "ships as an opt-in remote component; without it yt-dlp returns storyboard "
                 'images only and every download fails with "Requested format is not available". '
                 "Set to an empty string only if the solver cache is pre-seeded.",
             ),
@@ -219,7 +219,11 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 "signal (SIGSEGV/SIGABRT) before falling back to the concat demuxer. These crashes "
                 "are often probabilistic, so simply re-running usually succeeds.",
             ),
-            _i("MAX_FEED_BYTES", 32 * 1024 * 1024, "Refuse RSS feeds larger than this. The largest real feeds are ~5 MiB."),
+            _i(
+                "MAX_FEED_BYTES",
+                32 * 1024 * 1024,
+                "Refuse RSS feeds larger than this. The largest real feeds are ~5 MiB.",
+            ),
             _i("MAX_ITUNES_BYTES", 8 * 1024 * 1024, "Refuse iTunes lookup/search responses larger than this."),
         ),
     ),
@@ -235,16 +239,28 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
             _b("AD_SNAP_TO_SILENCE", True, "Move cut points to the nearest detected silence so splices are inaudible."),
             _f("AD_MERGE_GAP_SECS", 2.0, "Merge two ad segments separated by less than this gap."),
             _f("MIN_AD_SEGMENT_SECS", 5.0, "Discard detected ad segments shorter than this."),
-            _f("MAX_AD_SEGMENT_SECS", 300.0, "Discard detected ad segments longer than this (likely a detection error)."),
-            _f("AD_VERIFY_THRESHOLD_SECS", 90.0, "Send segments longer than this to the second-pass verification model."),
+            _f(
+                "MAX_AD_SEGMENT_SECS",
+                300.0,
+                "Discard detected ad segments longer than this (likely a detection error).",
+            ),
+            _f(
+                "AD_VERIFY_THRESHOLD_SECS",
+                90.0,
+                "Send segments longer than this to the second-pass verification model.",
+            ),
             _i("AD_DETECT_MAX_CHARS", 60000, "Transcript characters per Bedrock detection request."),
-            _f("AD_DETECT_OVERLAP_SECS", 60.0, "Overlap between consecutive detection chunks, so ads at a seam are seen."),
+            _f(
+                "AD_DETECT_OVERLAP_SECS",
+                60.0,
+                "Overlap between consecutive detection chunks, so ads at a seam are seen.",
+            ),
             _s(
                 "AD_TRANSCRIBE_WINDOWS",
                 "",
                 'Comma-separated "start:end" second ranges to transcribe instead of the whole '
                 'episode; "end" means total duration and "end-N" means total minus N. '
-                'Example: 0:300,end-600:end.',
+                "Example: 0:300,end-600:end.",
             ),
             _b(
                 "SPLICE_LOUDNORM",
@@ -255,7 +271,11 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
             _s("TRANSCRIBE_LANGUAGE_CODE", "en-US", "BCP-47 language code for AWS Transcribe."),
             _i("TRANSCRIBE_POLL_INTERVAL", 10, "Seconds between Transcribe job status polls."),
             _i("TRANSCRIBE_MAX_WAIT", 3600, "Seconds to wait for a Transcribe job before giving up."),
-            _b("TRANSCRIBE_CACHE_ENABLED", True, "Reuse transcripts cached in S3 instead of paying to transcribe again."),
+            _b(
+                "TRANSCRIBE_CACHE_ENABLED",
+                True,
+                "Reuse transcripts cached in S3 instead of paying to transcribe again.",
+            ),
             _s("TRANSCRIBE_CACHE_PREFIX", "transcribe-cache", "S3 key prefix for cached transcripts."),
             _s(
                 "BEDROCK_MODEL_ID",
@@ -265,10 +285,13 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
             _s(
                 "BEDROCK_DETECT_MODEL_ID",
                 "",
-                "Bedrock model for first-pass detection over every transcript chunk. Falls back to "
-                "BEDROCK_MODEL_ID.",
+                "Bedrock model for first-pass detection over every transcript chunk. Falls back to BEDROCK_MODEL_ID.",
             ),
-            _b("EVALUATE_AD_REMOVAL", False, "Re-transcribe cleaned audio and report residual ads. Costs extra AWS spend."),
+            _b(
+                "EVALUATE_AD_REMOVAL",
+                False,
+                "Re-transcribe cleaned audio and report residual ads. Costs extra AWS spend.",
+            ),
             _s("EVAL_REPORTS_DIR", "reports", "Directory for ad-removal evaluation reports."),
             _b("GENERATE_SUMMARIES", False, "Generate AI episode summaries via Bedrock (one extra call per episode)."),
             _i(
@@ -326,7 +349,7 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
             _s(
                 "EPISODE_AD_REMOVED_SUFFIX",
                 " \u2702\ufe0f",
-                'Deprecated. The scissors marker is fixed and only shown after detected ads are successfully spliced.',
+                "Deprecated. The scissors marker is fixed and only shown after detected ads are successfully spliced.",
             ),
         ),
     ),
@@ -360,8 +383,7 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
             _b(
                 "PODCAST_DRY_RUN",
                 False,
-                "Set by run.sh --dry-run: report what would be downloaded without touching S3 "
-                "or spending on AWS.",
+                "Set by run.sh --dry-run: report what would be downloaded without touching S3 or spending on AWS.",
                 internal=True,
             ),
         ),

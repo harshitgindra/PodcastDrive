@@ -43,14 +43,16 @@ class TestConfigFromEnv:
         assert config.herald_job_id == ""
 
     def test_custom_optional_values(self, full_env):
-        full_env.update({
-            "MEDIASYNC_S3_REGION": "us-east-1",
-            "MEDIASYNC_S3_PREFIX": "MyMedia",
-            "MEDIASYNC_MAX_DURATION_SECS": "3600",
-            "MEDIASYNC_OUTPUT_DIR": "/data/tmp",
-            "MEDIASYNC_HERALD_ENABLED": "false",
-            "HERALD_JOB_ID": "01JOBFROMLISTENER",
-        })
+        full_env.update(
+            {
+                "MEDIASYNC_S3_REGION": "us-east-1",
+                "MEDIASYNC_S3_PREFIX": "MyMedia",
+                "MEDIASYNC_MAX_DURATION_SECS": "3600",
+                "MEDIASYNC_OUTPUT_DIR": "/data/tmp",
+                "MEDIASYNC_HERALD_ENABLED": "false",
+                "HERALD_JOB_ID": "01JOBFROMLISTENER",
+            }
+        )
         with patch.dict(os.environ, full_env, clear=True):
             config = Config.from_env()
 

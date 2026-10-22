@@ -69,35 +69,41 @@ class TestRetryOnError:
 
 
 class TestIsTransientDownloadError:
-    @pytest.mark.parametrize("msg", [
-        "HTTP Error 429: Too Many Requests",
-        "HTTP Error 503: Service Unavailable",
-        "HTTP Error 502: Bad Gateway",
-        "HTTP Error 500: Internal Server Error",
-        "Connection reset by peer",
-        "Connection refused",
-        "Read timed out",
-        "Network is unreachable",
-        "SSL: CERTIFICATE_VERIFY_FAILED",
-        "EOF occurred in violation of protocol",
-        "IncompleteRead: 0 bytes read",
-        "Broken pipe",
-    ])
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "HTTP Error 429: Too Many Requests",
+            "HTTP Error 503: Service Unavailable",
+            "HTTP Error 502: Bad Gateway",
+            "HTTP Error 500: Internal Server Error",
+            "Connection reset by peer",
+            "Connection refused",
+            "Read timed out",
+            "Network is unreachable",
+            "SSL: CERTIFICATE_VERIFY_FAILED",
+            "EOF occurred in violation of protocol",
+            "IncompleteRead: 0 bytes read",
+            "Broken pipe",
+        ],
+    )
     def test_transient_errors_return_true(self, msg):
         assert is_transient_download_error(DownloadError(msg)) is True
 
-    @pytest.mark.parametrize("msg", [
-        "Video unavailable",
-        "Private video",
-        "This video has been removed",
-        "Age-restricted content",
-        "Geo-restricted",
-        "This content is not available in your country",
-        "Copyright claim",
-        "Account terminated",
-        "Sign in to confirm your age",
-        "Members-only content",
-    ])
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "Video unavailable",
+            "Private video",
+            "This video has been removed",
+            "Age-restricted content",
+            "Geo-restricted",
+            "This content is not available in your country",
+            "Copyright claim",
+            "Account terminated",
+            "Sign in to confirm your age",
+            "Members-only content",
+        ],
+    )
     def test_permanent_errors_return_false(self, msg):
         assert is_transient_download_error(DownloadError(msg)) is False
 

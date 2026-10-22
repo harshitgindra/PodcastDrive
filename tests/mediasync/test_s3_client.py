@@ -15,9 +15,7 @@ def client():
         mock_s3 = MagicMock()
         mock_boto.client.return_value = mock_s3
         # Default: file does not exist
-        mock_s3.head_object.side_effect = ClientError(
-            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
-        )
+        mock_s3.head_object.side_effect = ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         c = S3Client("hg-mediafiles", "us-west-2")
         c._client = mock_s3
         yield c

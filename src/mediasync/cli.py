@@ -23,9 +23,7 @@ logger = logging.getLogger(__name__)
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for MediaSync CLI."""
-    parser = argparse.ArgumentParser(
-        description="MediaSync — YouTube to pCloud, driven by Notion"
-    )
+    parser = argparse.ArgumentParser(description="MediaSync — YouTube to pCloud, driven by Notion")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -52,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Validate storage connection and token health without processing",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable debug logging",
     )
@@ -136,6 +135,7 @@ def _check_health(config: Config) -> int:
 
     if config.storage_backend == "onedrive":
         from mediasync.onedrive_client import OneDriveClient, OneDriveError
+
         try:
             client = OneDriveClient(
                 config.onedrive_client_id,
@@ -156,6 +156,7 @@ def _check_health(config: Config) -> int:
             return 1
     elif config.storage_backend == "s3":
         from mediasync.s3_client import S3Client
+
         try:
             client = S3Client(config.s3_bucket, config.s3_region)
             # Verify bucket access with a HEAD request

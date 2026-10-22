@@ -13,32 +13,41 @@ from mediasync.url_handler import (
 
 
 class TestIsYoutubeUrl:
-    @pytest.mark.parametrize("url", [
-        "https://www.youtube.com/watch?v=abc123",
-        "https://youtube.com/watch?v=abc123",
-        "https://m.youtube.com/watch?v=abc123",
-        "https://youtu.be/abc123",
-        "https://music.youtube.com/watch?v=abc123",
-        "https://www.youtube.com/playlist?list=PLxyz",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.youtube.com/watch?v=abc123",
+            "https://youtube.com/watch?v=abc123",
+            "https://m.youtube.com/watch?v=abc123",
+            "https://youtu.be/abc123",
+            "https://music.youtube.com/watch?v=abc123",
+            "https://www.youtube.com/playlist?list=PLxyz",
+        ],
+    )
     def test_youtube_urls(self, url):
         assert is_youtube_url(url) is True
 
-    @pytest.mark.parametrize("url", [
-        "https://open.spotify.com/track/abc",
-        "https://music.apple.com/album/123",
-        "https://example.com/video",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://open.spotify.com/track/abc",
+            "https://music.apple.com/album/123",
+            "https://example.com/video",
+        ],
+    )
     def test_non_youtube_urls(self, url):
         assert is_youtube_url(url) is False
 
 
 class TestIsSpotifyUrl:
-    @pytest.mark.parametrize("url", [
-        "https://open.spotify.com/track/abc123",
-        "https://open.spotify.com/album/xyz",
-        "https://open.spotify.com/playlist/list123",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://open.spotify.com/track/abc123",
+            "https://open.spotify.com/album/xyz",
+            "https://open.spotify.com/playlist/list123",
+        ],
+    )
     def test_spotify_urls(self, url):
         assert is_spotify_url(url) is True
 

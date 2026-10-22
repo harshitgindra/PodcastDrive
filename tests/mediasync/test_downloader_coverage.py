@@ -32,7 +32,8 @@ class TestGetPlaylistMetadata:
     def test_successful_fetch(self, mock_run, mock_cookies):
         entries = [{"id": "a", "title": "Song A"}, {"id": "b", "title": "Song B"}]
         mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0,
+            args=[],
+            returncode=0,
             stdout="\n".join(json.dumps(e) for e in entries),
             stderr="",
         )
@@ -45,7 +46,8 @@ class TestGetPlaylistMetadata:
     @patch("subprocess.run")
     def test_with_cookies(self, mock_run, mock_cookies):
         mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0,
+            args=[],
+            returncode=0,
             stdout=json.dumps({"id": "x"}),
             stderr="",
         )
@@ -56,9 +58,7 @@ class TestGetPlaylistMetadata:
     @patch("mediasync.downloader.cookie_args", return_value=[])
     @patch("subprocess.run")
     def test_failure_raises(self, mock_run, mock_cookies):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="ERROR: not found"
-        )
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="ERROR: not found")
         with pytest.raises(DownloadError, match="Playlist metadata fetch failed"):
             get_playlist_metadata("https://youtube.com/playlist?list=PL123")
 
@@ -66,9 +66,7 @@ class TestGetPlaylistMetadata:
     @patch("subprocess.run")
     @pytest.mark.parametrize("stdout", ["", "not-json", "[]"])
     def test_empty_or_malformed_output_raises(self, mock_run, mock_cookies, stdout):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=stdout, stderr=""
-        )
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
         with pytest.raises(DownloadError):
             get_playlist_metadata("https://youtube.com/playlist?list=PL123")
 
@@ -82,7 +80,8 @@ class TestGetFullPlaylistMetadata:
             {"id": "b", "title": "Song B", "uploader": "Artist"},
         ]
         mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0,
+            args=[],
+            returncode=0,
             stdout="\n".join(json.dumps(e) for e in entries),
             stderr="",
         )
@@ -92,18 +91,14 @@ class TestGetFullPlaylistMetadata:
     @patch("mediasync.downloader.cookie_args", return_value=[])
     @patch("subprocess.run")
     def test_failure_raises(self, mock_run, mock_cookies):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="ERROR"
-        )
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="ERROR")
         with pytest.raises(DownloadError, match="Full playlist metadata"):
             get_full_playlist_metadata("https://youtube.com/playlist?list=PL123")
 
     @patch("mediasync.downloader.cookie_args", return_value=[])
     @patch("subprocess.run")
     def test_empty_raises(self, mock_run, mock_cookies):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with pytest.raises(DownloadError, match="empty or unavailable"):
             get_full_playlist_metadata("https://youtube.com/playlist?list=PL123")
 
@@ -111,20 +106,21 @@ class TestGetFullPlaylistMetadata:
     @patch("subprocess.run")
     @pytest.mark.parametrize(
         "stdout",
-        ['{"id":"a"}\nnot-json\n{"id":"b"}', '[]', 'null'],
+        ['{"id":"a"}\nnot-json\n{"id":"b"}', "[]", "null"],
     )
     def test_malformed_or_non_object_json_raises(self, mock_run, mock_cookies, stdout):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=stdout, stderr=""
-        )
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
         with pytest.raises(DownloadError, match="invalid JSON|non-object"):
             get_full_playlist_metadata("https://youtube.com/playlist?list=PL123")
 
     @pytest.mark.parametrize("method", [get_playlist_metadata, get_full_playlist_metadata])
-    @pytest.mark.parametrize("side_effect", [
-        subprocess.TimeoutExpired("yt-dlp", 120),
-        FileNotFoundError("yt-dlp missing"),
-    ])
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            subprocess.TimeoutExpired("yt-dlp", 120),
+            FileNotFoundError("yt-dlp missing"),
+        ],
+    )
     def test_process_failures_raise_download_error(self, method, side_effect):
         with patch("subprocess.run", side_effect=side_effect):
             with pytest.raises(DownloadError, match="metadata fetch failed"):

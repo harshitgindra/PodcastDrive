@@ -54,8 +54,12 @@ class TestMigrateEntry:
             with patch("mediasync.migrate._move_file", return_value=True):
                 with patch("mediasync.migrate._upload_artwork_for_entry"):
                     result = _migrate_entry(
-                        entry, config, notion, storage,
-                        artwork_uploaded=set(), dry_run=False,
+                        entry,
+                        config,
+                        notion,
+                        storage,
+                        artwork_uploaded=set(),
+                        dry_run=False,
                     )
 
         assert result == "moved"
@@ -69,8 +73,12 @@ class TestMigrateEntry:
         storage = MagicMock()
 
         result = _migrate_entry(
-            entry, config, notion, storage,
-            artwork_uploaded=set(), dry_run=False,
+            entry,
+            config,
+            notion,
+            storage,
+            artwork_uploaded=set(),
+            dry_run=False,
         )
 
         assert result == "skipped"
@@ -83,8 +91,12 @@ class TestMigrateEntry:
 
         with patch("mediasync.migrate._get_channel_for_url", return_value="Channel"):
             result = _migrate_entry(
-                entry, config, notion, storage,
-                artwork_uploaded=set(), dry_run=True,
+                entry,
+                config,
+                notion,
+                storage,
+                artwork_uploaded=set(),
+                dry_run=True,
             )
 
         assert result == "moved"
@@ -97,8 +109,12 @@ class TestMigrateEntry:
 
         with patch("mediasync.migrate._get_channel_for_url", return_value=None):
             result = _migrate_entry(
-                entry, config, notion, storage,
-                artwork_uploaded=set(), dry_run=False,
+                entry,
+                config,
+                notion,
+                storage,
+                artwork_uploaded=set(),
+                dry_run=False,
             )
 
         assert result == "skipped"
@@ -115,8 +131,12 @@ class TestMigrateEntry:
         )
         entry = _make_entry()
         result = _migrate_entry(
-            entry, config_no_group, MagicMock(), MagicMock(),
-            artwork_uploaded=set(), dry_run=False,
+            entry,
+            config_no_group,
+            MagicMock(),
+            MagicMock(),
+            artwork_uploaded=set(),
+            dry_run=False,
         )
         assert result == "skipped"
 
@@ -128,6 +148,7 @@ class TestGetChannelForUrl:
 
     def test_returns_none_on_failure(self):
         from mediasync.downloader import DownloadError
+
         with patch("mediasync.migrate.get_metadata", side_effect=DownloadError("fail")):
             assert _get_channel_for_url("https://youtube.com/watch?v=x") is None
 
@@ -138,7 +159,7 @@ class TestGetChannelForUrl:
 
 class TestSanitizeChannel:
     def test_removes_unsafe(self):
-        assert _sanitize_channel('Artist: The "Best"') == 'Artist The Best'
+        assert _sanitize_channel('Artist: The "Best"') == "Artist The Best"
 
     def test_truncates(self):
         assert len(_sanitize_channel("A" * 200)) == 100

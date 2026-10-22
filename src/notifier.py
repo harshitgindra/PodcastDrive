@@ -211,8 +211,7 @@ def _send_via_herald(message: str) -> bool:
     ``--strict`` is what makes the return value meaningful: without it Herald
     exits 0 even when it delivered nothing.
     """
-    argv = ["herald", "notify", "--parse-mode", "plain", "--strict",
-            "--message", message]
+    argv = ["herald", "notify", "--parse-mode", "plain", "--strict", "--message", message]
 
     # Herald also reads HERALD_JOB_ID itself, but passing it explicitly keeps
     # the routing visible here instead of hiding in an inherited env var.
@@ -228,9 +227,7 @@ def _send_via_herald(message: str) -> bool:
             timeout=30,
         )
         if result.returncode == 0:
-            logger.info(
-                "Notification sent via Herald%s", f" (job {job_id})" if job_id else ""
-            )
+            logger.info("Notification sent via Herald%s", f" (job {job_id})" if job_id else "")
             return True
         logger.warning("Herald exited %d: %s", result.returncode, result.stderr.strip())
         return False

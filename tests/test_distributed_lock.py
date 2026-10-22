@@ -819,9 +819,7 @@ class TestCli:
         assert distributed_lock.main(["heartbeat", "--interval", "1"]) == 1
         assert capsys.readouterr().out.startswith("LOST:")
 
-    def test_heartbeat_ignores_operator_sigint_until_runner_releases_lease(
-        self, cli_env, s3_client, capsys
-    ):
+    def test_heartbeat_ignores_operator_sigint_until_runner_releases_lease(self, cli_env, s3_client, capsys):
         assert distributed_lock.main(["acquire"]) == 0
         original_handler = signal.getsignal(signal.SIGINT)
         calls = 0

@@ -16,8 +16,11 @@ def is_youtube_url(url: str) -> bool:
     """Check if URL is a YouTube video or playlist."""
     parsed = urlparse(url)
     return parsed.hostname in (
-        "youtube.com", "www.youtube.com", "m.youtube.com",
-        "youtu.be", "music.youtube.com",
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+        "music.youtube.com",
     )
 
 

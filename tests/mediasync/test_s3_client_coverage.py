@@ -80,9 +80,7 @@ class TestListFolder:
         """Folder with trailing slash should work the same."""
         paginator = MagicMock()
         client._client.get_paginator.return_value = paginator
-        paginator.paginate.return_value = [
-            {"Contents": [{"Key": "folder/file.mp3"}]}
-        ]
+        paginator.paginate.return_value = [{"Contents": [{"Key": "folder/file.mp3"}]}]
 
         result = client.list_folder("folder/")
         assert result == {"file.mp3"}

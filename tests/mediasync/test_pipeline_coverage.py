@@ -73,9 +73,7 @@ class TestUploadPlaylist:
         _upload_playlist(results, file_keys, entry, storage, config)
 
         mock_gen.assert_called_once()
-        storage.upload.assert_called_once_with(
-            playlist_path, "MediaSync/Harshit/playlists", playlist_path.name
-        )
+        storage.upload.assert_called_once_with(playlist_path, "MediaSync/Harshit/playlists", playlist_path.name)
         # Playlist file should be cleaned up
         assert not playlist_path.exists()
 
@@ -235,9 +233,7 @@ class TestReconcilePlaylist:
         storage = MagicMock()
         storage.list_folder.return_value = {"Song 1.mp4"}
 
-        result = _reconcile_playlist_with_storage(
-            "https://youtube.com/playlist?list=PLxyz", entry, storage, config
-        )
+        result = _reconcile_playlist_with_storage("https://youtube.com/playlist?list=PLxyz", entry, storage, config)
 
         assert result is not None
         file_keys, duration = result
@@ -276,9 +272,7 @@ class TestReconcilePlaylist:
         storage = MagicMock()
         storage.list_folder.return_value = {"Song.m4a"}
 
-        result = _reconcile_playlist_with_storage(
-            "https://youtube.com/playlist?list=PLxyz", entry, storage, cfg
-        )
+        result = _reconcile_playlist_with_storage("https://youtube.com/playlist?list=PLxyz", entry, storage, cfg)
 
         assert result is not None
         file_keys, _ = result
@@ -306,19 +300,14 @@ class TestReconcilePlaylist:
         storage.list_folder.side_effect = Exception("network error")
 
         with pytest.raises(Exception, match="network error"):
-            _reconcile_playlist_with_storage(
-                "https://youtube.com/playlist?list=PLxyz", entry, storage, config
-            )
+            _reconcile_playlist_with_storage("https://youtube.com/playlist?list=PLxyz", entry, storage, config)
 
     @patch("mediasync.pipeline._fetch_playlist_items_metadata")
     def test_reconcile_playlist_progress_logging(self, mock_fetch, config):
         """Cover line 253: progress logging every 25 items."""
         from mediasync.pipeline import _reconcile_playlist_with_storage
 
-        items = [
-            {"title": f"Song {i}", "uploader": "Artist", "duration": 60}
-            for i in range(30)
-        ]
+        items = [{"title": f"Song {i}", "uploader": "Artist", "duration": 60} for i in range(30)]
         mock_fetch.return_value = items
 
         entry = MediaEntry(
@@ -334,9 +323,7 @@ class TestReconcilePlaylist:
         # All songs exist
         storage.list_folder.return_value = {f"Song {i}.m4a" for i in range(30)}
 
-        result = _reconcile_playlist_with_storage(
-            "https://youtube.com/playlist?list=PLxyz", entry, storage, config
-        )
+        result = _reconcile_playlist_with_storage("https://youtube.com/playlist?list=PLxyz", entry, storage, config)
         assert result is not None
         assert len(result[0]) == 30
 
@@ -397,8 +384,6 @@ class TestReconcilePlaylist:
         assert result is None
 
 
-
-
 class TestProcessEntryReconciled:
     """Cover lines 355-362: _process_entry when reconcile succeeds."""
 
@@ -423,7 +408,8 @@ class TestProcessEntryReconciled:
 
         assert result is True
         notion.update_status.assert_called_once_with(
-            "page-1", Status.DONE,
+            "page-1",
+            Status.DONE,
             file_key="key1.m4a; key2.m4a",
             duration=300,
         )
@@ -442,8 +428,7 @@ class TestRunFailedEntry:
 
         notion = MagicMock()
         notion.get_pending.return_value = [
-            MediaEntry("p1", "https://youtube.com/watch?v=x", "Harshit",
-                       Format.AUDIO, Status.PENDING, False),
+            MediaEntry("p1", "https://youtube.com/watch?v=x", "Harshit", Format.AUDIO, Status.PENDING, False),
         ]
         storage = MagicMock()
 
@@ -469,8 +454,12 @@ class TestProcessEntryUploadFailure:
 
         mock_download.return_value = [
             DownloadResult(
-                path=result_file, title="Song", artist="Artist",
-                duration_secs=120, thumbnail_url="", format_type="audio",
+                path=result_file,
+                title="Song",
+                artist="Artist",
+                duration_secs=120,
+                thumbnail_url="",
+                format_type="audio",
             )
         ]
 

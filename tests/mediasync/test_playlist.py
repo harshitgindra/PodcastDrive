@@ -1,6 +1,5 @@
 """Tests for mediasync.playlist module."""
 
-
 from mediasync.playlist import (
     _relative_posix,
     _sanitize_filename,
@@ -72,11 +71,13 @@ class TestMakeRelativeKeys:
 class TestRelativePosix:
     def test_basic(self):
         from pathlib import PurePosixPath
+
         result = _relative_posix(PurePosixPath("a/b/c.txt"), PurePosixPath("a/d"))
         assert str(result) == "../b/c.txt"
 
     def test_same_dir(self):
         from pathlib import PurePosixPath
+
         result = _relative_posix(PurePosixPath("a/b/file.m4a"), PurePosixPath("a/b"))
         assert str(result) == "file.m4a"
 

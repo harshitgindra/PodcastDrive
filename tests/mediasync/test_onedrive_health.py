@@ -11,11 +11,13 @@ from mediasync.onedrive_client import OneDriveClient
 @pytest.fixture
 def mock_token_response():
     """Mock a successful token refresh response."""
-    return json.dumps({
-        "access_token": "new_access_token",
-        "refresh_token": "new_refresh_token",
-        "expires_in": 3600,
-    }).encode()
+    return json.dumps(
+        {
+            "access_token": "new_access_token",
+            "refresh_token": "new_refresh_token",
+            "expires_in": 3600,
+        }
+    ).encode()
 
 
 class TestCheckHealth:
@@ -29,9 +31,7 @@ class TestCheckHealth:
 
         # Mock health check (drive info)
         health_resp = MagicMock()
-        health_resp.read.return_value = json.dumps({
-            "quota": {"used": 1000000, "total": 5000000000}
-        }).encode()
+        health_resp.read.return_value = json.dumps({"quota": {"used": 1000000, "total": 5000000000}}).encode()
         health_resp.__enter__ = lambda s: s
         health_resp.__exit__ = MagicMock(return_value=False)
 
@@ -74,10 +74,12 @@ class TestCurrentRefreshToken:
     @patch("urllib.request.urlopen")
     def test_returns_rotated_token(self, mock_urlopen):
         resp = MagicMock()
-        resp.read.return_value = json.dumps({
-            "access_token": "at",
-            "refresh_token": "rotated_token",
-        }).encode()
+        resp.read.return_value = json.dumps(
+            {
+                "access_token": "at",
+                "refresh_token": "rotated_token",
+            }
+        ).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -91,17 +93,17 @@ class TestPersistRotatedToken:
     def test_updates_env_file(self, mock_urlopen, tmp_path, monkeypatch):
         env_file = tmp_path / "mediasync.env"
         env_file.write_text(
-            "MEDIASYNC_NOTION_TOKEN=abc\n"
-            "MEDIASYNC_ONEDRIVE_REFRESH_TOKEN=old_token\n"
-            "MEDIASYNC_STORAGE=onedrive\n"
+            "MEDIASYNC_NOTION_TOKEN=abc\nMEDIASYNC_ONEDRIVE_REFRESH_TOKEN=old_token\nMEDIASYNC_STORAGE=onedrive\n"
         )
         monkeypatch.chdir(tmp_path)
 
         resp = MagicMock()
-        resp.read.return_value = json.dumps({
-            "access_token": "at",
-            "refresh_token": "brand_new_token",
-        }).encode()
+        resp.read.return_value = json.dumps(
+            {
+                "access_token": "at",
+                "refresh_token": "brand_new_token",
+            }
+        ).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -116,16 +118,16 @@ class TestPersistRotatedToken:
     @patch("urllib.request.urlopen")
     def test_handles_export_prefix(self, mock_urlopen, tmp_path, monkeypatch):
         env_file = tmp_path / "mediasync.env"
-        env_file.write_text(
-            "export MEDIASYNC_ONEDRIVE_REFRESH_TOKEN=old_token\n"
-        )
+        env_file.write_text("export MEDIASYNC_ONEDRIVE_REFRESH_TOKEN=old_token\n")
         monkeypatch.chdir(tmp_path)
 
         resp = MagicMock()
-        resp.read.return_value = json.dumps({
-            "access_token": "at",
-            "refresh_token": "new_token",
-        }).encode()
+        resp.read.return_value = json.dumps(
+            {
+                "access_token": "at",
+                "refresh_token": "new_token",
+            }
+        ).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -141,10 +143,12 @@ class TestPersistRotatedToken:
         # No mediasync.env exists
 
         resp = MagicMock()
-        resp.read.return_value = json.dumps({
-            "access_token": "at",
-            "refresh_token": "new_token",
-        }).encode()
+        resp.read.return_value = json.dumps(
+            {
+                "access_token": "at",
+                "refresh_token": "new_token",
+            }
+        ).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp

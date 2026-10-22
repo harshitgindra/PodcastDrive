@@ -12,6 +12,7 @@ class TestDownloadThumbnail:
             # Simulate urlretrieve writing a file
             def side_effect(url, path):
                 Path(path).write_bytes(b"fake jpg data")
+
             mock_retrieve.side_effect = side_effect
 
             result = download_thumbnail("https://img.youtube.com/thumb.jpg", str(tmp_path))
@@ -22,8 +23,10 @@ class TestDownloadThumbnail:
 
     def test_custom_filename(self, tmp_path):
         with patch("urllib.request.urlretrieve") as mock_retrieve:
+
             def side_effect(url, path):
                 Path(path).write_bytes(b"data")
+
             mock_retrieve.side_effect = side_effect
 
             result = download_thumbnail("https://example.com/img.jpg", str(tmp_path), "cover.jpg")
@@ -43,8 +46,10 @@ class TestDownloadThumbnail:
     def test_creates_output_dir(self, tmp_path):
         out = tmp_path / "sub" / "dir"
         with patch("urllib.request.urlretrieve") as mock_retrieve:
+
             def side_effect(url, path):
                 Path(path).write_bytes(b"data")
+
             mock_retrieve.side_effect = side_effect
 
             result = download_thumbnail("https://example.com/img.jpg", str(out))

@@ -80,18 +80,14 @@ class TestReconcileWithStorage:
         mock_storage = MagicMock()
         mock_storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config)
 
         assert result is not None
         file_keys, duration = result
         assert duration == 240
         assert len(file_keys) == 1
         assert file_keys[0] == "MediaSync/Harshit/audio/Artist Name/My Song.m4a"
-        mock_storage.file_exists.assert_called_once_with(
-            "MediaSync/Harshit/audio/Artist Name/My Song.m4a"
-        )
+        mock_storage.file_exists.assert_called_once_with("MediaSync/Harshit/audio/Artist Name/My Song.m4a")
 
     @patch("mediasync.pipeline.get_metadata")
     def test_storage_lookup_failure_propagates(self, mock_meta, audio_entry, config):
@@ -102,9 +98,7 @@ class TestReconcileWithStorage:
         mock_storage.file_exists.side_effect = S3Error("access denied")
 
         with pytest.raises(S3Error, match="access denied"):
-            _reconcile_with_storage(
-                "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
-            )
+            _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config)
 
     @pytest.mark.parametrize(
         "meta",
@@ -114,16 +108,12 @@ class TestReconcileWithStorage:
         ],
     )
     @patch("mediasync.pipeline.get_metadata")
-    def test_optional_artist_fields_fall_back_to_channel_or_unknown(
-        self, mock_meta, audio_entry, config, meta
-    ):
+    def test_optional_artist_fields_fall_back_to_channel_or_unknown(self, mock_meta, audio_entry, config, meta):
         mock_meta.return_value = meta
         storage = MagicMock()
         storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, storage, config)
 
         assert result is not None
         expected_artist = meta.get("channel") or "Unknown"
@@ -145,38 +135,31 @@ class TestReconcileWithStorage:
         ],
     )
     @patch("mediasync.pipeline.get_metadata")
-    def test_invalid_single_item_metadata_falls_back_to_download(
-        self, mock_meta, audio_entry, config, meta
-    ):
+    def test_invalid_single_item_metadata_falls_back_to_download(self, mock_meta, audio_entry, config, meta):
         mock_meta.return_value = meta
-        assert _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, MagicMock(), config
-        ) is None
+        assert _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, MagicMock(), config) is None
 
     @patch("mediasync.pipeline.get_metadata")
     def test_invalid_metadata_does_not_escape_reconciliation(self, mock_meta, audio_entry, config):
         """Malformed metadata must fall through to normal download handling, not abort the run."""
         mock_meta.return_value = {"title": "Song", "duration": "LIVE"}
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, MagicMock(), config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, MagicMock(), config)
 
         assert result is None
 
     @patch("mediasync.pipeline.get_metadata")
-    def test_empty_uploader_uses_channel_path_from_download_naming(
-        self, mock_meta, audio_entry, config
-    ):
+    def test_empty_uploader_uses_channel_path_from_download_naming(self, mock_meta, audio_entry, config):
         mock_meta.return_value = {
-            "title": "Song", "uploader": "", "channel": "Channel", "duration": 120,
+            "title": "Song",
+            "uploader": "",
+            "channel": "Channel",
+            "duration": 120,
         }
         storage = MagicMock()
         storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, storage, config)
 
         assert result == (["MediaSync/Harshit/audio/Channel/Song.m4a"], 120)
         storage.file_exists.assert_called_once_with("MediaSync/Harshit/audio/Channel/Song.m4a")
@@ -191,9 +174,7 @@ class TestReconcileWithStorage:
         mock_storage = MagicMock()
         mock_storage.file_exists.return_value = False
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config)
 
         assert result is None
 
@@ -207,9 +188,7 @@ class TestReconcileWithStorage:
         mock_storage = MagicMock()
         mock_storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=vid456", video_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=vid456", video_entry, mock_storage, config)
 
         assert result is not None
         file_keys, duration = result
@@ -226,9 +205,7 @@ class TestReconcileWithStorage:
         mock_storage = MagicMock()
         mock_storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=both789", both_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=both789", both_entry, mock_storage, config)
 
         assert result is not None
         file_keys, duration = result
@@ -248,9 +225,7 @@ class TestReconcileWithStorage:
         # Audio exists, video doesn't
         mock_storage.file_exists.side_effect = [True, False]
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=both789", both_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=both789", both_entry, mock_storage, config)
 
         assert result is None
 
@@ -258,15 +233,23 @@ class TestReconcileWithStorage:
     def test_reconciles_playlist_all_exist(self, mock_full_meta, audio_entry, config):
         """Playlist reconciliation returns file_keys when all items exist on storage."""
         mock_full_meta.return_value = [
-            {"title": "Song 1", "uploader": "Artist A", "duration": 180, "webpage_url": "https://youtube.com/watch?v=vid1"},
-            {"title": "Song 2", "uploader": "Artist B", "duration": 240, "webpage_url": "https://youtube.com/watch?v=vid2"},
+            {
+                "title": "Song 1",
+                "uploader": "Artist A",
+                "duration": 180,
+                "webpage_url": "https://youtube.com/watch?v=vid1",
+            },
+            {
+                "title": "Song 2",
+                "uploader": "Artist B",
+                "duration": 240,
+                "webpage_url": "https://youtube.com/watch?v=vid2",
+            },
         ]
         mock_storage = MagicMock()
         mock_storage.list_folder.return_value = {"Song 1.m4a", "Song 2.m4a"}
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
         assert result is not None
         file_keys, duration = result
@@ -274,16 +257,12 @@ class TestReconcileWithStorage:
         assert duration == 420
 
     @patch("mediasync.pipeline.get_full_playlist_metadata")
-    def test_invalid_playlist_metadata_returns_reconciliation_miss(
-        self, mock_full_meta, audio_entry, config
-    ):
+    def test_invalid_playlist_metadata_returns_reconciliation_miss(self, mock_full_meta, audio_entry, config):
         mock_full_meta.return_value = [
             {"title": "Song 1", "uploader": "Artist", "duration": "LIVE"},
         ]
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, MagicMock(), config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, MagicMock(), config)
 
         assert result is None
 
@@ -298,24 +277,30 @@ class TestReconcileWithStorage:
         mock_storage.list_folder.side_effect = S3Error("permission denied")
 
         with pytest.raises(S3Error, match="permission denied"):
-            _reconcile_with_storage(
-                "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-            )
+            _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
     @patch("mediasync.pipeline.get_full_playlist_metadata")
     def test_reconciles_playlist_item_missing(self, mock_full_meta, audio_entry, config):
         """Playlist reconciliation returns None when an item is missing from storage."""
         mock_full_meta.return_value = [
-            {"title": "Song 1", "uploader": "Artist A", "duration": 180, "webpage_url": "https://youtube.com/watch?v=vid1"},
-            {"title": "Song 2", "uploader": "Artist B", "duration": 240, "webpage_url": "https://youtube.com/watch?v=vid2"},
+            {
+                "title": "Song 1",
+                "uploader": "Artist A",
+                "duration": 180,
+                "webpage_url": "https://youtube.com/watch?v=vid1",
+            },
+            {
+                "title": "Song 2",
+                "uploader": "Artist B",
+                "duration": 240,
+                "webpage_url": "https://youtube.com/watch?v=vid2",
+            },
         ]
         mock_storage = MagicMock()
         # Only Song 1 exists, Song 2 missing
         mock_storage.list_folder.return_value = {"Song 1.m4a"}
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
         assert result is None
 
@@ -324,25 +309,23 @@ class TestReconcileWithStorage:
     def test_reconciles_playlist_metadata_failure(self, mock_flat_meta, mock_full_meta, audio_entry, config):
         """Playlist reconciliation returns None when all metadata strategies fail."""
         from mediasync.downloader import DownloadError
+
         mock_full_meta.side_effect = DownloadError("unavailable")
         mock_flat_meta.side_effect = DownloadError("unavailable")
         mock_storage = MagicMock()
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
         assert result is None
 
     @patch("mediasync.pipeline.get_metadata")
     def test_returns_none_on_metadata_failure(self, mock_meta, audio_entry, config):
         from mediasync.downloader import DownloadError
+
         mock_meta.side_effect = DownloadError("unavailable")
         mock_storage = MagicMock()
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config)
 
         assert result is None
 
@@ -350,6 +333,7 @@ class TestReconcileWithStorage:
     def test_no_group_by_channel(self, mock_meta, audio_entry):
         """Without group_by_channel, path has no channel folder."""
         from mediasync.config import Config, Profile
+
         config = Config(
             notion_token="token",
             notion_database_id="db-id",
@@ -371,9 +355,7 @@ class TestReconcileWithStorage:
         mock_storage = MagicMock()
         mock_storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config)
 
         assert result is not None
         file_keys, _ = result
@@ -389,9 +371,7 @@ class TestReconcileWithStorage:
         mock_storage = MagicMock()
         mock_storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config)
 
         assert result is not None
         file_keys, _ = result
@@ -408,15 +388,12 @@ class TestReconcileWithStorage:
         mock_storage = MagicMock()
         mock_storage.file_exists.return_value = True
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/watch?v=abc123", audio_entry, mock_storage, config)
 
         assert result is not None
         file_keys, _ = result
         # Colons, quotes, question marks removed
         assert file_keys[0] == "MediaSync/Harshit/audio/Artist/Song Best One.m4a"
-
 
 
 class TestPlaylistReconciliationOptimizations:
@@ -425,6 +402,7 @@ class TestPlaylistReconciliationOptimizations:
     @pytest.fixture
     def config(self):
         from mediasync.config import Config, Profile
+
         return Config(
             notion_token="token",
             notion_database_id="db-id",
@@ -459,9 +437,7 @@ class TestPlaylistReconciliationOptimizations:
         mock_storage = MagicMock()
         mock_storage.list_folder.return_value = {"Track 1.m4a", "Track 2.m4a"}
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
         assert result is not None
         # list_folder called (not file_exists)
@@ -492,6 +468,7 @@ class TestPlaylistReconciliationOptimizations:
     ):
         """Falls back to flat + parallel per-item when full metadata fails."""
         from mediasync.downloader import DownloadError
+
         mock_full_meta.side_effect = DownloadError("timeout")
         mock_flat_meta.return_value = [
             {"id": "vid1", "title": "Song 1"},
@@ -504,9 +481,7 @@ class TestPlaylistReconciliationOptimizations:
         mock_storage = MagicMock()
         mock_storage.list_folder.return_value = {"Song 1.m4a", "Song 2.m4a"}
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
         assert result is not None
         file_keys, duration = result
@@ -517,18 +492,22 @@ class TestPlaylistReconciliationOptimizations:
     def test_caches_metadata_for_download_reuse(self, mock_full_meta, audio_entry, config):
         """Metadata fetched during reconciliation is cached for download phase."""
         from mediasync.downloader import _metadata_cache, clear_metadata_cache
+
         clear_metadata_cache()
 
         mock_full_meta.return_value = [
-            {"title": "Song 1", "uploader": "Artist A", "duration": 180, "webpage_url": "https://youtube.com/watch?v=vid1"},
+            {
+                "title": "Song 1",
+                "uploader": "Artist A",
+                "duration": 180,
+                "webpage_url": "https://youtube.com/watch?v=vid1",
+            },
         ]
         mock_storage = MagicMock()
         # Item NOT on storage (reconciliation returns None)
         mock_storage.list_folder.return_value = set()
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
         assert result is None
         # But metadata was cached for the subsequent download
@@ -538,16 +517,29 @@ class TestPlaylistReconciliationOptimizations:
     def test_list_folder_called_once_per_unique_folder(self, mock_full_meta, audio_entry, config):
         """list_folder is only called once per unique remote folder (cached)."""
         mock_full_meta.return_value = [
-            {"title": "Song 1", "uploader": "Same Artist", "duration": 100, "webpage_url": "https://youtube.com/watch?v=a"},
-            {"title": "Song 2", "uploader": "Same Artist", "duration": 200, "webpage_url": "https://youtube.com/watch?v=b"},
-            {"title": "Song 3", "uploader": "Same Artist", "duration": 300, "webpage_url": "https://youtube.com/watch?v=c"},
+            {
+                "title": "Song 1",
+                "uploader": "Same Artist",
+                "duration": 100,
+                "webpage_url": "https://youtube.com/watch?v=a",
+            },
+            {
+                "title": "Song 2",
+                "uploader": "Same Artist",
+                "duration": 200,
+                "webpage_url": "https://youtube.com/watch?v=b",
+            },
+            {
+                "title": "Song 3",
+                "uploader": "Same Artist",
+                "duration": 300,
+                "webpage_url": "https://youtube.com/watch?v=c",
+            },
         ]
         mock_storage = MagicMock()
         mock_storage.list_folder.return_value = {"Song 1.m4a", "Song 2.m4a", "Song 3.m4a"}
 
-        result = _reconcile_with_storage(
-            "https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config
-        )
+        result = _reconcile_with_storage("https://youtube.com/playlist?list=PLxxxxx", audio_entry, mock_storage, config)
 
         assert result is not None
         # All same artist -> same folder -> list_folder called only once

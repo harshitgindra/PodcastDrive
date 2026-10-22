@@ -83,9 +83,7 @@ def test_run_requires_authentication(monkeypatch):
 def test_post_run_launches_with_auth_and_returns_accepted(monkeypatch, tmp_path):
     module = load_webhook(monkeypatch)
     module.LOG_FILE = tmp_path / "logs" / "cron.log"
-    with patch.object(module, "is_running", return_value=False), patch.object(
-        module.subprocess, "Popen"
-    ) as popen:
+    with patch.object(module, "is_running", return_value=False), patch.object(module.subprocess, "Popen") as popen:
         response = handler(module, "/run", "POST", "test-secret")
     assert response == [(202, {"status": "started"})]
     popen.assert_called_once()
@@ -95,8 +93,9 @@ def test_post_run_launches_with_auth_and_returns_accepted(monkeypatch, tmp_path)
 def test_run_reports_launch_error(monkeypatch, tmp_path):
     module = load_webhook(monkeypatch)
     module.LOG_FILE = tmp_path / "logs" / "cron.log"
-    with patch.object(module, "is_running", return_value=False), patch.object(
-        module.subprocess, "Popen", side_effect=OSError("missing runner")
+    with (
+        patch.object(module, "is_running", return_value=False),
+        patch.object(module.subprocess, "Popen", side_effect=OSError("missing runner")),
     ):
         response = handler(module, "/run", "POST", "test-secret")
     assert response == [(500, {"error": "could not start run"})]

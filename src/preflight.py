@@ -307,11 +307,23 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
         try:
             gen = subprocess.run(
                 [
-                    ffmpeg_bin, "-y", "-f", "lavfi",
-                    "-i", "anullsrc=r=44100:cl=stereo",
-                    "-t", "2", "-codec:a", "libmp3lame", "-q:a", "9", src,
+                    ffmpeg_bin,
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=44100:cl=stereo",
+                    "-t",
+                    "2",
+                    "-codec:a",
+                    "libmp3lame",
+                    "-q:a",
+                    "9",
+                    src,
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if gen.returncode in (-11, -6):
                 _fail(
@@ -331,15 +343,26 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
             # libmp3lame psymodel assertion on loudnorm's float output.
             splice = subprocess.run(
                 [
-                    ffmpeg_bin, "-y", "-i", src,
+                    ffmpeg_bin,
+                    "-y",
+                    "-i",
+                    src,
                     "-filter_complex",
                     "[0:a]atrim=start=0:end=0.5,asetpts=PTS-STARTPTS[a0];"
                     "[0:a]atrim=start=1:end=1.5,asetpts=PTS-STARTPTS[a1];"
                     "[a0][a1]concat=n=2:v=0:a=1[c];"
                     "[c]loudnorm=I=-16:TP=-1.5:LRA=11,aformat=sample_fmts=s16p[out]",
-                    "-map", "[out]", "-codec:a", "libmp3lame", "-q:a", "2", out,
+                    "-map",
+                    "[out]",
+                    "-codec:a",
+                    "libmp3lame",
+                    "-q:a",
+                    "2",
+                    out,
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except subprocess.TimeoutExpired:
             _fail(f"ffmpeg splice self-test timed out (FFMPEG_BIN={ffmpeg_bin!r})")
@@ -386,16 +409,26 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
         try:
             probe = subprocess.run(
                 [
-                    ffprobe_bin, "-v", "error", "-show_entries", "format=duration",
-                    "-of", "default=nw=1:nk=1", out,
+                    ffprobe_bin,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=nw=1:nk=1",
+                    out,
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except subprocess.TimeoutExpired:
             _warn(f"ffprobe self-test timed out (FFPROBE_BIN={ffprobe_bin!r}) — mutagen fallback will be used")
             return
         except OSError as exc:
-            _warn(f"ffprobe self-test could not run (FFPROBE_BIN={ffprobe_bin!r}): {exc} — mutagen fallback will be used")
+            _warn(
+                f"ffprobe self-test could not run (FFPROBE_BIN={ffprobe_bin!r}): {exc} — mutagen fallback will be used"
+            )
             return
 
         if probe.returncode in (-11, -6):
@@ -414,7 +447,6 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
             return
 
     _ok("ffprobe self-test passed (reads duration from the spliced clip)")
-
 
 
 def _check_ffmpeg_canary(region: str) -> None:

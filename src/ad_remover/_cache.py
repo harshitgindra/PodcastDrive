@@ -57,9 +57,7 @@ def _load_transcript_cache(s3_client, bucket: str, video_id: str, namespace: str
     Returns:
         Cached segment list, or ``None`` if not found or loading fails.
     """
-    raw = _get_cached_bytes(
-        s3_client, bucket, _cache_read_keys(video_id, ".json", namespace), "Transcript", video_id
-    )
+    raw = _get_cached_bytes(s3_client, bucket, _cache_read_keys(video_id, ".json", namespace), "Transcript", video_id)
     if raw is None:
         return None
     try:
@@ -78,9 +76,7 @@ def _load_transcript_cache(s3_client, bucket: str, video_id: str, namespace: str
     return None
 
 
-def _save_transcript_cache(
-    s3_client, bucket: str, video_id: str, segments: list[dict], namespace: str = ""
-) -> None:
+def _save_transcript_cache(s3_client, bucket: str, video_id: str, segments: list[dict], namespace: str = "") -> None:
     """Persist a transcript segment list to S3 for future reuse.
 
     Args:
@@ -132,9 +128,7 @@ def _save_summary_cache(s3_client, bucket: str, video_id: str, summary: str, nam
         logger.warning("[AdRemover] Could not save summary cache for %s: %s", video_id, exc)
 
 
-def _save_transcript_text(
-    s3_client, bucket: str, video_id: str, segments: list[dict], namespace: str = ""
-) -> None:
+def _save_transcript_text(s3_client, bucket: str, video_id: str, segments: list[dict], namespace: str = "") -> None:
     """Persist the full transcript as plain text to S3 alongside the segment cache."""
     key = _cache_key(video_id, ".txt", namespace)
     text = "\n".join(f"[{s['start']:.1f}s]  {s['text']}" for s in segments)

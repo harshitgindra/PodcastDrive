@@ -62,16 +62,16 @@ class S3Client:
         Raises:
             S3Error: If the S3 listing fails.
         """
-        prefix = remote_folder.rstrip('/') + '/'
+        prefix = remote_folder.rstrip("/") + "/"
         filenames: set[str] = set()
         try:
-            paginator = self._client.get_paginator('list_objects_v2')
+            paginator = self._client.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
-                for obj in page.get('Contents', []):
-                    key = obj['Key']
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
                     # Extract filename (last component after prefix)
-                    name = key[len(prefix):]
-                    if name and '/' not in name:  # Skip nested objects
+                    name = key[len(prefix) :]
+                    if name and "/" not in name:  # Skip nested objects
                         filenames.add(name)
         except ClientError as exc:
             raise S3Error(f"List failed for {prefix}: {exc}") from exc

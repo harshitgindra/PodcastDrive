@@ -246,9 +246,7 @@ class TestIsTransientHttpError:
     def test_permanent_statuses_are_not_retryable(self, code):
         assert is_transient_http_error(http_error(code)) is False
 
-    @pytest.mark.parametrize(
-        "exc", [OSError("reset"), urllib.error.URLError("dns"), TimeoutError("read timed out")]
-    )
+    @pytest.mark.parametrize("exc", [OSError("reset"), urllib.error.URLError("dns"), TimeoutError("read timed out")])
     def test_transport_errors_are_retryable(self, exc):
         assert is_transient_http_error(exc) is True
 

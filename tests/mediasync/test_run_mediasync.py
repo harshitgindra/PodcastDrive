@@ -135,9 +135,7 @@ class TestRunnerAlertsOnEarlyFailure:
         assert "MediaSync FAILED (exit 42)" in calls
 
     def test_job_id_routes_the_alert(self, project):
-        _, calls, _ = run_runner(
-            project, env={"FAKE_PYTHON_EXIT": "1", "HERALD_JOB_ID": "mediasync"}
-        )
+        _, calls, _ = run_runner(project, env={"FAKE_PYTHON_EXIT": "1", "HERALD_JOB_ID": "mediasync"})
 
         assert "--job\nmediasync" in calls
 
@@ -146,9 +144,7 @@ class TestRunnerDoesNotDuplicate:
     def test_delivered_summary_suppresses_the_alert(self, project):
         """`stats.failed > 0` exits 1 *after* cli._notify already sent a summary.
         Alerting again would be a second message about the same run."""
-        proc, calls, log_text = run_runner(
-            project, env={"FAKE_PYTHON_EXIT": "1", "FAKE_TOUCH_SENTINEL": "1"}
-        )
+        proc, calls, log_text = run_runner(project, env={"FAKE_PYTHON_EXIT": "1", "FAKE_TOUCH_SENTINEL": "1"})
 
         assert proc.returncode == 1
         assert calls == ""
@@ -178,18 +174,14 @@ class TestRunnerDegradesSafely:
         assert calls == ""
 
     def test_missing_herald_binary_keeps_exit_code(self, project):
-        proc, calls, _ = run_runner(
-            project, env={"FAKE_PYTHON_EXIT": "7"}, with_herald=False
-        )
+        proc, calls, _ = run_runner(project, env={"FAKE_PYTHON_EXIT": "7"}, with_herald=False)
 
         assert proc.returncode == 7
         assert calls == ""
         assert "herald not on PATH" in proc.stderr
 
     def test_undelivered_alert_is_reported(self, project):
-        proc, _, _ = run_runner(
-            project, env={"FAKE_PYTHON_EXIT": "1", "FAKE_HERALD_EXIT": "3"}
-        )
+        proc, _, _ = run_runner(project, env={"FAKE_PYTHON_EXIT": "1", "FAKE_HERALD_EXIT": "3"})
 
         assert proc.returncode == 1
         assert "failure alert not delivered" in proc.stderr
@@ -205,10 +197,14 @@ class TestRunnerDegradesSafely:
 
 def _config(**kw):
     base = dict(
-        notion_token="t", notion_database_id="d",
-        s3_bucket="b", s3_region="r", s3_prefix="p",
+        notion_token="t",
+        notion_database_id="d",
+        s3_bucket="b",
+        s3_region="r",
+        s3_prefix="p",
         profiles=[Profile("x")],
-        herald_enabled=True, herald_job_id="j",
+        herald_enabled=True,
+        herald_job_id="j",
     )
     base.update(kw)
     return Config(**base)
@@ -248,9 +244,7 @@ class TestMarkSummarySent:
 
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/local/bin/herald")
-    def test_undelivered_summary_leaves_it_to_the_runner(
-        self, mock_which, mock_run, tmp_path, monkeypatch
-    ):
+    def test_undelivered_summary_leaves_it_to_the_runner(self, mock_which, mock_run, tmp_path, monkeypatch):
         """--strict exit means nothing arrived, so the runner should still alert."""
         mock_run.return_value = SimpleNamespace(returncode=1, stdout="", stderr="no recipients")
         sentinel = tmp_path / "summary-sent"

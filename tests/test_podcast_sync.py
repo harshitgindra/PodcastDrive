@@ -335,7 +335,15 @@ class TestProcessPodcastFeedLive:
         ep = _make_episode_meta("guid-recent", "Recent")
         original = tmp_path / "recent.mp3"
         original.write_bytes(b"ID3")
-        manifest = {"guid-recent": {"size": 321, "title": "Recent", "guid": "guid-recent", "pub_date": ep.pub_date.isoformat(), "duration": ep.duration}}
+        manifest = {
+            "guid-recent": {
+                "size": 321,
+                "title": "Recent",
+                "guid": "guid-recent",
+                "pub_date": ep.pub_date.isoformat(),
+                "duration": ep.duration,
+            }
+        }
 
         with (
             patch("podcast_sync.is_apple_podcasts_url", return_value=False),
@@ -375,7 +383,16 @@ class TestProcessPodcastFeedLive:
         ep = _make_episode_meta("guid-stuck", "Stuck")
         original = tmp_path / "stuck.mp3"
         original.write_bytes(b"ID3")
-        manifest = {"guid-stuck": {"size": 321, "title": "Stuck", "guid": "guid-stuck", "pub_date": ep.pub_date.isoformat(), "duration": ep.duration, **entry}}
+        manifest = {
+            "guid-stuck": {
+                "size": 321,
+                "title": "Stuck",
+                "guid": "guid-stuck",
+                "pub_date": ep.pub_date.isoformat(),
+                "duration": ep.duration,
+                **entry,
+            }
+        }
 
         with (
             patch("podcast_sync.is_apple_podcasts_url", return_value=False),
@@ -961,7 +978,10 @@ class TestSpliceRetryCount:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-1"),
             patch("podcast_sync.S3Manager") as MockS3,
-            patch("podcast_sync.download_episode", side_effect=lambda *args: (original.write_bytes(b"ID3"), str(original))[1]),
+            patch(
+                "podcast_sync.download_episode",
+                side_effect=lambda *args: (original.write_bytes(b"ID3"), str(original))[1],
+            ),
             # Both attempts return ads found but original path (splice failed)
             patch("podcast_sync.remove_ads", return_value=(str(original), [{"start": 0, "end": 5}], "")),
         ):
@@ -1062,7 +1082,6 @@ class TestSpliceResetExhausted:
                 process_podcast_feed(podcast, dry_run=True)
 
         assert "SPLICE_RESET_EXHAUSTED is set" in caplog.text
-
 
     def test_splice_failed_count_not_incremented_on_success(self, tmp_path, monkeypatch):
         """A successful episode resets splice_failed to False and does not increment count."""
@@ -1317,7 +1336,10 @@ class TestCdnTagInManifest:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-cdn2"),
             patch("podcast_sync.S3Manager") as MockS3,
-            patch("podcast_sync.download_episode", side_effect=lambda *args: (fake_mp3.write_bytes(b"ID3"), str(fake_mp3))[1]),
+            patch(
+                "podcast_sync.download_episode",
+                side_effect=lambda *args: (fake_mp3.write_bytes(b"ID3"), str(fake_mp3))[1],
+            ),
             # Detection finds ads but splice keeps returning the original path -> splice_failed
             patch("podcast_sync.remove_ads", return_value=(str(fake_mp3), [{"start": 0, "end": 5}], "")),
         ):
@@ -1396,7 +1418,10 @@ class TestFfprobeValidationRetry:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-bad2"),
             patch("podcast_sync.S3Manager") as MockS3,
-            patch("podcast_sync.download_episode", side_effect=lambda *args: (fake_mp3.write_bytes(b"ID3"), str(fake_mp3))[1]),
+            patch(
+                "podcast_sync.download_episode",
+                side_effect=lambda *args: (fake_mp3.write_bytes(b"ID3"), str(fake_mp3))[1],
+            ),
             patch("podcast_sync.validate_audio_file", return_value=(False, "zero/negative duration (0)")),
             patch("podcast_sync.remove_ads") as mock_remove_ads,
         ):
@@ -2200,9 +2225,16 @@ class TestAdRemovalFallbackPublication:
             patch("podcast_sync.parse_episodes", return_value=[ep]),
             patch("podcast_sync.episode_id_from_guid", return_value="guid-fallback"),
             patch("podcast_sync.S3Manager") as mock_s3_cls,
-            patch("podcast_sync.download_episode", side_effect=lambda *args: (original.write_bytes(b"validated-original-audio"), str(original))[1]) as mock_download,
+            patch(
+                "podcast_sync.download_episode",
+                side_effect=lambda *args: (original.write_bytes(b"validated-original-audio"), str(original))[1],
+            ) as mock_download,
             patch("podcast_sync.validate_audio_file", return_value=(valid, "invalid media")),
-            patch("podcast_sync.remove_ads", return_value=result or (str(original), [], "TRANSCRIBE_FAILED"), side_effect=exception) as mock_remove,
+            patch(
+                "podcast_sync.remove_ads",
+                return_value=result or (str(original), [], "TRANSCRIBE_FAILED"),
+                side_effect=exception,
+            ) as mock_remove,
             patch("podcast_sync._build_podcast_feed_xml", return_value="<rss/>") as mock_build,
         ):
             s3 = mock_s3_cls.return_value

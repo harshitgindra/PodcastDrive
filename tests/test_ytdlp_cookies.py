@@ -92,9 +92,7 @@ class TestCookiesEnvOverride:
         monkeypatch.setenv("YTDLP_COOKIES", str(override))
         assert get_cookies_path() == str(override)
 
-    def test_missing_override_falls_back_to_discovery(
-        self, candidates, tmp_path, monkeypatch, caplog
-    ):
+    def test_missing_override_falls_back_to_discovery(self, candidates, tmp_path, monkeypatch, caplog):
         discovered = write_cookies(tmp_path / "discovered.txt")
         candidates.append(discovered)
         monkeypatch.setenv("YTDLP_COOKIES", str(tmp_path / "absent.txt"))

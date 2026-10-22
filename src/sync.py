@@ -341,9 +341,8 @@ def process_playlist(
                 # detection/removal failed. Upload the validated original with no
                 # ad-removed title marker; preserve the failure reason in manifest.
                 ad_removal_failed = (
-                    (episode_summary in REMOVE_ADS_ERROR_CODES or episode_summary.startswith("REMOVE_ADS_EXCEPTION:"))
-                    and mp3_path == original_mp3
-                )
+                    episode_summary in REMOVE_ADS_ERROR_CODES or episode_summary.startswith("REMOVE_ADS_EXCEPTION:")
+                ) and mp3_path == original_mp3
                 if ad_removal_failed:
                     logger.error(
                         "[Step 4] Ad removal failed for %s (%s); publishing validated original without suffix",
@@ -375,7 +374,9 @@ def process_playlist(
                 video_manifest["ads_removed"] = ads_were_removed
                 video_manifest["ad_removal_checked"] = not repair_failed
                 video_manifest["ad_removal_failed"] = ad_removal_failed
-                video_manifest["splice_failed"] = bool(ad_segments) and mp3_path == original_mp3 and not ad_removal_failed
+                video_manifest["splice_failed"] = (
+                    bool(ad_segments) and mp3_path == original_mp3 and not ad_removal_failed
+                )
                 video_manifest["upload_date"] = video.upload_date
                 if ad_removal_failed:
                     video_manifest["ad_removal_fail_reason"] = episode_summary
@@ -458,10 +459,7 @@ def process_playlist(
         # Persist manifest with ads_removed metadata and published sizes
         manifest_save_failed = False
         if (
-            new_count > 0
-            or repairs_succeeded > 0
-            or repairs_failed > 0
-            or (retry_enabled and recent_repair_ids)
+            new_count > 0 or repairs_succeeded > 0 or repairs_failed > 0 or (retry_enabled and recent_repair_ids)
         ) and not s3.save_manifest(manifest):
             # The MP3s are in S3 but nothing records their size, so the next feed
             # build has no fallback when a HEAD fails.  Not a healthy run.
@@ -724,8 +722,7 @@ def _reconcile(
                 )
             else:
                 logger.error(
-                    "[Reconcile] Could not persist the pruned manifest for %s — "
-                    "S3 still holds the stale entries",
+                    "[Reconcile] Could not persist the pruned manifest for %s — S3 still holds the stale entries",
                     playlist_id,
                 )
 

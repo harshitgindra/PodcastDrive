@@ -101,9 +101,11 @@ class TestGenerateForProfile:
 
         # Capture the file content before it's deleted by intercepting upload
         captured_content = {}
+
         def capture_upload(path, folder, filename):
             captured_content[filename] = path.read_text()
             return f"{folder}/{filename}"
+
         mock_storage.upload.side_effect = capture_upload
 
         count = _generate_for_profile("harshit", config, mock_notion, mock_storage)

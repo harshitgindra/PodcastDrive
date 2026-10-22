@@ -145,19 +145,13 @@ def get_playlist_metadata(url: str) -> list[dict]:
             try:
                 item = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise DownloadError(
-                    f"Playlist metadata returned invalid JSON on line {line_number}: {exc}"
-                ) from exc
+                raise DownloadError(f"Playlist metadata returned invalid JSON on line {line_number}: {exc}") from exc
             if not isinstance(item, dict):
-                raise DownloadError(
-                    f"Playlist metadata returned a non-object on line {line_number}"
-                )
+                raise DownloadError(f"Playlist metadata returned a non-object on line {line_number}")
             entries.append(item)
     if not entries:
         raise DownloadError("Playlist is empty or unavailable")
     return entries
-
-
 
 
 def get_full_playlist_metadata(url: str) -> list[dict]:
@@ -206,6 +200,7 @@ def get_full_playlist_metadata(url: str) -> list[dict]:
         raise DownloadError("Playlist is empty or unavailable")
     return entries
 
+
 def download(
     url: str,
     fmt: Format,
@@ -233,9 +228,13 @@ def download(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     if is_playlist(url):
-        results = _download_playlist(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
+        results = _download_playlist(
+            url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries
+        )
     else:
-        results = _download_single(url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries)
+        results = _download_single(
+            url, fmt, output_dir=output_dir, max_duration_secs=max_duration_secs, max_retries=max_retries
+        )
     _assert_results_present(results)
     return results
 
@@ -270,9 +269,24 @@ def cleanup_results(results: list[DownloadResult]) -> None:
 _LEFTOVER_EXTS = frozenset(
     {
         # media containers
-        "m4a", "mp3", "opus", "webm", "mp4", "mkv", "aac", "ogg", "flac", "wav",
+        "m4a",
+        "mp3",
+        "opus",
+        "webm",
+        "mp4",
+        "mkv",
+        "aac",
+        "ogg",
+        "flac",
+        "wav",
         # in-progress / auxiliary
-        "part", "ytdl", "temp", "jpg", "jpeg", "png", "webp",
+        "part",
+        "ytdl",
+        "temp",
+        "jpg",
+        "jpeg",
+        "png",
+        "webp",
     }
 )
 
@@ -294,7 +308,7 @@ def _is_leftover_for_stem(name: str, stem: str) -> bool:
     prefix = f"{stem}."
     if not name.startswith(prefix):
         return False
-    remainder = name[len(prefix):]
+    remainder = name[len(prefix) :]
     if not remainder:
         return False
     tokens = remainder.split(".")
@@ -353,9 +367,7 @@ def _download_single(
     meta = get_metadata(url)
     duration = int(meta.get("duration") or 0)
     if duration > max_duration_secs:
-        raise DurationExceededError(
-            f"Duration {duration}s exceeds limit of {max_duration_secs}s"
-        )
+        raise DurationExceededError(f"Duration {duration}s exceeds limit of {max_duration_secs}s")
 
     title = sanitize_title(meta.get("title", "untitled"))
     artist = meta.get("uploader") or meta.get("channel") or "Unknown"
@@ -407,14 +419,16 @@ def _download_single(
             )
 
             actual_path = _find_output(Path(output_path))
-            results.append(DownloadResult(
-                path=actual_path,
-                title=title,
-                artist=artist,
-                duration_secs=duration,
-                thumbnail_url=thumbnail,
-                format_type=dl_format,
-            ))
+            results.append(
+                DownloadResult(
+                    path=actual_path,
+                    title=title,
+                    artist=artist,
+                    duration_secs=duration,
+                    thumbnail_url=thumbnail,
+                    format_type=dl_format,
+                )
+            )
     except BaseException:
         # Never leave half-written media behind: the caller only cleans up
         # results it was handed, and on failure it is handed nothing.
@@ -425,7 +439,9 @@ def _download_single(
     return results
 
 
-def _download_playlist(url: str, fmt: Format, *, output_dir: str, max_duration_secs: int, max_retries: int = 3) -> list[DownloadResult]:
+def _download_playlist(
+    url: str, fmt: Format, *, output_dir: str, max_duration_secs: int, max_retries: int = 3
+) -> list[DownloadResult]:
     """Download all videos in a playlist."""
     playlist_meta = get_playlist_metadata(url)
     logger.info("Playlist has %d items", len(playlist_meta))
@@ -483,13 +499,17 @@ def _build_cmd(url: str, fmt: str, output: str) -> list[str]:
     if fmt == "audio":
         cmd += [
             "-x",
-            "--audio-format", "m4a",
-            "--audio-quality", "0",
+            "--audio-format",
+            "m4a",
+            "--audio-quality",
+            "0",
         ]
     else:
         cmd += [
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
+            "-f",
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format",
+            "mp4",
         ]
 
     cmd += ["-o", output, url]

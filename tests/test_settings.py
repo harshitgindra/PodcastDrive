@@ -263,11 +263,7 @@ def _env_names_read_in(path: Path) -> set[str]:
 def _pipeline_modules() -> list[Path]:
     # src/mediasync/ has its own typed Config dataclass and its own
     # mediasync.env.example, so it is deliberately out of this registry.
-    return [
-        p
-        for p in sorted(SRC.rglob("*.py"))
-        if "mediasync" not in p.parts and p.name != "settings.py"
-    ]
+    return [p for p in sorted(SRC.rglob("*.py")) if "mediasync" not in p.parts and p.name != "settings.py"]
 
 
 class TestRegistryCoversEverySettingReadInSrc:
@@ -286,17 +282,14 @@ class TestRegistryCoversEverySettingReadInSrc:
             if missing:
                 undeclared[module.name] = missing
         assert not undeclared, (
-            "these environment variables are read but not declared in "
-            f"settings._DECLARATIONS: {undeclared}"
+            f"these environment variables are read but not declared in settings._DECLARATIONS: {undeclared}"
         )
 
 
 class TestGeneratedExampleIsCommitted:
     def test_committed_file_matches_the_registry(self):
         committed = (REPO_ROOT / "config.env.example").read_text(encoding="utf-8")
-        assert committed == settings.render_example(), (
-            "config.env.example is stale — run `make config-example`"
-        )
+        assert committed == settings.render_example(), "config.env.example is stale — run `make config-example`"
 
     def test_required_settings_are_uncommented_so_a_copy_has_blanks_to_fill(self):
         rendered = settings.render_example()

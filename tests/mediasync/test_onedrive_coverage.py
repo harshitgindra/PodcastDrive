@@ -27,6 +27,7 @@ def make_client(token_response):
             mock_urlopen.return_value = resp
             client = OneDriveClient("cid", "cs", "refresh_tok")
         return client
+
     return _make
 
 
@@ -35,13 +36,15 @@ class TestListFolder:
     def test_returns_filenames(self, mock_urlopen, make_client):
         client = make_client()
 
-        response_data = json.dumps({
-            "value": [
-                {"name": "song1.m4a"},
-                {"name": "song2.mp3"},
-                {"name": "subfolder", "folder": {"childCount": 3}},  # skipped
-            ],
-        }).encode()
+        response_data = json.dumps(
+            {
+                "value": [
+                    {"name": "song1.m4a"},
+                    {"name": "song2.mp3"},
+                    {"name": "subfolder", "folder": {"childCount": 3}},  # skipped
+                ],
+            }
+        ).encode()
 
         resp = MagicMock()
         resp.read.return_value = response_data
@@ -56,13 +59,17 @@ class TestListFolder:
     def test_pagination(self, mock_urlopen, make_client):
         client = make_client()
 
-        page1 = json.dumps({
-            "value": [{"name": "a.m4a"}],
-            "@odata.nextLink": "https://graph.microsoft.com/next",
-        }).encode()
-        page2 = json.dumps({
-            "value": [{"name": "b.m4a"}],
-        }).encode()
+        page1 = json.dumps(
+            {
+                "value": [{"name": "a.m4a"}],
+                "@odata.nextLink": "https://graph.microsoft.com/next",
+            }
+        ).encode()
+        page2 = json.dumps(
+            {
+                "value": [{"name": "b.m4a"}],
+            }
+        ).encode()
 
         resp1 = MagicMock()
         resp1.read.return_value = page1
@@ -88,9 +95,7 @@ class TestListFolder:
 
         # Token refresh response
         token_resp = MagicMock()
-        token_resp.read.return_value = json.dumps(
-            {"access_token": "new_token", "refresh_token": "nr"}
-        ).encode()
+        token_resp.read.return_value = json.dumps({"access_token": "new_token", "refresh_token": "nr"}).encode()
         token_resp.__enter__ = lambda s: s
         token_resp.__exit__ = MagicMock(return_value=False)
 
@@ -113,6 +118,7 @@ class TestListFolder:
         mock_urlopen.side_effect = http_err
 
         from mediasync.onedrive_client import OneDriveError
+
         with pytest.raises(OneDriveError, match="HTTP 500"):
             client.list_folder("MediaSync/audio")
 
@@ -128,6 +134,7 @@ class TestListFolder:
 
         mock_urlopen.side_effect = OSError("network")
         from mediasync.onedrive_client import OneDriveError
+
         with pytest.raises(OneDriveError, match="network"):
             client.list_folder("MediaSync/audio")
 
@@ -142,9 +149,7 @@ class TestSimpleUploadRetry:
 
         # Token refresh
         token_resp = MagicMock()
-        token_resp.read.return_value = json.dumps(
-            {"access_token": "refreshed", "refresh_token": "nr"}
-        ).encode()
+        token_resp.read.return_value = json.dumps({"access_token": "refreshed", "refresh_token": "nr"}).encode()
         token_resp.__enter__ = lambda s: s
         token_resp.__exit__ = MagicMock(return_value=False)
 

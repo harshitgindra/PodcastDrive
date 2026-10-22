@@ -41,6 +41,7 @@ def _pkg():
     """Return the live ``ad_remover`` package module (see _ffmpeg._pkg)."""
     return sys.modules["ad_remover"]
 
+
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 _MAX_POLL_ERRORS = 5

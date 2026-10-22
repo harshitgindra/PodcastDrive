@@ -47,9 +47,7 @@ def migrate(config: Config, *, dry_run: bool = False) -> dict[str, int]:
 
     for profile in config.profiles:
         done = notion.get_done_for_profile(profile.name)
-        logger.info(
-            "Profile %s: %d done entries to evaluate", profile.name, len(done)
-        )
+        logger.info("Profile %s: %d done entries to evaluate", profile.name, len(done))
 
         artwork_uploaded: set[str] = set()
 
@@ -60,7 +58,10 @@ def migrate(config: Config, *, dry_run: bool = False) -> dict[str, int]:
 
             try:
                 result = _migrate_entry(
-                    entry, config, notion, storage,
+                    entry,
+                    config,
+                    notion,
+                    storage,
                     artwork_uploaded=artwork_uploaded,
                     dry_run=dry_run,
                 )
@@ -78,7 +79,10 @@ def migrate(config: Config, *, dry_run: bool = False) -> dict[str, int]:
 
     logger.info(
         "Migration complete: moved=%d, skipped=%d, failed=%d, playlists=%d",
-        stats["moved"], stats["skipped"], stats["failed"], stats["playlists"],
+        stats["moved"],
+        stats["skipped"],
+        stats["failed"],
+        stats["playlists"],
     )
     return stats
 
@@ -108,7 +112,7 @@ def _migrate_entry(
         # Flat: prefix/profile/format/filename.ext
         # Grouped: prefix/profile/format/channel/filename.ext
         prefix_parts = PurePosixPath(config.prefix).parts
-        relative_parts = parts[len(prefix_parts):]
+        relative_parts = parts[len(prefix_parts) :]
 
         if len(relative_parts) <= 3:
             # Flat structure: needs migration
@@ -134,9 +138,7 @@ def _migrate_entry(
                     moved_any = True
 
                     if new_folder not in artwork_uploaded:
-                        _upload_artwork_for_entry(
-                            entry.url, new_folder, storage, config.output_dir
-                        )
+                        _upload_artwork_for_entry(entry.url, new_folder, storage, config.output_dir)
                         artwork_uploaded.add(new_folder)
                 else:
                     new_keys.append(key)
@@ -145,7 +147,8 @@ def _migrate_entry(
 
     if moved_any and not dry_run:
         notion.update_status(
-            entry.page_id, Status.DONE,
+            entry.page_id,
+            Status.DONE,
             file_key="; ".join(new_keys),
         )
 
@@ -181,9 +184,7 @@ def _move_file(storage: StorageBackend, old_key: str, new_key: str) -> bool:
     if isinstance(storage, OneDriveClient):
         return _onedrive_move(storage, old_key, new_key)
 
-    logger.warning(
-        "S3 migration requires re-download. Use --reset to re-process: %s", old_key
-    )
+    logger.warning("S3 migration requires re-download. Use --reset to re-process: %s", old_key)
     return False
 
 
@@ -203,10 +204,12 @@ def _onedrive_move(client, old_path: str, new_path: str) -> bool:
     new_parent = str(new_posix.parent)
     new_name = new_posix.name
 
-    body = json.dumps({
-        "parentReference": {"path": f"/drive/root:/{new_parent}"},
-        "name": new_name,
-    }).encode()
+    body = json.dumps(
+        {
+            "parentReference": {"path": f"/drive/root:/{new_parent}"},
+            "name": new_name,
+        }
+    ).encode()
 
     req = urllib.request.Request(url, data=body, method="PATCH")
     req.add_header("Authorization", f"Bearer {client._access_token}")
@@ -227,9 +230,7 @@ def _onedrive_move(client, old_path: str, new_path: str) -> bool:
         return False
 
 
-def _upload_artwork_for_entry(
-    url: str, remote_folder: str, storage: StorageBackend, output_dir: str
-) -> None:
+def _upload_artwork_for_entry(url: str, remote_folder: str, storage: StorageBackend, output_dir: str) -> None:
     """Download thumbnail and upload as folder.jpg."""
     try:
         meta = get_metadata(url)

@@ -257,8 +257,15 @@ class TestSendViaHerald:
         assert _send_via_herald("hello") is True
         mock_run.assert_called_once_with(
             [
-                "herald", "notify", "--parse-mode", "plain", "--strict",
-                "--message", "hello", "--job", "01M0173FM7DVJ2Y9ZAEE1AB70M",
+                "herald",
+                "notify",
+                "--parse-mode",
+                "plain",
+                "--strict",
+                "--message",
+                "hello",
+                "--job",
+                "01M0173FM7DVJ2Y9ZAEE1AB70M",
             ],
             capture_output=True,
             text=True,
@@ -393,9 +400,7 @@ class TestUnavailableReporting:
         assert "3 unavailable" in msg
 
     def test_unavailable_makes_overall_status_a_warning(self):
-        msg = _format_message(
-            [{"name": "A", "new_episodes": 0, "unavailable": 1}], status="success"
-        )
+        msg = _format_message([{"name": "A", "new_episodes": 0, "unavailable": 1}], status="success")
         footer = msg.strip().splitlines()[-1]
         assert footer.startswith("⚠️")
 
@@ -424,9 +429,7 @@ class TestUnavailableReporting:
         assert "1 unavailable, 0 new" not in msg
 
     def test_bot_detected_takes_precedence_over_unavailable(self):
-        msg = _format_message(
-            [{"name": "A", "new_episodes": 0, "unavailable": 3, "bot_detected": True}]
-        )
+        msg = _format_message([{"name": "A", "new_episodes": 0, "unavailable": 3, "bot_detected": True}])
         assert "bot detected" in msg
 
     def test_missing_unavailable_key_is_treated_as_zero(self):

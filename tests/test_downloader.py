@@ -422,9 +422,7 @@ class TestOnlyTransientFailuresAreRetried:
         with tempfile.TemporaryDirectory() as tmp_dir:
             with pytest.raises(DownloadError):
                 download_and_convert("https://youtube.com/watch?v=x", "x", tmp_dir)
-        assert mock_ydl.download.call_count == 1, (
-            f"retried a permanently-failed download: {message!r}"
-        )
+        assert mock_ydl.download.call_count == 1, f"retried a permanently-failed download: {message!r}"
 
     @pytest.mark.parametrize(
         "message",
@@ -445,9 +443,7 @@ class TestOnlyTransientFailuresAreRetried:
         with tempfile.TemporaryDirectory() as tmp_dir:
             with pytest.raises(DownloadError):
                 download_and_convert("https://youtube.com/watch?v=x", "x", tmp_dir)
-        assert mock_ydl.download.call_count == 4, (
-            f"gave up early on a transient failure: {message!r}"
-        )
+        assert mock_ydl.download.call_count == 4, f"gave up early on a transient failure: {message!r}"
 
     @patch("downloader._MAX_RETRIES", 4)
     @patch("downloader._RETRY_WAIT_MIN", 0)

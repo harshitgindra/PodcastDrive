@@ -91,9 +91,7 @@ def run(config: Config) -> RunStats:
 
         if _is_duplicate(notion, entry, done_urls):
             logger.info("Duplicate URL for profile %s: %s", entry.profile, entry.url)
-            notion.update_status(
-                entry.page_id, Status.DONE, error="Skipped: duplicate URL"
-            )
+            notion.update_status(entry.page_id, Status.DONE, error="Skipped: duplicate URL")
             stats.skipped += 1
             continue
 
@@ -112,7 +110,10 @@ def run(config: Config) -> RunStats:
 
     logger.info(
         "Run complete: processed=%d, failed=%d, deleted=%d, skipped=%d",
-        stats.processed, stats.failed, stats.deleted, stats.skipped,
+        stats.processed,
+        stats.failed,
+        stats.deleted,
+        stats.skipped,
     )
     return stats
 
@@ -134,9 +135,7 @@ def _process_deletions(notion: NotionClient, storage: StorageBackend) -> int:
     return count
 
 
-def _is_duplicate(
-    notion: NotionClient, entry: MediaEntry, done_urls: dict[str, set[str]] | None = None
-) -> bool:
+def _is_duplicate(notion: NotionClient, entry: MediaEntry, done_urls: dict[str, set[str]] | None = None) -> bool:
     """Check if this URL already exists as 'done' for the same profile.
 
     *done_urls* caches each profile's done URLs across calls; without it every
@@ -265,7 +264,13 @@ def _reconcile_playlist_with_storage(
     for idx, meta in enumerate(items_meta, 1):
         try:
             item_keys, duration = _reconcile_playlist_item(
-                idx, meta, formats_to_check, folder_contents, entry, storage, config,
+                idx,
+                meta,
+                formats_to_check,
+                folder_contents,
+                entry,
+                storage,
+                config,
                 len(items_meta),
             )
         except DownloadError:
@@ -325,7 +330,10 @@ def _reconcile_playlist_item(
         filename = f"{title}.{ext}"
         if filename not in folder_contents[remote_folder]:
             logger.info(
-                "Playlist item %d/%d not on storage: %s", idx, item_count, title,
+                "Playlist item %d/%d not on storage: %s",
+                idx,
+                item_count,
+                title,
             )
             return None, duration
         item_keys.append(f"{remote_folder}/{filename}")
@@ -419,7 +427,8 @@ def _process_entry(
         file_keys, duration = reconciled
         logger.info("Already on storage, skipping download: %s", entry.url)
         notion.update_status(
-            entry.page_id, Status.DONE,
+            entry.page_id,
+            Status.DONE,
             file_key="; ".join(file_keys),
             duration=duration,
         )
@@ -456,7 +465,8 @@ def _process_entry(
             # Progress feedback for multi-item downloads (playlists)
             if total_items > 1:
                 notion.update_status(
-                    entry.page_id, Status.DOWNLOADING,
+                    entry.page_id,
+                    Status.DOWNLOADING,
                     error=f"Uploading {idx}/{total_items}: {result.title}",
                 )
             try:
@@ -464,7 +474,12 @@ def _process_entry(
             except Exception as exc:
                 logger.error(
                     "Item %d/%d failed for %s — %r at %s: %s",
-                    idx, total_items, entry.url, result.title, result.path, exc,
+                    idx,
+                    total_items,
+                    entry.url,
+                    result.title,
+                    result.path,
+                    exc,
                     exc_info=True,
                 )
                 failures.append(f"{result.title}: {exc}")
@@ -477,9 +492,7 @@ def _process_entry(
         # a playable playlist instead of one referencing keys that do not exist.
         if is_playlist(url) and len(uploaded) > 1:
             try:
-                _upload_playlist(
-                    [r for r, _ in uploaded], [k for _, k in uploaded], entry, storage, config
-                )
+                _upload_playlist([r for r, _ in uploaded], [k for _, k in uploaded], entry, storage, config)
             except Exception as exc:
                 # The M3U is a convenience; the media is already stored.
                 logger.warning("Playlist upload failed for %s (non-fatal): %s", entry.url, exc)
@@ -499,10 +512,7 @@ def _process_entry(
         # not claim the entry is done.  Status stays FAILED rather than a new
         # "partial" option because get_pending()/get_processed() filter on the
         # existing values, and an unknown status would orphan the row.
-        summary = (
-            f"uploaded {len(uploaded)} of {total_items} item(s); "
-            f"{len(failures)} failed: " + "; ".join(failures)
-        )
+        summary = f"uploaded {len(uploaded)} of {total_items} item(s); {len(failures)} failed: " + "; ".join(failures)
         logger.error("Partial upload for %s — %s", entry.url, summary)
         notion.update_status(
             entry.page_id,
@@ -573,9 +583,12 @@ def _assert_present(result: DownloadResult) -> None:
         free = f"{shutil.disk_usage(directory).free / 1e9:.2f} GB"
 
     logger.error(
-        "Downloaded file vanished before upload: %s (title=%r)\n"
-        "  dir=%s free=%s\n  contents: %s",
-        result.path, result.title, directory, free, listing,
+        "Downloaded file vanished before upload: %s (title=%r)\n  dir=%s free=%s\n  contents: %s",
+        result.path,
+        result.title,
+        directory,
+        free,
+        listing,
     )
     raise MissingDownloadError(f"downloaded file vanished before upload: {result.path}")
 
@@ -598,12 +611,14 @@ def _upload_playlist(
     # once per result. A length mismatch means a real bug, not something to
     # silently truncate.
     for result, rel_key in zip(results, relative_keys, strict=True):
-        items.append({
-            "remote_key": rel_key,
-            "title": result.title,
-            "artist": result.artist,
-            "duration_secs": result.duration_secs,
-        })
+        items.append(
+            {
+                "remote_key": rel_key,
+                "title": result.title,
+                "artist": result.artist,
+                "duration_secs": result.duration_secs,
+            }
+        )
 
     # Use the first result's title as a base for the playlist name
     # (yt-dlp metadata for playlists typically shares a common prefix)

@@ -42,14 +42,13 @@ def generate_standing_playlists(
     count = 0
     for profile in config.profiles:
         try:
-            uploaded = _generate_for_profile(
-                profile.name, config, notion, storage
-            )
+            uploaded = _generate_for_profile(profile.name, config, notion, storage)
             count += uploaded
         except Exception as exc:
             logger.error(
                 "Failed to generate playlists for profile %s: %s",
-                profile.name, exc,
+                profile.name,
+                exc,
             )
     return count
 
@@ -114,10 +113,12 @@ def _entries_to_playlist_items(entries: list, playlist_folder: str) -> list[dict
             filename = rel_key.rsplit("/", 1)[-1] if "/" in rel_key else rel_key
             title = filename.rsplit(".", 1)[0] if "." in filename else filename
 
-            items.append({
-                "remote_key": rel_key,
-                "title": title,
-                "artist": entry.profile,
-                "duration_secs": -1,  # Not stored per-file in Notion
-            })
+            items.append(
+                {
+                    "remote_key": rel_key,
+                    "title": title,
+                    "artist": entry.profile,
+                    "duration_secs": -1,  # Not stored per-file in Notion
+                }
+            )
     return items

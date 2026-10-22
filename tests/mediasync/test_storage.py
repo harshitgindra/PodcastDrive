@@ -43,6 +43,4 @@ class TestCreateStorage:
         )
         with patch("mediasync.onedrive_client.OneDriveClient") as mock_od:
             create_storage(config)
-        mock_od.assert_called_once_with(
-            client_id="cid", client_secret="cs", refresh_token="rt"
-        )
+        mock_od.assert_called_once_with(client_id="cid", client_secret="cs", refresh_token="rt")

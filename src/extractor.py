@@ -34,9 +34,7 @@ _CHANNEL_TAB_SUFFIXES = (
 
 #: A bare channel-root path: ``/@handle``, ``/channel/UC...``, ``/c/name`` or
 #: ``/user/name`` with no trailing tab segment.
-_CHANNEL_ROOT_RE = re.compile(
-    r"^/(?:@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)/?$"
-)
+_CHANNEL_ROOT_RE = re.compile(r"^/(?:@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)/?$")
 
 
 def _normalize_channel_url(url: str) -> str:
@@ -100,7 +98,6 @@ def _looks_like_channel_tabs(entries: list) -> bool:
             tab_like += 1
     # Every real entry is a tab -> this was a channel root, not a video list.
     return seen > 0 and tab_like == seen
-
 
 
 def _entry_url(entry: dict) -> str:

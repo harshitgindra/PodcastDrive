@@ -29,9 +29,7 @@ ET.register_namespace("itunes", ITUNES_NS)
 # not well-formed (expat raises "not well-formed (invalid token)"). We strip
 # them defensively from all text that originates from external sources
 # (YouTube titles/descriptions, AI summaries, etc.).
-_INVALID_XML_CHARS = re.compile(
-    "[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
-)
+_INVALID_XML_CHARS = re.compile("[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 def xml_safe(text: str | None) -> str:
@@ -420,8 +418,7 @@ def build_episode_metadata(
         file_size = _episode_file_size(s3, s3_key, video_id, manifest)
         if not isinstance(file_size, int) or file_size <= 0:
             logger.error(
-                "Omitting %s from the feed: no usable size, and <enclosure> without a real "
-                "length is an invalid item",
+                "Omitting %s from the feed: no usable size, and <enclosure> without a real length is an invalid item",
                 s3_key,
             )
             if omitted_ids is not None:

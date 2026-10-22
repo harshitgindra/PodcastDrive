@@ -98,6 +98,7 @@ def require_http_url(url: str, what: str) -> str:
         raise ValueError(f"Refusing to fetch {what}: unsupported URL scheme {scheme or '(none)'!r} in {url!r}")
     return url
 
+
 # ---------------------------------------------------------------------------
 # HTTP transport
 # ---------------------------------------------------------------------------
@@ -225,6 +226,7 @@ def _parse_unsatisfied_range_total(headers: object) -> int | None:
         logger.warning("[PodcastDownloader] Ignoring malformed 416 Content-Range %r", raw)
         return None
     return int(match.group(1))
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -782,8 +784,7 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
                     _discard_partial(
                         local_path,
                         episode_id,
-                        f"206 Content-Length {expected_body} disagrees with the "
-                        f"Content-Range span of {span} bytes",
+                        f"206 Content-Length {expected_body} disagrees with the Content-Range span of {span} bytes",
                     )
                 open_mode = "ab"
             else:
@@ -806,9 +807,7 @@ def download_episode(url: str, episode_id: str, tmp_dir: str) -> str:
                     written += len(chunk)
 
         if expected_body is not None and written != expected_body:
-            raise OSError(
-                f"truncated transfer for {episode_id}: received {written} of {expected_body} bytes"
-            )
+            raise OSError(f"truncated transfer for {episode_id}: received {written} of {expected_body} bytes")
         if expected_total is not None:
             on_disk = os.path.getsize(local_path)
             if on_disk != expected_total:

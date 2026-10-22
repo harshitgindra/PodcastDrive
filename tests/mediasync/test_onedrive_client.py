@@ -25,6 +25,7 @@ def token_response():
 @pytest.fixture
 def make_client(token_response):
     """Create an OneDriveClient with mocked token exchange."""
+
     def _make(refresh_token="test_refresh"):
         with patch("urllib.request.urlopen") as mock_urlopen:
             resp_mock = MagicMock()
@@ -34,6 +35,7 @@ def make_client(token_response):
             mock_urlopen.return_value = resp_mock
             client = OneDriveClient("client_id", "client_secret", refresh_token)
         return client
+
     return _make
 
 
@@ -140,9 +142,7 @@ class TestUpload:
 
         with patch("urllib.request.urlopen") as mock_urlopen:
             # First: 401, second: token refresh, third: success
-            http_error = urllib.error.HTTPError(
-                "url", 401, "Unauthorized", {}, None
-            )
+            http_error = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
             token_resp = MagicMock()
             token_resp.read.return_value = json.dumps({"access_token": "new_at"}).encode()
             token_resp.__enter__ = lambda s: s
@@ -207,9 +207,7 @@ class TestDelete:
     def test_delete_404_ignored(self, make_client):
         client = make_client()
         with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.HTTPError(
-                "url", 404, "Not Found", {}, None
-            )
+            mock_urlopen.side_effect = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
             # Should not raise
             client.delete_file("nonexistent/path")
 
@@ -234,9 +232,7 @@ class TestDelete:
     def test_delete_500_raises(self, make_client):
         client = make_client()
         with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.HTTPError(
-                "url", 500, "Error", {}, None
-            )
+            mock_urlopen.side_effect = urllib.error.HTTPError("url", 500, "Error", {}, None)
             with pytest.raises(OneDriveError, match="HTTP 500"):
                 client.delete_file("some/path")
 
@@ -252,9 +248,7 @@ class TestResumableUploadChunks:
         with patch.object(client, "file_exists", return_value=False):
             with patch("urllib.request.urlopen") as mock_urlopen:
                 session_resp = MagicMock()
-                session_resp.read.return_value = json.dumps(
-                    {"uploadUrl": "https://upload.example.com/s"}
-                ).encode()
+                session_resp.read.return_value = json.dumps({"uploadUrl": "https://upload.example.com/s"}).encode()
                 session_resp.__enter__ = lambda s: s
                 session_resp.__exit__ = MagicMock(return_value=False)
 
@@ -329,9 +323,7 @@ class TestResumableUpload401:
             token_resp.__exit__ = MagicMock(return_value=False)
             # Retry session create
             session_resp = MagicMock()
-            session_resp.read.return_value = json.dumps(
-                {"uploadUrl": "https://upload.example.com/s"}
-            ).encode()
+            session_resp.read.return_value = json.dumps({"uploadUrl": "https://upload.example.com/s"}).encode()
             session_resp.__enter__ = lambda s: s
             session_resp.__exit__ = MagicMock(return_value=False)
             # Chunk uploads (2 chunks for SIMPLE_UPLOAD_LIMIT + 10)
@@ -364,9 +356,7 @@ class TestResumableUpload401:
         with patch.object(client, "file_exists", return_value=False):
             with patch("urllib.request.urlopen") as mock_urlopen:
                 session_resp = MagicMock()
-                session_resp.read.return_value = json.dumps(
-                    {"uploadUrl": "https://upload.example.com/s"}
-                ).encode()
+                session_resp.read.return_value = json.dumps({"uploadUrl": "https://upload.example.com/s"}).encode()
                 session_resp.__enter__ = lambda s: s
                 session_resp.__exit__ = MagicMock(return_value=False)
 
@@ -429,8 +419,6 @@ class TestUnauthorizedRetryIsBounded:
             with pytest.raises(OneDriveError, match="401"):
                 call(client, path)
 
-        token_calls = [
-            c for c in mock_urlopen.call_args_list if "login.microsoftonline.com" in c.args[0].full_url
-        ]
+        token_calls = [c for c in mock_urlopen.call_args_list if "login.microsoftonline.com" in c.args[0].full_url]
         assert len(token_calls) == 1
         assert mock_urlopen.call_count == 3

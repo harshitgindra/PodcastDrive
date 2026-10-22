@@ -207,7 +207,6 @@ def is_transient_download_error(exc: BaseException) -> bool:
     return not any(marker in msg for marker in _PERMANENT_DOWNLOAD_INDICATORS)
 
 
-
 # Statuses a server uses to say "not now, try again": 408/425/429 plus the 5xx
 # family.  Everything else (404, 403, 401, 410, ...) is a permanent answer that
 # a retry can only turn into needless load and a slower failure.
