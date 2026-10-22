@@ -388,3 +388,49 @@ class TestUploadGenericError:
                 mock_urlopen.side_effect = OSError("timeout")
                 with pytest.raises(OneDriveError, match="timeout"):
                     client.upload(test_file, "folder", "file.m4a")
+
+
+class TestUnauthorizedRetryIsBounded:
+    """A refreshed token that is still rejected must fail, not recurse forever."""
+
+    @staticmethod
+    def _token_resp():
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"access_token": "new_at"}).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def _always_401(self, mock_urlopen):
+        def side_effect(req, *args, **kwargs):
+            if "login.microsoftonline.com" in getattr(req, "full_url", str(req)):
+                return self._token_resp()
+            raise urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+
+        mock_urlopen.side_effect = side_effect
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda c, p: c.file_exists("folder/a.m4a"),
+            lambda c, p: c.list_folder("folder"),
+            lambda c, p: c._simple_upload(p, "folder/a.m4a"),
+            lambda c, p: c._resumable_upload(p, "folder/a.m4a", p.stat().st_size),
+        ],
+        ids=["file_exists", "list_folder", "simple_upload", "resumable_upload"],
+    )
+    def test_second_401_raises_after_one_refresh(self, make_client, tmp_path, call):
+        client = make_client()
+        path = tmp_path / "a.m4a"
+        path.write_bytes(b"x" * 50)
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            self._always_401(mock_urlopen)
+            with pytest.raises(OneDriveError, match="401"):
+                call(client, path)
+
+        token_calls = [
+            c for c in mock_urlopen.call_args_list if "login.microsoftonline.com" in c.args[0].full_url
+        ]
+        assert len(token_calls) == 1
+        assert mock_urlopen.call_count == 3

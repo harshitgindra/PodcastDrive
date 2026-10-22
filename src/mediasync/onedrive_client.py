@@ -147,7 +147,7 @@ class OneDriveClient:
         except Exception as exc:
             logger.warning("Failed to persist rotated token: %s", exc)
 
-    def file_exists(self, remote_path: str) -> bool:
+    def file_exists(self, remote_path: str, *, _retried: bool = False) -> bool:
         """Check if a file already exists on OneDrive.
 
         Args:
@@ -171,9 +171,9 @@ class OneDriveClient:
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return False
-            if exc.code == 401:
+            if exc.code == 401 and not _retried:
                 self._access_token = self._refresh_access_token()
-                return self.file_exists(remote_path)
+                return self.file_exists(remote_path, _retried=True)
             raise OneDriveError(
                 f"File existence check failed for {remote_path}: HTTP {exc.code}"
             ) from exc
@@ -182,7 +182,7 @@ class OneDriveClient:
         except Exception as exc:
             raise OneDriveError(f"File existence check failed for {remote_path}: {exc}") from exc
 
-    def list_folder(self, remote_folder: str) -> set[str]:
+    def list_folder(self, remote_folder: str, *, _retried: bool = False) -> set[str]:
         """List filenames in a remote folder on OneDrive.
 
         Returns:
@@ -210,9 +210,9 @@ class OneDriveClient:
                             filenames.add(item["name"])
                     url = data.get("@odata.nextLink")
             except urllib.error.HTTPError as exc:
-                if exc.code == 401:
+                if exc.code == 401 and not _retried:
                     self._access_token = self._refresh_access_token()
-                    return self.list_folder(remote_folder)
+                    return self.list_folder(remote_folder, _retried=True)
                 if exc.code == 404:
                     return set()
                 raise OneDriveError(
@@ -295,7 +295,7 @@ class OneDriveClient:
                 return
             raise OneDriveError(f"Delete failed for {remote_path}: HTTP {exc.code}") from exc
 
-    def _simple_upload(self, local_path: Path, remote_path: str) -> None:
+    def _simple_upload(self, local_path: Path, remote_path: str, *, _retried: bool = False) -> None:
         """Upload a small file (<=4MB) with a single PUT."""
         encoded_path = urllib.parse.quote(remote_path)
         url = f"{GRAPH_API}/me/drive/root:/{encoded_path}:/content"
@@ -309,16 +309,16 @@ class OneDriveClient:
             with urllib.request.urlopen(req, timeout=120):
                 pass
         except urllib.error.HTTPError as exc:
-            if exc.code == 401:
+            if exc.code == 401 and not _retried:
                 self._access_token = self._refresh_access_token()
-                self._simple_upload(local_path, remote_path)
+                self._simple_upload(local_path, remote_path, _retried=True)
                 return
             body = exc.read().decode()[:500] if exc.fp else ""
             raise OneDriveError(f"Upload failed for {remote_path}: HTTP {exc.code} — {body}") from exc
         except Exception as exc:
             raise OneDriveError(f"Upload failed for {remote_path}: {exc}") from exc
 
-    def _resumable_upload(self, local_path: Path, remote_path: str, file_size: int) -> None:
+    def _resumable_upload(self, local_path: Path, remote_path: str, file_size: int, *, _retried: bool = False) -> None:
         """Upload a large file using a resumable upload session."""
         encoded_path = urllib.parse.quote(remote_path)
         url = f"{GRAPH_API}/me/drive/root:/{encoded_path}:/createUploadSession"
@@ -336,9 +336,9 @@ class OneDriveClient:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 session = json.loads(resp.read().decode())
         except urllib.error.HTTPError as exc:
-            if exc.code == 401:
+            if exc.code == 401 and not _retried:
                 self._access_token = self._refresh_access_token()
-                self._resumable_upload(local_path, remote_path, file_size)
+                self._resumable_upload(local_path, remote_path, file_size, _retried=True)
                 return
             raise OneDriveError(f"Upload session creation failed: HTTP {exc.code}") from exc
 
