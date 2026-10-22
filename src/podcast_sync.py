@@ -26,10 +26,10 @@ import shutil
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from email.utils import format_datetime
-from xml.dom.minidom import parseString
 
 import ad_remover
 import settings
@@ -46,39 +46,17 @@ from podcast_downloader import (
     resolve_feed_url,
     search_feed_url_by_name,
 )
-from rss_generator import xml_safe
+from rss_generator import ITUNES_NS, format_duration, serialize_feed, xml_safe
 from s3_manager import ManifestUnavailableError, S3Manager
 from utils import podcast_slug
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# iTunes namespace
-_ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
-
-try:
-    import xml.etree.ElementTree as ET
-
-    ET.register_namespace("itunes", _ITUNES_NS)
-except Exception:
-    pass
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _format_duration(seconds: int) -> str:
-    """Format seconds as ``H:MM:SS`` or ``M:SS``."""
-    if seconds <= 0:
-        return "0:00"
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
 
 
 # CDN/SSAI detection — regex table matched against the episode download URL.
@@ -169,7 +147,6 @@ def _build_podcast_feed_xml(
     """
     if manifest is None:
         manifest = {}
-    import xml.etree.ElementTree as ET
 
     if ep_sizes is None:
         ep_sizes = {}
@@ -184,7 +161,7 @@ def _build_podcast_feed_xml(
     ET.SubElement(channel, "title").text = xml_safe(podcast.name + suffix)
     ET.SubElement(channel, "link").text = xml_safe(podcast.url)
     ET.SubElement(channel, "description").text = xml_safe(podcast.description or podcast.name)
-    ET.SubElement(channel, f"{{{_ITUNES_NS}}}summary").text = xml_safe(podcast.description or podcast.name)
+    ET.SubElement(channel, f"{{{ITUNES_NS}}}summary").text = xml_safe(podcast.description or podcast.name)
     ET.SubElement(channel, "language").text = xml_safe(language)
     ET.SubElement(channel, "generator").text = "PodcastDrive"
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(datetime.now(UTC))
@@ -196,16 +173,16 @@ def _build_podcast_feed_xml(
         ET.SubElement(rss_image, "title").text = xml_safe(podcast.name + suffix)
         ET.SubElement(rss_image, "link").text = xml_safe(podcast.url)
 
-    ET.SubElement(channel, f"{{{_ITUNES_NS}}}author").text = xml_safe(podcast.name)
-    ET.SubElement(channel, f"{{{_ITUNES_NS}}}explicit").text = "no"
+    ET.SubElement(channel, f"{{{ITUNES_NS}}}author").text = xml_safe(podcast.name)
+    ET.SubElement(channel, f"{{{ITUNES_NS}}}explicit").text = "no"
 
     subtitle = settings.get("FEED_SUBTITLE")
     if subtitle:
-        ET.SubElement(channel, f"{{{_ITUNES_NS}}}subtitle").text = xml_safe(subtitle)
+        ET.SubElement(channel, f"{{{ITUNES_NS}}}subtitle").text = xml_safe(subtitle)
 
     # iTunes channel artwork
     if artwork_url:
-        img_el = ET.SubElement(channel, f"{{{_ITUNES_NS}}}image")
+        img_el = ET.SubElement(channel, f"{{{ITUNES_NS}}}image")
         img_el.set("href", xml_safe(artwork_url))
 
     ep_ad_suffix = " ✂️"
@@ -243,8 +220,8 @@ def _build_podcast_feed_xml(
         enc.set("type", "audio/mpeg")
 
         ET.SubElement(item, "pubDate").text = format_datetime(ep.pub_date)
-        ET.SubElement(item, f"{{{_ITUNES_NS}}}duration").text = _format_duration(ep.duration)
-        ET.SubElement(item, f"{{{_ITUNES_NS}}}explicit").text = "no"
+        ET.SubElement(item, f"{{{ITUNES_NS}}}duration").text = format_duration(ep.duration)
+        ET.SubElement(item, f"{{{ITUNES_NS}}}explicit").text = "no"
 
         # Episode description: prefer AI summary from manifest
         desc = manifest.get(ep_id, {}).get("summary") or ep.title
@@ -253,17 +230,10 @@ def _build_podcast_feed_xml(
         # Per-episode artwork (falls back to channel artwork if episode has none)
         ep_thumbnail = ep.thumbnail or artwork_url
         if ep_thumbnail:
-            ep_img = ET.SubElement(item, f"{{{_ITUNES_NS}}}image")
+            ep_img = ET.SubElement(item, f"{{{ITUNES_NS}}}image")
             ep_img.set("href", xml_safe(ep_thumbnail))
 
-    rough = ET.tostring(rss, encoding="unicode", xml_declaration=False)
-    dom = parseString(rough)
-    pretty = dom.toprettyxml(indent="  ", encoding=None)
-    lines = pretty.split("\n")
-    if lines and lines[0].startswith("<?xml"):
-        lines = lines[1:]
-    body = "\n".join(lines).strip()
-    return f'<?xml version="1.0" encoding="UTF-8"?>\n{body}\n'
+    return serialize_feed(rss)
 
 
 # ---------------------------------------------------------------------------

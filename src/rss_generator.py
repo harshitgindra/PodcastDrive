@@ -54,7 +54,7 @@ def xml_safe(text: str | None) -> str:
     return _INVALID_XML_CHARS.sub("", text)
 
 
-def _format_duration(seconds: int | None) -> str:
+def format_duration(seconds: int | None) -> str:
     """Format a duration in seconds as ``H:MM:SS`` or ``M:SS``.
 
     Args:
@@ -146,12 +146,15 @@ def generate_rss(
     for episode in episodes:
         _add_item(channel, episode, cloudfront_base, playlist_id)
 
-    # Pretty-print via minidom
-    rough_string = ET.tostring(rss, encoding="unicode", xml_declaration=False)
-    dom = parseString(rough_string)
-    pretty = dom.toprettyxml(indent="  ", encoding=None)
+    return serialize_feed(rss)
 
-    # Remove the XML declaration that minidom adds, then re-add a clean one
+
+def serialize_feed(rss: ET.Element) -> str:
+    """Pretty-print an ``<rss>`` tree as a UTF-8 XML document string."""
+    rough_string = ET.tostring(rss, encoding="unicode", xml_declaration=False)
+    pretty = parseString(rough_string).toprettyxml(indent="  ", encoding=None)
+
+    # minidom's declaration omits the encoding; replace it with an explicit one.
     lines = pretty.split("\n")
     if lines and lines[0].startswith("<?xml"):
         lines = lines[1:]
@@ -291,7 +294,7 @@ def _add_item(
     ET.SubElement(item, "description").text = desc_text
 
     # iTunes item tags
-    ET.SubElement(item, f"{{{ITUNES_NS}}}duration").text = _format_duration(episode.duration)
+    ET.SubElement(item, f"{{{ITUNES_NS}}}duration").text = format_duration(episode.duration)
     ET.SubElement(item, f"{{{ITUNES_NS}}}summary").text = desc_text
     ET.SubElement(item, f"{{{ITUNES_NS}}}explicit").text = "no"
 

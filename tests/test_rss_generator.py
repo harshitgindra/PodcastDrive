@@ -16,10 +16,11 @@ from models import EpisodeMeta, PlaylistMeta, VideoEntry
 from rss_generator import (
     ITUNES_NS,
     _first_paragraph,
-    _format_duration,
     _validate_cloudfront_base,
     build_episode_metadata,
+    format_duration,
     generate_rss,
+    serialize_feed,
     xml_safe,
 )
 
@@ -71,28 +72,51 @@ def _make_episode(
 
 
 # ---------------------------------------------------------------------------
-# _format_duration
+# format_duration
 # ---------------------------------------------------------------------------
 
 
 class TestFormatDuration:
     def test_hours_minutes_seconds(self):
-        assert _format_duration(3661) == "1:01:01"
+        assert format_duration(3661) == "1:01:01"
 
     def test_minutes_seconds(self):
-        assert _format_duration(125) == "2:05"
+        assert format_duration(125) == "2:05"
 
     def test_zero(self):
-        assert _format_duration(0) == "0:00"
+        assert format_duration(0) == "0:00"
 
     def test_none(self):
-        assert _format_duration(None) == "0:00"
+        assert format_duration(None) == "0:00"
 
     def test_exact_hour(self):
-        assert _format_duration(3600) == "1:00:00"
+        assert format_duration(3600) == "1:00:00"
 
     def test_under_minute(self):
-        assert _format_duration(45) == "0:45"
+        assert format_duration(45) == "0:45"
+
+    def test_negative(self):
+        assert format_duration(-5) == "0:00"
+
+
+class TestSerializeFeed:
+    def test_declares_utf8_once_and_ends_with_newline(self):
+        rss = ET.Element("rss", version="2.0")
+        ET.SubElement(ET.SubElement(rss, "channel"), "title").text = "Café"
+
+        xml = serialize_feed(rss)
+
+        assert xml.startswith('<?xml version="1.0" encoding="UTF-8"?>\n<rss')
+        assert xml.count("<?xml") == 1
+        assert xml.endswith("</rss>\n")
+        assert ET.fromstring(xml.encode("utf-8")).find("channel/title").text == "Café"
+
+    def test_podcast_feeds_share_the_youtube_feed_serializer(self):
+        import podcast_sync
+
+        assert podcast_sync.serialize_feed is serialize_feed
+        assert podcast_sync.format_duration is format_duration
+        assert podcast_sync.ITUNES_NS == ITUNES_NS
 
 
 # ---------------------------------------------------------------------------
@@ -1050,29 +1074,29 @@ from hypothesis import strategies as st
 class TestFormatDurationProperty:
     @given(st.integers(min_value=1, max_value=86400))
     def test_always_contains_colon(self, seconds):
-        result = _format_duration(seconds)
+        result = format_duration(seconds)
         assert ":" in result
 
     @given(st.integers(min_value=1, max_value=86400))
     def test_all_parts_are_numeric(self, seconds):
-        result = _format_duration(seconds)
+        result = format_duration(seconds)
         parts = result.split(":")
         for part in parts:
             assert part.isdigit(), f"Non-numeric part {part!r} in {result!r}"
 
     @given(st.integers(min_value=3600, max_value=86400))
     def test_has_three_parts_for_one_hour_plus(self, seconds):
-        result = _format_duration(seconds)
+        result = format_duration(seconds)
         assert len(result.split(":")) == 3
 
     @given(st.integers(min_value=1, max_value=3599))
     def test_has_two_parts_under_one_hour(self, seconds):
-        result = _format_duration(seconds)
+        result = format_duration(seconds)
         assert len(result.split(":")) == 2
 
     @given(st.one_of(st.none(), st.integers(max_value=0)))
     def test_zero_or_none_returns_zero_zero(self, seconds):
-        assert _format_duration(seconds) == "0:00"
+        assert format_duration(seconds) == "0:00"
 
 
 class TestFirstParagraphProperty:

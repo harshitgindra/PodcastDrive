@@ -15,31 +15,11 @@ from podcast_downloader import EpisodeMeta
 from podcast_sync import (
     CDN_RETRY_OVERRIDES,
     _build_podcast_feed_xml,
-    _format_duration,
     _splice_attempts_for_cdn,
     detect_cdn,
     process_podcast_feed,
 )
 from s3_manager import ManifestUnavailableError, S3Manager
-
-# ---------------------------------------------------------------------------
-# _format_duration
-# ---------------------------------------------------------------------------
-
-
-class TestFormatDuration:
-    def test_zero(self):
-        assert _format_duration(0) == "0:00"
-
-    def test_minutes_seconds(self):
-        assert _format_duration(330) == "5:30"
-
-    def test_hours(self):
-        assert _format_duration(3723) == "1:02:03"
-
-    def test_negative(self):
-        assert _format_duration(-5) == "0:00"
-
 
 # ---------------------------------------------------------------------------
 # _build_podcast_feed_xml
