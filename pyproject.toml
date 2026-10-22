@@ -74,3 +74,37 @@ omit = [
 [tool.coverage.report]
 fail_under = 95
 show_missing = true
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+mypy_path = "src"
+explicit_package_bases = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# Third-party packages that ship no type information.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*", "mutagen.*", "yt_dlp.*"]
+ignore_missing_imports = true
+
+# Ratchet: these modules had type errors when mypy was adopted. Every other
+# module is gated in CI; remove an entry once its errors are fixed, and never
+# add one.
+[[tool.mypy.overrides]]
+module = [
+    "ad_remover",
+    "ad_remover._splice",
+    "config_provider",
+    "distributed_lock",
+    "export_cookies",
+    "mediasync.cli",
+    "mediasync.migrate",
+    "mediasync.tagger",
+    "orchestrator",
+    "podcast_downloader",
+    "podcast_sync",
+    "preflight",
+    "s3_manager",
+]
+ignore_errors = true
