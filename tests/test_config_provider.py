@@ -590,41 +590,6 @@ class TestNotionUpdateStatus:
         assert mock_urlopen.call_count == 1
 
 
-class TestIsTransientNotionError:
-    """Unit tests for the Notion transient-error predicate."""
-
-    def test_429_is_transient(self):
-        import urllib.error
-
-        from config_provider import _is_transient_notion_error
-
-        assert _is_transient_notion_error(urllib.error.HTTPError(None, 429, "x", {}, None))
-
-    def test_503_is_transient(self):
-        import urllib.error
-
-        from config_provider import _is_transient_notion_error
-
-        assert _is_transient_notion_error(urllib.error.HTTPError(None, 503, "x", {}, None))
-
-    def test_404_is_not_transient(self):
-        import urllib.error
-
-        from config_provider import _is_transient_notion_error
-
-        assert not _is_transient_notion_error(urllib.error.HTTPError(None, 404, "x", {}, None))
-
-    def test_timeout_is_transient(self):
-        from config_provider import _is_transient_notion_error
-
-        assert _is_transient_notion_error(TimeoutError("read timed out"))
-
-    def test_value_error_is_not_transient(self):
-        from config_provider import _is_transient_notion_error
-
-        assert not _is_transient_notion_error(ValueError("bad"))
-
-
 # ---------------------------------------------------------------------------
 # get_config_provider factory
 # ---------------------------------------------------------------------------

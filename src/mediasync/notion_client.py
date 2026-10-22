@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 import logging
 import ssl
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +29,8 @@ from enum import Enum
 from typing import Any
 
 import certifi
+
+from retry import is_rate_limited, is_transient_http_error, retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,11 @@ NOTION_API = "https://api.notion.com/v1"
 #: anyone should hit in practice.
 MAX_QUERY_PAGES = 200
 NOTION_VERSION = "2022-06-28"
+
+#: Notion allows an average of 3 requests/second per integration; spacing calls
+#: client-side avoids spending retries on 429s in the first place.
+MIN_REQUEST_INTERVAL_SECS = 0.34
+REQUEST_ATTEMPTS = 3
 
 
 class NotionError(RuntimeError):
@@ -81,6 +90,8 @@ class NotionClient:
         self._ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         # Resolved lazily by _has_priority_column(); None means "not looked up yet".
         self._priority_sortable: bool | None = None
+        self._throttle_lock = threading.Lock()
+        self._next_request_at = 0.0
 
     def get_pending(self) -> list[MediaEntry]:
         """Fetch rows with Status=pending (or empty) and Delete=false.
@@ -237,7 +248,7 @@ class NotionClient:
                 "Delete": {"checkbox": False},
             },
         }
-        result = self._post(f"{NOTION_API}/pages", payload)
+        result = self._post(f"{NOTION_API}/pages", payload, idempotent=False)
         if result and "id" in result:
             return result["id"]
         return None
@@ -356,42 +367,66 @@ class NotionClient:
             priority=priority,
         )
 
-    def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-        """Make a POST request to Notion API."""
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=self._headers,
-            method="POST",
-        )
-        try:
+    def _wait_for_slot(self) -> None:
+        with self._throttle_lock:
+            now = time.monotonic()
+            delay = self._next_request_at - now
+            self._next_request_at = max(now, self._next_request_at) + MIN_REQUEST_INTERVAL_SECS
+        if delay > 0:
+            time.sleep(delay)
+
+    def _send(
+        self,
+        method: str,
+        url: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        idempotent: bool = True,
+    ) -> dict[str, Any]:
+        """Send one rate-limited request, retrying transient failures.
+
+        A non-idempotent request is retried only on 429: after a 5xx or a
+        timeout Notion may already have applied it, and a blind retry of a
+        page create would add a duplicate row.
+        """
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+
+        def attempt() -> dict[str, Any]:
+            self._wait_for_slot()
+            req = urllib.request.Request(url, data=data, headers=self._headers, method=method)
             with urllib.request.urlopen(req, timeout=30, context=self._ssl_ctx) as resp:
                 return json.loads(resp.read().decode("utf-8"))
+
+        return retry_call(
+            attempt,
+            attempts=REQUEST_ATTEMPTS,
+            base_delay=1.0,
+            jitter=True,
+            retryable=is_transient_http_error if idempotent else is_rate_limited,
+            label=f"notion {method} {url}",
+            logger=logger,
+        )
+
+    def _post(self, url: str, payload: dict[str, Any], *, idempotent: bool = True) -> dict[str, Any] | None:
+        """Make a POST request to Notion API."""
+        try:
+            return self._send("POST", url, payload, idempotent=idempotent)
         except Exception as exc:
             logger.error("Notion POST %s failed: %s", url, exc)
             return None
 
     def _get(self, url: str) -> dict[str, Any] | None:
         """Make a GET request to Notion API."""
-        req = urllib.request.Request(url, headers=self._headers, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=30, context=self._ssl_ctx) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            return self._send("GET", url)
         except Exception as exc:
             logger.warning("Notion GET %s failed: %s", url, exc)
             return None
 
     def _patch(self, url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Make a PATCH request to Notion API."""
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=self._headers,
-            method="PATCH",
-        )
         try:
-            with urllib.request.urlopen(req, timeout=30, context=self._ssl_ctx) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            return self._send("PATCH", url, payload)
         except Exception as exc:
             logger.error("Notion PATCH %s failed: %s", url, exc)
             return None

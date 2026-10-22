@@ -1,6 +1,7 @@
 """Tests for the shared retry engine and its transient/permanent predicates."""
 
 import logging
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,8 +9,10 @@ from botocore.exceptions import ClientError, EndpointResolutionError
 
 from retry import (
     RETRYABLE_AWS_CODES,
+    is_rate_limited,
     is_transient_aws_error,
     is_transient_download_error,
+    is_transient_http_error,
     retry_call,
 )
 
@@ -228,3 +231,35 @@ class TestIsTransientDownloadError:
     def test_classification_is_case_insensitive(self):
         assert is_transient_download_error(Exception("VIDEO UNAVAILABLE")) is False
         assert is_transient_download_error(Exception("CONNECTION RESET")) is True
+
+
+def http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://example.com", code, "test", {}, None)
+
+
+class TestIsTransientHttpError:
+    @pytest.mark.parametrize("code", [408, 425, 429, 500, 502, 503, 504, 599])
+    def test_transient_statuses_are_retryable(self, code):
+        assert is_transient_http_error(http_error(code)) is True
+
+    @pytest.mark.parametrize("code", [400, 401, 403, 404, 409, 410, 600])
+    def test_permanent_statuses_are_not_retryable(self, code):
+        assert is_transient_http_error(http_error(code)) is False
+
+    @pytest.mark.parametrize(
+        "exc", [OSError("reset"), urllib.error.URLError("dns"), TimeoutError("read timed out")]
+    )
+    def test_transport_errors_are_retryable(self, exc):
+        assert is_transient_http_error(exc) is True
+
+    def test_unrelated_exception_is_not_retryable(self):
+        assert is_transient_http_error(ValueError("bad")) is False
+
+
+class TestIsRateLimited:
+    def test_429_is_rate_limited(self):
+        assert is_rate_limited(http_error(429)) is True
+
+    @pytest.mark.parametrize("exc", [http_error(500), http_error(503), TimeoutError(), OSError("reset")])
+    def test_failures_the_server_may_have_applied_are_not(self, exc):
+        assert is_rate_limited(exc) is False

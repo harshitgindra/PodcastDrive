@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+import urllib.error
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -204,3 +205,33 @@ def is_transient_download_error(exc: BaseException) -> bool:
     if any(marker in msg for marker in _TRANSIENT_DOWNLOAD_INDICATORS):
         return True
     return not any(marker in msg for marker in _PERMANENT_DOWNLOAD_INDICATORS)
+
+
+
+# Statuses a server uses to say "not now, try again": 408/425/429 plus the 5xx
+# family.  Everything else (404, 403, 401, 410, ...) is a permanent answer that
+# a retry can only turn into needless load and a slower failure.
+TRANSIENT_HTTP_STATUSES: frozenset[int] = frozenset({408, 425, 429})
+
+
+def is_transient_http_error(exc: BaseException) -> bool:
+    """Is *exc* a urllib failure a retry could plausibly fix?
+
+    ``urllib.error.HTTPError`` subclasses ``URLError`` (and therefore
+    ``OSError``), so a naive ``isinstance(exc, OSError)`` retries a 404.  This
+    narrows HTTP failures to the transient statuses and leaves genuine network
+    errors (connection reset, DNS failure, timeout) retryable.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code
+        return code in TRANSIENT_HTTP_STATUSES or 500 <= code <= 599
+    return isinstance(exc, OSError | urllib.error.URLError | TimeoutError)
+
+
+def is_rate_limited(exc: BaseException) -> bool:
+    """Is *exc* an HTTP 429, which a server rejects before doing any work?
+
+    The only failure safe to retry for a non-idempotent request: after a 5xx
+    or a timeout the server may already have applied it.
+    """
+    return isinstance(exc, urllib.error.HTTPError) and exc.code == 429

@@ -16,28 +16,13 @@ from datetime import UTC
 import certifi
 
 import settings
-from retry import retry_call
+from retry import is_transient_http_error, retry_call
 
 logger = logging.getLogger(__name__)
 
 #: Shared SSL context for Notion API calls — built once at import rather than on
 #: every request (the context loads and parses the certifi CA bundle each time).
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
-
-#: HTTP statuses from Notion worth retrying: rate-limit and transient 5xx.
-_RETRYABLE_NOTION_STATUSES = frozenset({429, 500, 502, 503, 504})
-
-
-def _is_transient_notion_error(exc: BaseException) -> bool:
-    """Is *exc* a Notion API failure a retry could plausibly fix?
-
-    Rate-limit (429) and 5xx responses are transient; so are transport-level
-    failures (timeouts, connection resets, DNS). A 4xx other than 429 is a
-    permanent client error that a retry only turns into needless load.
-    """
-    if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in _RETRYABLE_NOTION_STATUSES
-    return isinstance(exc, OSError | urllib.error.URLError | TimeoutError)
 
 #: Hard cap on Notion query pages (100 rows each).  Purely a runaway-loop guard:
 #: 200 pages is 20,000 rows, far above any realistic subscription list.
@@ -396,7 +381,7 @@ class NotionConfigProvider(ConfigProvider):
                 attempts=3,
                 base_delay=1.0,
                 jitter=True,
-                retryable=_is_transient_notion_error,
+                retryable=is_transient_http_error,
                 label=f"notion.update_status[{podcast.name}]",
                 logger=logger,
             )

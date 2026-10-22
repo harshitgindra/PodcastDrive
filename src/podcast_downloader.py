@@ -29,6 +29,7 @@ import certifi
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 import settings
+from retry import is_transient_http_error as _is_transient_http_error
 
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
@@ -100,26 +101,6 @@ def require_http_url(url: str, what: str) -> str:
 # ---------------------------------------------------------------------------
 # HTTP transport
 # ---------------------------------------------------------------------------
-
-# Statuses a server uses to say "not now, try again": 408/425/429 plus the 5xx
-# family.  Everything else (404, 403, 401, 410, ...) is a permanent answer that
-# a retry can only turn into needless load and a slower failure.
-_TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429})
-
-
-def _is_transient_http_error(exc: BaseException) -> bool:
-    """Return True if *exc* is worth retrying.
-
-    ``urllib.error.HTTPError`` subclasses ``URLError`` (and therefore
-    ``OSError``), so a naive ``retry_if_exception_type(OSError)`` retries a
-    404 three times with exponential backoff.  This predicate narrows HTTP
-    failures to the transient statuses and leaves genuine network errors
-    (connection reset, DNS failure, timeout) retryable as before.
-    """
-    if isinstance(exc, urllib.error.HTTPError):
-        code = exc.code
-        return code in _TRANSIENT_HTTP_STATUSES or 500 <= code <= 599
-    return isinstance(exc, OSError | urllib.error.URLError | TimeoutError)
 
 
 class _SchemeGuardRedirectHandler(urllib.request.HTTPRedirectHandler):

@@ -1,11 +1,14 @@
 """Tests for mediasync.notion_client module."""
 
 import json
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mediasync.notion_client import (
+    MIN_REQUEST_INTERVAL_SECS,
+    REQUEST_ATTEMPTS,
     Format,
     NotionClient,
     NotionError,
@@ -383,3 +386,93 @@ class TestNotionErrorHandling:
     def test_create_entry_without_id_returns_none(self, client):
         with patch.object(client, "_post", return_value={"object": "page"}):
             assert client.create_entry("https://example.test", "Harshit", Format.AUDIO) is None
+
+
+def _ok(body: dict) -> MagicMock:
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(body).encode()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://api.notion.com/v1/x", code, "err", {}, None)
+
+
+class TestRequestSpacing:
+    """Notion averages 3 req/s per integration; bursts used to trip 429s."""
+
+    def test_back_to_back_requests_are_spaced(self, client):
+        with (
+            patch("mediasync.notion_client.time.monotonic", return_value=100.0),
+            patch("mediasync.notion_client.time.sleep") as mock_sleep,
+            patch("urllib.request.urlopen", side_effect=lambda *a, **k: _ok({})),
+        ):
+            client._get("https://api.notion.com/v1/a")
+            client._get("https://api.notion.com/v1/b")
+            client._get("https://api.notion.com/v1/c")
+
+        delays = [c.args[0] for c in mock_sleep.call_args_list]
+        assert delays == pytest.approx([MIN_REQUEST_INTERVAL_SECS, 2 * MIN_REQUEST_INTERVAL_SECS])
+
+    def test_no_wait_once_the_interval_has_passed(self, client):
+        clock = iter([100.0, 100.0 + MIN_REQUEST_INTERVAL_SECS + 1])
+        with (
+            patch("mediasync.notion_client.time.monotonic", side_effect=lambda: next(clock)),
+            patch("mediasync.notion_client.time.sleep") as mock_sleep,
+            patch("urllib.request.urlopen", side_effect=lambda *a, **k: _ok({})),
+        ):
+            client._get("https://api.notion.com/v1/a")
+            client._get("https://api.notion.com/v1/b")
+
+        mock_sleep.assert_not_called()
+
+
+class TestTransientRetries:
+    def test_429_then_success_is_retried(self, client):
+        with patch("urllib.request.urlopen", side_effect=[_http_error(429), _ok({"id": "p1"})]) as mock_open:
+            result = client._patch("https://api.notion.com/v1/pages/p1", {})
+
+        assert result == {"id": "p1"}
+        assert mock_open.call_count == 2
+
+    def test_5xx_on_query_is_retried(self, client):
+        with patch("urllib.request.urlopen", side_effect=[_http_error(502), _ok({"results": []})]) as mock_open:
+            result = client._post("https://api.notion.com/v1/databases/db/query", {})
+
+        assert result == {"results": []}
+        assert mock_open.call_count == 2
+
+    def test_client_error_is_not_retried(self, client):
+        with patch("urllib.request.urlopen", side_effect=_http_error(400)) as mock_open:
+            result = client._get("https://api.notion.com/v1/a")
+
+        assert result is None
+        assert mock_open.call_count == 1
+
+    def test_persistent_failure_stops_after_bounded_attempts(self, client):
+        with patch("urllib.request.urlopen", side_effect=_http_error(503)) as mock_open:
+            result = client._get("https://api.notion.com/v1/a")
+
+        assert result is None
+        assert mock_open.call_count == REQUEST_ATTEMPTS
+
+
+class TestCreateIsNotDuplicated:
+    """A 5xx or timeout may arrive after Notion created the page."""
+
+    @pytest.mark.parametrize("exc", [_http_error(503), TimeoutError("read timed out")])
+    def test_create_is_not_retried_when_it_may_have_applied(self, client, exc):
+        with patch("urllib.request.urlopen", side_effect=exc) as mock_open:
+            page_id = client.create_entry("https://youtube.com/watch?v=abc", "harshit", Format.AUDIO)
+
+        assert page_id is None
+        assert mock_open.call_count == 1
+
+    def test_create_is_retried_on_429(self, client):
+        with patch("urllib.request.urlopen", side_effect=[_http_error(429), _ok({"id": "new"})]) as mock_open:
+            page_id = client.create_entry("https://youtube.com/watch?v=abc", "harshit", Format.AUDIO)
+
+        assert page_id == "new"
+        assert mock_open.call_count == 2
