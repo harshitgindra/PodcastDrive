@@ -107,6 +107,35 @@ def _scan_logs_for_failures(s3, bucket: str, days: int = 3) -> dict:
     return dict(failures)
 
 
+def _published_episode_ids(s3, bucket: str) -> set[str] | None:
+    """Return every episode id published under ``<playlist>/episodes/``.
+
+    Lists each playlist's ``episodes/`` prefix exactly once (fully paginated)
+    instead of scanning the bucket per queued episode. Returns None when the
+    listing fails, so callers never mistake an S3 error for "not published".
+    """
+    skip = {f"{LOGS_PREFIX.split('/', 1)[0]}/", f"{settings.get('TRANSCRIBE_CACHE_PREFIX').rstrip('/')}/"}
+    ids: set[str] = set()
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        playlists = [
+            cp["Prefix"]
+            for page in paginator.paginate(Bucket=bucket, Delimiter="/")
+            for cp in page.get("CommonPrefixes", [])
+            if cp["Prefix"] not in skip
+        ]
+        for playlist in playlists:
+            for page in paginator.paginate(Bucket=bucket, Prefix=f"{playlist}episodes/"):
+                for obj in page.get("Contents", []):
+                    name = obj["Key"].rsplit("/", 1)[-1]
+                    if name.endswith(".mp3"):
+                        ids.add(name[: -len(".mp3")])
+    except Exception as exc:
+        logger.warning("Could not list published episodes; keeping the retry queue unchanged: %s", exc)
+        return None
+    return ids
+
+
 def heal_retry_queue(s3, bucket: str, dry_run: bool = False) -> dict:
     """Update retry queue based on recent failures.
 
@@ -139,26 +168,8 @@ def heal_retry_queue(s3, bucket: str, dry_run: bool = False) -> dict:
             episodes[vid]["last_error"] = failure_list[-1]["error"]
 
     # Remove episodes that now exist in S3 (succeeded on retry)
-    to_remove = []
-    for vid in list(episodes.keys()):
-        # Check all playlists — we don't know which playlist this belongs to
-        # Just check if any key matching this vid exists
-        try:
-            resp = s3.list_objects_v2(
-                Bucket=bucket,
-                Prefix="",
-                MaxKeys=1000,
-            )
-            # Search for the episode file
-            found = False
-            for obj in resp.get("Contents", []):
-                if f"/episodes/{vid}.mp3" in obj["Key"]:
-                    found = True
-                    break
-            if found:
-                to_remove.append(vid)
-        except Exception:
-            pass
+    published = _published_episode_ids(s3, bucket) or set()
+    to_remove = [vid for vid in episodes if vid in published]
 
     for vid in to_remove:
         del episodes[vid]
@@ -184,24 +195,32 @@ def heal_cache_clear(s3, bucket: str, dry_run: bool = False) -> dict:
     queue = _load_retry_queue(s3, bucket)
     episodes = queue.get("episodes", {})
 
+    targets = {
+        vid
+        for vid, info in episodes.items()
+        if info.get("failure_count", 0) >= 2 and "splice" in info.get("error_types", [])
+    }
     cleared = 0
-    for vid, info in episodes.items():
-        if info.get("failure_count", 0) >= 2 and "splice" in info.get("error_types", []):
-            # Find and delete the _ads.json cache for this video
-            try:
-                paginator = s3.get_paginator("list_objects_v2")
-                for page in paginator.paginate(Bucket=bucket, Prefix=""):
-                    for obj in page.get("Contents", []):
-                        if obj["Key"].endswith(f"/{vid}_ads.json"):
-                            if not dry_run:
-                                s3.delete_object(Bucket=bucket, Key=obj["Key"])
-                            logger.info("Cleared ad cache: %s", obj["Key"])
-                            cleared += 1
-                            break
-                    if cleared:
-                        break
-            except Exception as exc:
-                logger.warning("Failed to clear cache for %s: %s", vid, exc)
+    if not targets:
+        return {"action": "cache_clear", "cleared": cleared, "dry_run": dry_run}
+
+    # Ad caches live at <prefix>/<vid>_ads.json (legacy) or
+    # <prefix>/<namespace>/<vid>_ads.json, so one scan of the cache prefix finds
+    # every copy without touching episode audio.
+    cache_prefix = f"{settings.get('TRANSCRIBE_CACHE_PREFIX').rstrip('/')}/"
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=cache_prefix):
+            for obj in page.get("Contents", []):
+                name = obj["Key"].rsplit("/", 1)[-1]
+                if not name.endswith("_ads.json") or name[: -len("_ads.json")] not in targets:
+                    continue
+                if not dry_run:
+                    s3.delete_object(Bucket=bucket, Key=obj["Key"])
+                logger.info("Cleared ad cache: %s", obj["Key"])
+                cleared += 1
+    except Exception as exc:
+        logger.warning("Failed to clear ad caches for %s: %s", sorted(targets), exc)
 
     return {
         "action": "cache_clear",

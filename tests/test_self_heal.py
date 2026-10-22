@@ -306,7 +306,7 @@ class TestHealCacheClear:
         # Create the _ads.json cache file
         s3_client.put_object(
             Bucket=BUCKET,
-            Key=f"PLtest/episodes/{vid}_ads.json",
+            Key=f"transcribe-cache/PLtest/{vid}_ads.json",
             Body=b'{"ads": []}',
         )
 
@@ -323,7 +323,7 @@ class TestHealCacheClear:
         heal_cache_clear(s3, BUCKET, dry_run=True)
 
         # Cache file should still exist
-        resp = s3.get_object(Bucket=BUCKET, Key="PLtest/episodes/vid002_ads.json")
+        resp = s3.get_object(Bucket=BUCKET, Key="transcribe-cache/PLtest/vid002_ads.json")
         assert resp["Body"].read() == b'{"ads": []}'
 
     def test_does_not_clear_cache_below_failure_threshold(self, s3):
@@ -757,3 +757,105 @@ class TestSelfHealMain:
         captured = capsys.readouterr()
         parsed = json.loads(captured.out)
         assert parsed[0]["dry_run"] is True
+
+
+# ---------------------------------------------------------------------------
+# Scoped listings (no per-episode bucket scans)
+# ---------------------------------------------------------------------------
+
+
+def _queued(*vids, error_types=("splice",), failure_count=3):
+    return {
+        vid: {
+            "video_id": vid,
+            "failure_count": failure_count,
+            "error_types": list(error_types),
+            "first_failure": _today(),
+            "last_failure": _today(),
+            "last_error": "Splicing failed",
+        }
+        for vid in vids
+    }
+
+
+class TestPublishedEpisodeLookup:
+    def test_finds_episode_past_the_first_thousand_keys(self, s3):
+        """The old single list_objects_v2 call only saw the first 1000 keys."""
+        for i in range(1005):
+            s3.put_object(Bucket=BUCKET, Key=f"aaa-cache/filler-{i:04d}.json", Body=b"")
+        s3.put_object(Bucket=BUCKET, Key="zz-show/episodes/vid_late.mp3", Body=b"audio")
+        _put_retry_queue(s3, _queued("vid_late"))
+
+        result = heal_retry_queue(s3, BUCKET)
+
+        assert result["removed"] == 1
+        assert "vid_late" not in _load_retry_queue(s3, BUCKET)["episodes"]
+
+    def test_ignores_non_episode_keys_with_matching_name(self, s3):
+        s3.put_object(Bucket=BUCKET, Key="transcribe-cache/show/vid_x.mp3", Body=b"")
+        s3.put_object(Bucket=BUCKET, Key="show/other/vid_x.mp3", Body=b"")
+        _put_retry_queue(s3, _queued("vid_x"))
+
+        assert heal_retry_queue(s3, BUCKET)["removed"] == 0
+
+    def test_listing_failure_keeps_queue(self, s3, caplog):
+        s3.put_object(Bucket=BUCKET, Key="show/episodes/vid_keep.mp3", Body=b"audio")
+        _put_retry_queue(s3, _queued("vid_keep"))
+        real = s3.get_paginator
+
+        def flaky(name):
+            pager = real(name)
+            original = pager.paginate
+
+            def paginate(**kwargs):
+                if kwargs.get("Delimiter") == "/":
+                    raise RuntimeError("throttled")
+                return original(**kwargs)
+
+            pager.paginate = paginate
+            return pager
+
+        with patch.object(s3, "get_paginator", side_effect=flaky), caplog.at_level("WARNING"):
+            result = heal_retry_queue(s3, BUCKET)
+
+        assert result["removed"] == 0
+        assert "vid_keep" in _load_retry_queue(s3, BUCKET)["episodes"]
+        assert "Could not list published episodes" in caplog.text
+
+
+class TestCacheClearScope:
+    def test_clears_every_target_and_copy(self, s3):
+        """The old loop stopped scanning after the first episode was cleared."""
+        _put_retry_queue(s3, _queued("vid_a", "vid_b"))
+        keys = [
+            "transcribe-cache/show-1/vid_a_ads.json",
+            "transcribe-cache/vid_a_ads.json",
+            "transcribe-cache/show-2/vid_b_ads.json",
+        ]
+        for key in keys:
+            s3.put_object(Bucket=BUCKET, Key=key, Body=b"[]")
+
+        result = heal_cache_clear(s3, BUCKET)
+
+        assert result["cleared"] == 3
+        assert s3.list_objects_v2(Bucket=BUCKET, Prefix="transcribe-cache/").get("KeyCount") == 0
+
+    def test_leaves_transcripts_other_episodes_and_non_cache_keys(self, s3):
+        _put_retry_queue(s3, _queued("vid_a"))
+        kept = [
+            "transcribe-cache/show/vid_a.json",
+            "transcribe-cache/show/vid_ab_ads.json",
+            "show/episodes/vid_a_ads.json",
+        ]
+        for key in kept:
+            s3.put_object(Bucket=BUCKET, Key=key, Body=b"[]")
+
+        assert heal_cache_clear(s3, BUCKET)["cleared"] == 0
+        for key in kept:
+            s3.head_object(Bucket=BUCKET, Key=key)
+
+    def test_skips_listing_when_nothing_qualifies(self, s3):
+        _put_retry_queue(s3, _queued("vid_a", failure_count=1))
+        with patch.object(s3, "get_paginator") as pager:
+            assert heal_cache_clear(s3, BUCKET)["cleared"] == 0
+        pager.assert_not_called()
