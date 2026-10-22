@@ -80,13 +80,15 @@ def run(config: Config) -> RunStats:
     pending = notion.get_pending()
     logger.info("Found %d pending entries", len(pending))
 
+    # One Notion query per profile instead of one per pending entry.
+    done_urls: dict[str, set[str]] = {}
     for entry in pending:
         if entry.profile not in valid_profiles:
             logger.warning("Unknown profile %r, skipping: %s", entry.profile, entry.url)
             stats.skipped += 1
             continue
 
-        if _is_duplicate(notion, entry):
+        if _is_duplicate(notion, entry, done_urls):
             logger.info("Duplicate URL for profile %s: %s", entry.profile, entry.url)
             notion.update_status(
                 entry.page_id, Status.DONE, error="Skipped: duplicate URL"
@@ -97,6 +99,9 @@ def run(config: Config) -> RunStats:
         success = _process_entry(entry, notion, storage, config)
         if success:
             stats.processed += 1
+            # A later pending row with the same URL is now a duplicate.
+            if entry.profile in done_urls:
+                done_urls[entry.profile].add(entry.url)
         else:
             stats.failed += 1
 
@@ -128,10 +133,18 @@ def _process_deletions(notion: NotionClient, storage: StorageBackend) -> int:
     return count
 
 
-def _is_duplicate(notion: NotionClient, entry: MediaEntry) -> bool:
-    """Check if this URL already exists as 'done' for the same profile."""
-    done = notion.get_done_for_profile(entry.profile)
-    return any(d.url == entry.url for d in done)
+def _is_duplicate(
+    notion: NotionClient, entry: MediaEntry, done_urls: dict[str, set[str]] | None = None
+) -> bool:
+    """Check if this URL already exists as 'done' for the same profile.
+
+    *done_urls* caches each profile's done URLs across calls; without it every
+    call queries Notion.
+    """
+    cache = {} if done_urls is None else done_urls
+    if entry.profile not in cache:
+        cache[entry.profile] = {d.url for d in notion.get_done_for_profile(entry.profile)}
+    return entry.url in cache[entry.profile]
 
 
 def _reconcile_with_storage(

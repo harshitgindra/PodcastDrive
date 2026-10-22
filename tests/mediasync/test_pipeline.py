@@ -1,5 +1,6 @@
 """Tests for mediasync.pipeline module."""
 
+import dataclasses
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -203,6 +204,46 @@ class TestIsDuplicate:
         mock_notion.get_done_for_profile.return_value = [done_entry]
 
         assert _is_duplicate(mock_notion, pending_entry) is False
+
+
+class TestDuplicateLookupIsBatched:
+    @staticmethod
+    def _entry(template, url, page_id):
+        return dataclasses.replace(template, url=url, page_id=page_id)
+
+    def test_cache_queries_each_profile_once(self, done_entry):
+        notion = MagicMock()
+        notion.get_done_for_profile.return_value = [done_entry]
+        cache: dict[str, set[str]] = {}
+        entries = [self._entry(done_entry, f"https://youtube.com/watch?v={i}", f"p{i}") for i in range(5)]
+        entries.append(self._entry(done_entry, done_entry.url, "dup"))
+
+        results = [_is_duplicate(notion, e, cache) for e in entries]
+
+        assert results == [False] * 5 + [True]
+        notion.get_done_for_profile.assert_called_once_with(done_entry.profile)
+
+    @patch("mediasync.pipeline._process_entry", return_value=True)
+    @patch("mediasync.pipeline.create_storage")
+    @patch("mediasync.pipeline.NotionClient")
+    def test_run_queries_once_and_dedupes_within_the_run(self, MockNotion, MockStorage, mock_proc, config, pending_entry):
+        first = self._entry(pending_entry, pending_entry.url, "a")
+        second = self._entry(pending_entry, pending_entry.url, "b")
+        other = self._entry(pending_entry, "https://youtube.com/watch?v=other", "c")
+        notion = MockNotion.return_value
+        notion.get_deletions.return_value = []
+        notion.get_pending.return_value = [first, second, other]
+        notion.get_done_for_profile.return_value = []
+
+        with patch("mediasync.pipeline.sync_playlists", return_value=0), patch(
+            "mediasync.pipeline.generate_standing_playlists"
+        ):
+            stats = run(config)
+
+        assert stats.processed == 2
+        assert stats.skipped == 1
+        assert notion.get_done_for_profile.call_count == 1
+        assert [c.args[0] for c in mock_proc.call_args_list] == [first, other]
 
 
 class TestProcessEntry:
