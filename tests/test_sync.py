@@ -1447,7 +1447,10 @@ class TestUnreadableManifestFailsClosed:
 
 
 class TestAdRemovalFallbackPublication:
-    def _run(self, tmp_path, *, remove_ads_result=None, remove_ads_error=None, valid=True, upload_error=None):
+    def _run(
+        self, tmp_path, *, remove_ads_result=None, remove_ads_error=None, valid=True, upload_error=None,
+        existing=None, manifest=None,
+    ):
         video = _make_video("vid-fallback")
         playlist_meta = _make_playlist_meta()
         original = tmp_path / "vid-fallback.mp3"
@@ -1463,7 +1466,7 @@ class TestAdRemovalFallbackPublication:
             patch("sync.extract_video_metadata", return_value={
                 "upload_date": _RECENT_DATE, "description": "", "thumbnail": "", "duration": 300, "title": video.title,
             }),
-            patch("sync.download_and_convert", return_value=str(original)),
+            patch("sync.download_and_convert", return_value=str(original)) as mock_download,
             patch("sync.validate_audio_file", return_value=(valid, "invalid media")),
             patch("sync.remove_ads", return_value=remove_ads_result or (str(original), [], "TRANSCRIBE_FAILED"), side_effect=remove_ads_effect) as mock_remove,
             patch("sync.build_episode_metadata", return_value=[]),
@@ -1472,12 +1475,13 @@ class TestAdRemovalFallbackPublication:
             patch("os.makedirs"),
             patch("os.remove"),
         ):
-            s3 = _make_s3_manager()
-            s3.load_manifest.return_value = {}
+            s3 = _make_s3_manager(existing)
+            s3.load_manifest.return_value = manifest if manifest is not None else {}
             if upload_error:
                 s3.upload_episode.side_effect = RuntimeError(upload_error)
             mock_s3_cls.return_value = s3
             result = process_playlist("https://youtube.com/playlist?list=PLtest")
+        self.mock_download = mock_download
         return result, s3, mock_remove, original
 
     def test_error_sentinel_publishes_validated_original_and_records_warning(self, tmp_path):
@@ -1503,6 +1507,44 @@ class TestAdRemovalFallbackPublication:
         assert result["ad_removal_failed"] == 0
         s3.upload_episode.assert_not_called()
         remove_ads.assert_not_called()
+
+    def test_fallback_publish_leaves_episode_unchecked(self, tmp_path):
+        _, s3, _, _ = self._run(tmp_path)
+        assert s3.save_manifest.call_args[0][0]["vid-fallback"]["ad_removal_checked"] is False
+
+    def test_ffmpeg_crash_holds_episode_unpublished(self, tmp_path):
+        crash = (str(tmp_path / "vid-fallback.mp3"), [{"start": 1, "end": 2}], "FFMPEG_CRASHED")
+        result, s3, remove_ads, _ = self._run(tmp_path, remove_ads_result=crash)
+        assert result["new_episodes"] == 0
+        assert result["failed"] == 1
+        assert result["ad_removal_failed"] == 0
+        s3.upload_episode.assert_not_called()
+        remove_ads.assert_called_once()
+        for call in s3.save_manifest.call_args_list:
+            assert "vid-fallback" not in call[0][0]
+
+    def test_tripped_breaker_skips_download(self, tmp_path):
+        import sync
+
+        sync.ad_remover._record_ffmpeg_crash("earlier-ep: ffmpeg crashed (exit -11)")
+        result, s3, remove_ads, _ = self._run(tmp_path)
+        assert result["failed"] == 1
+        assert result["new_episodes"] == 0
+        self.mock_download.assert_not_called()
+        remove_ads.assert_not_called()
+        s3.upload_episode.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("entry", "requeued"),
+        [
+            ({"ad_removal_checked": True, "ad_removal_failed": True}, True),
+            ({"ad_removal_checked": True, "ad_removal_failed": False}, False),
+            ({"ads_removed": True, "ad_removal_failed": True}, False),
+        ],
+    )
+    def test_repair_requeues_fallback_published_original(self, tmp_path, entry, requeued):
+        self._run(tmp_path, existing={"vid-fallback"}, manifest={"vid-fallback": dict(entry)})
+        assert self.mock_download.called is requeued
 
     def test_upload_failure_remains_failure(self, tmp_path):
         result, s3, _, _ = self._run(tmp_path, upload_error="S3 unavailable")

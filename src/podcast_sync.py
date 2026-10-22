@@ -31,8 +31,9 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.dom.minidom import parseString
 
+import ad_remover
 import settings
-from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
+from ad_remover import FFMPEG_CRASHED, REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
 from config_provider import PodcastConfig
 from podcast_downloader import (
     EpisodeMeta,
@@ -556,7 +557,12 @@ def process_podcast_feed(
                     isinstance(manifest.get(episode_id_from_guid(ep.guid)), dict)
                     and (
                         manifest[episode_id_from_guid(ep.guid)].get("ads_removed") is True
-                        or manifest[episode_id_from_guid(ep.guid)].get("ad_removal_checked") is True
+                        or (
+                            manifest[episode_id_from_guid(ep.guid)].get("ad_removal_checked") is True
+                            # Older runs marked fallback-published originals as
+                            # checked; their ads are still in the published audio.
+                            and manifest[episode_id_from_guid(ep.guid)].get("ad_removal_failed") is not True
+                        )
                     )
                 )
             ]
@@ -634,6 +640,17 @@ def process_podcast_feed(
 
         age_days = max_age_days if max_age_days else 30
 
+        def _held_for_ffmpeg(ep: EpisodeMeta, ep_id: str, cdn: str, reason: str) -> dict:
+            return {
+                "ok": True,
+                "ep": ep,
+                "ep_id": ep_id,
+                "uploaded": False,
+                "held_for_ffmpeg": True,
+                "fail_reason": f"{FFMPEG_CRASHED}: {reason}",
+                "cdn": cdn,
+            }
+
         def _process_episode(ep: EpisodeMeta, ep_id: str) -> dict:
             """Download, clean, and upload one episode.  Returns a result dict."""
             thread_s3 = S3Manager(bucket=bucket, playlist_id=slug)
@@ -650,6 +667,10 @@ def process_podcast_feed(
             cdn = detect_cdn(ep.url)
             _splice_max_attempts = _splice_attempts_for_cdn(cdn)
 
+            crash_reason = ad_remover.ffmpeg_crash_reason()
+            if crash_reason:
+                return _held_for_ffmpeg(ep, ep_id, cdn, crash_reason)
+
             original_path: str | None = None
             cleaned_path: str | None = None
             ad_segments: list = []
@@ -658,6 +679,7 @@ def process_podcast_feed(
             download_validation_failed = False
             fail_reason = ""
             ad_removal_failed = False
+            ffmpeg_crashed = False
 
             try:
                 for attempt in range(1, _splice_max_attempts + 1):
@@ -736,6 +758,11 @@ def process_podcast_feed(
 
                     splice_failed = bool(ad_segments) and cleaned_path == original_path
                     error_code = summary if summary in REMOVE_ADS_ERROR_CODES else ""
+                    if error_code == FFMPEG_CRASHED and cleaned_path == original_path:
+                        # Host fault: fresh downloads cannot help and publishing
+                        # the original would ship its ads.
+                        ffmpeg_crashed = True
+                        break
                     if cleaned_path != original_path and error_code:
                         # Do not discard a valid cleaned output merely because
                         # summary generation failed afterwards.
@@ -773,6 +800,15 @@ def process_podcast_feed(
                         break
 
                     break  # success — exit retry loop
+
+                if ffmpeg_crashed:
+                    for path in (original_path, cleaned_path):
+                        if path and os.path.exists(path):
+                            with contextlib.suppress(OSError):
+                                os.remove(path)
+                    return _held_for_ffmpeg(
+                        ep, ep_id, cdn, ad_remover.ffmpeg_crash_reason() or "ffmpeg crashed during splice"
+                    )
 
                 if download_validation_failed:
                     ad_removal_failed = False
@@ -857,7 +893,7 @@ def process_podcast_feed(
 
                 logger.info("[PodcastSync] Done: %s", ep_id)
                 ads_removed = bool(ad_segments) and cleaned_path != original_path and not ad_removal_failed
-                ad_removal_checked = not repair_failed
+                ad_removal_checked = not repair_failed and not ad_removal_failed
                 return {
                     "ok": True,
                     "ep": ep,
@@ -947,6 +983,17 @@ def process_podcast_feed(
                             "[PodcastSync] Repair failed for %s; existing publication remains unchanged: %s",
                             ep_id,
                             result.get("fail_reason", "ad removal not confirmed"),
+                        )
+                elif result["ok"] and result.get("held_for_ffmpeg"):
+                    # Not published and not counted toward the lifetime splice
+                    # cap: the episode is absent from S3 (or keeps its current
+                    # object), so a run on a healthy ffmpeg picks it up again.
+                    with manifest_lock:
+                        failed_count += 1
+                        logger.error(
+                            "[PodcastSync] Holding %s unpublished — %s",
+                            result["ep_id"],
+                            result.get("fail_reason", FFMPEG_CRASHED),
                         )
                 elif result["ok"] and result.get("download_validation_failed"):
                     # The downloaded bytes remained invalid after fresh-download

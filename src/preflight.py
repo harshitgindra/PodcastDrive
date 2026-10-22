@@ -313,6 +313,12 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
                 ],
                 capture_output=True, text=True, timeout=30,
             )
+            if gen.returncode in (-11, -6):
+                _fail(
+                    f"ffmpeg crashed (exit {gen.returncode}) generating the self-test clip "
+                    f"(FFMPEG_BIN={ffmpeg_bin!r}) — this build cannot be trusted to splice audio"
+                )
+                return
             if gen.returncode != 0:
                 _warn(
                     "ffmpeg splice self-test could not generate a probe clip "
@@ -394,10 +400,10 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
 
         if probe.returncode in (-11, -6):
             sig = "SEGFAULTED (exit -11)" if probe.returncode == -11 else "ABORTED (exit -6)"
-            _warn(
+            _fail(
                 f"ffprobe {sig} on a valid clip (FFPROBE_BIN={ffprobe_bin!r}) — the ffmpeg install "
-                "is partially corrupt; duration probing will fall back to mutagen. Reinstall ffmpeg "
-                "or pin FFPROBE_BIN to a working build."
+                "is corrupt and splicing will crash too. Reinstall ffmpeg "
+                "or pin FFMPEG_BIN/FFPROBE_BIN to a working build."
             )
             return
         if probe.returncode != 0 or not probe.stdout.strip():
@@ -409,6 +415,72 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
 
     _ok("ffprobe self-test passed (reads duration from the spliced clip)")
 
+
+
+def _check_ffmpeg_canary(region: str) -> None:
+    """Probe and splice a real podcast MP3 through the production code path.
+
+    The synthetic self-test clip is encoded by the same ffmpeg under test, so a
+    build that segfaults only on CDN-encoded audio (acast, megaphone, ...) still
+    passes it — and then every episode with ads fails to splice.
+    """
+    import tempfile
+
+    import ad_remover
+
+    _section("ffmpeg canary (real podcast audio)")
+    key = settings.get("FFMPEG_CANARY_S3_KEY")
+    if not key:
+        _warn("FFMPEG_CANARY_S3_KEY is empty — real-audio ffmpeg canary skipped")
+        return
+    bucket = settings.get("S3_BUCKET")
+
+    with tempfile.TemporaryDirectory(prefix="pcd-ffmpeg-canary-") as work:
+        src = os.path.join(work, "canary.mp3")
+        out = os.path.join(work, "canary_clean.mp3")
+        try:
+            boto3.client("s3", region_name=region).download_file(bucket, key, src)
+        except botocore.exceptions.ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                _warn(
+                    f"No ffmpeg canary at s3://{bucket}/{key} — upload a real podcast MP3 there so "
+                    "preflight catches ffmpeg builds that crash on CDN audio"
+                )
+            else:
+                _warn(f"Could not download ffmpeg canary s3://{bucket}/{key}: {exc} — canary skipped")
+            return
+
+        try:
+            duration = ad_remover._ffprobe_duration(src)
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode in ad_remover.FFMPEG_CRASH_RETURNCODES:
+                _fail(
+                    f"ffprobe crashed (exit {exc.returncode}) on the real-audio canary s3://{bucket}/{key}. "
+                    "Episodes with ads would not splice; reinstall ffmpeg or pin FFMPEG_BIN/FFPROBE_BIN."
+                )
+                return
+            _fail(f"ffprobe failed (exit {exc.returncode}) on the canary s3://{bucket}/{key}: {exc.stderr}")
+            return
+        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            _fail(f"ffprobe could not read the canary s3://{bucket}/{key}: {exc}")
+            return
+
+        try:
+            ad_remover.splice_audio(src, [{"start": duration * 0.4, "end": duration * 0.6}], out)
+        except ad_remover.FfmpegCrashed as exc:
+            _fail(
+                f"ffmpeg crashed splicing the real-audio canary s3://{bucket}/{key}: {exc}. "
+                "Every episode with ads would be held; reinstall ffmpeg or pin FFMPEG_BIN."
+            )
+            return
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+            _fail(f"ffmpeg could not splice the canary s3://{bucket}/{key}: {exc}")
+            return
+        if not os.path.exists(out) or os.path.getsize(out) == 0:
+            _fail(f"ffmpeg produced no output splicing the canary s3://{bucket}/{key}")
+            return
+
+    _ok(f"ffmpeg canary passed (probed {duration:.0f}s and spliced s3://{bucket}/{key})")
 
 
 def _check_transcribe(region: str) -> None:
@@ -656,6 +728,7 @@ def run_preflight(dry_run: bool = False) -> None:
         _check_notion()
 
     if settings.get("REMOVE_ADS"):
+        _check_ffmpeg_canary(region)
         _check_transcribe(region)
         _check_bedrock(region)
 

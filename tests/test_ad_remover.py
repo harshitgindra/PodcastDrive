@@ -4788,3 +4788,91 @@ class TestSpliceNoUsableSegmentsOutcome:
         assert cleaned == "/orig.mp3"
         assert ads == cached_ads
         assert self._splice_failed("/orig.mp3", cleaned, ads)
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg host crashes (signal exits) vs episode faults
+# ---------------------------------------------------------------------------
+
+
+class TestFfmpegCrashed:
+    """A signal-killed ffmpeg is a host fault: it must not be reported as SPLICE_FAILED."""
+
+    @staticmethod
+    def _run_returning(monkeypatch, codes):
+        calls = iter(codes)
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, next(calls), "", "boom")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+    @pytest.mark.parametrize("rc", [-11, -6])
+    def test_segment_extraction_crash_raises_ffmpeg_crashed(self, monkeypatch, tmp_path, rc):
+        import ad_remover
+
+        self._run_returning(monkeypatch, [rc])
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        with pytest.raises(ad_remover.FfmpegCrashed, match=f"segment 0 extraction crashed \\(exit {rc}\\)"):
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
+
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(("_seg_", "_concat_"))] == []
+
+    def test_join_crash_raises_ffmpeg_crashed(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        self._run_returning(monkeypatch, [0, 0, -11])
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        with pytest.raises(ad_remover.FfmpegCrashed, match="join crashed \\(exit -11\\)"):
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0), (10.0, 15.0)], str(tmp_path / "out.mp3"))
+
+    def test_non_signal_join_failure_stays_runtime_error(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        self._run_returning(monkeypatch, [0, 1])
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        with pytest.raises(RuntimeError, match="join failed") as excinfo:
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
+        assert not isinstance(excinfo.value, ad_remover.FfmpegCrashed)
+
+    def test_ffmpeg_crashed_is_an_error_code(self):
+        import ad_remover
+
+        assert ad_remover.FFMPEG_CRASHED in ad_remover.REMOVE_ADS_ERROR_CODES
+        assert issubclass(ad_remover.FfmpegCrashed, RuntimeError)
+
+    def test_remove_ads_returns_ffmpeg_crashed_and_trips_breaker(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        detected = [{"start": 10.0, "end": 50.0}]
+        monkeypatch.setattr(ad_remover, "transcribe_audio", lambda *a, **k: [])
+        monkeypatch.setattr(ad_remover, "detect_ads", lambda *a, **k: detected)
+        monkeypatch.setattr(ad_remover, "_generate_summary", lambda *a, **k: "a summary")
+
+        def _crash(*_a, **_k):
+            raise ad_remover.FfmpegCrashed("ffmpeg concat-demuxer join crashed (exit -11)")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", _crash)
+        assert ad_remover.ffmpeg_crash_reason() is None
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == detected
+        assert summary == ad_remover.FFMPEG_CRASHED
+        assert ad_remover.ffmpeg_crash_reason() == "ep-1: ffmpeg concat-demuxer join crashed (exit -11)"
+
+    def test_breaker_keeps_first_reason(self):
+        import ad_remover
+
+        ad_remover._record_ffmpeg_crash("first")
+        ad_remover._record_ffmpeg_crash("second")
+        assert ad_remover.ffmpeg_crash_reason() == "first"
+        ad_remover._reset_ffmpeg_crash()
+        assert ad_remover.ffmpeg_crash_reason() is None

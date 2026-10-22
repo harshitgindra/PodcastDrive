@@ -11,8 +11,9 @@ import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 
+import ad_remover
 import settings
-from ad_remover import REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
+from ad_remover import FFMPEG_CRASHED, REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
 from downloader import download_and_convert
 from extractor import BotDetectedError, ExtractionError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
@@ -172,7 +173,10 @@ def process_playlist(
                     isinstance(manifest.get(v.video_id), dict)
                     and (
                         manifest[v.video_id].get("ads_removed") is True
-                        or manifest[v.video_id].get("ad_removal_checked") is True
+                        or (
+                            manifest[v.video_id].get("ad_removal_checked") is True
+                            and manifest[v.video_id].get("ad_removal_failed") is not True
+                        )
                     )
                 )
             ]
@@ -274,6 +278,14 @@ def process_playlist(
                     new_count += 1
                     continue
 
+                crash_reason = ad_remover.ffmpeg_crash_reason()
+                if crash_reason:
+                    failed_count += 1
+                    logger.error(
+                        "[Step 4] Holding %s unpublished — %s: %s", video.video_id, FFMPEG_CRASHED, crash_reason
+                    )
+                    continue
+
                 # Download audio
                 logger.info("[Step 4] Downloading %s: %s", video.video_id, video.title)
                 mp3_path = download_and_convert(
@@ -308,6 +320,15 @@ def process_playlist(
                     mp3_path = original_mp3
                     ad_segments = []
                     episode_summary = f"REMOVE_ADS_EXCEPTION:{type(exc).__name__}"
+
+                if episode_summary == FFMPEG_CRASHED and mp3_path == original_mp3:
+                    # Host fault, not an episode fault: keep the episode out of
+                    # S3 (or keep its current object) so a healthy run retries it.
+                    failed_count += 1
+                    logger.error("[Step 4] Holding %s unpublished — ffmpeg crashed during splice", video.video_id)
+                    if os.path.exists(original_mp3):
+                        os.remove(original_mp3)
+                    continue
 
                 # A processing sentinel with the original still selected means
                 # detection/removal failed. Upload the validated original with no

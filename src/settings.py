@@ -294,6 +294,13 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 "Path to the ffprobe executable. Defaults to the first 'ffprobe' on PATH; pin to an "
                 "absolute path alongside FFMPEG_BIN when the PATH build is unstable.",
             ),
+            _s(
+                "FFMPEG_CANARY_S3_KEY",
+                "_meta/ffmpeg-canary.mp3",
+                "S3 key (in S3_BUCKET) of a real podcast MP3 that preflight probes and splices when "
+                "REMOVE_ADS is on. A build can pass the synthetic self-test yet segfault on CDN audio, "
+                "so a crash here aborts the run. Empty disables the check.",
+            ),
             # A hung child holds the S3 distributed lock (TTL 3600s), which silently blocks
             # every later cron run, so every invocation must be bounded.
             _f("FFMPEG_SILENCEDETECT_TIMEOUT_SECS", 1800.0, "Timeout for the ffmpeg silencedetect pass."),

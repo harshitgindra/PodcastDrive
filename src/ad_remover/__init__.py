@@ -144,6 +144,47 @@ class NoUsableAdSegments(ValueError):
     """
 
 
+class FfmpegCrashed(RuntimeError):
+    """ffmpeg died on a signal (SIGSEGV/SIGABRT) on every splice strategy.
+
+    A signal crash is a fault of the ffmpeg build on this host, not of the
+    episode: the same bytes splice cleanly on a healthy binary.  Callers must
+    hold the episode for a healthy run instead of publishing the original with
+    its ads, and should stop splicing for the rest of the process.
+    """
+
+
+#: Signal exit codes that mean the ffmpeg/ffprobe binary itself crashed.
+FFMPEG_CRASH_RETURNCODES: frozenset[int] = frozenset({-11, -6})
+
+#: Error code :func:`remove_ads` returns when the splice failed with
+#: :class:`FfmpegCrashed`.
+FFMPEG_CRASHED = "FFMPEG_CRASHED"
+
+_ffmpeg_crash_reason: str | None = None
+
+
+def ffmpeg_crash_reason() -> str | None:
+    """Return why splicing is disabled in this process, or None if ffmpeg is trusted."""
+    return _ffmpeg_crash_reason
+
+
+def _record_ffmpeg_crash(reason: str) -> None:
+    global _ffmpeg_crash_reason
+    if _ffmpeg_crash_reason is None:
+        logger.error(
+            "[AdRemover] ffmpeg on this host crashes on real audio (%s) — holding every remaining "
+            "episode that needs ad removal for a healthy run instead of publishing originals with ads",
+            reason,
+        )
+        _ffmpeg_crash_reason = reason
+
+
+def _reset_ffmpeg_crash() -> None:
+    global _ffmpeg_crash_reason
+    _ffmpeg_crash_reason = None
+
+
 #: Sentinel strings returned by :func:`remove_ads` in the summary position when
 #: a pipeline stage fails.  Callers **must** exclude these before writing the
 #: value to the episode manifest or an RSS feed — they are error signals, not
@@ -153,6 +194,7 @@ REMOVE_ADS_ERROR_CODES: frozenset[str] = frozenset(
         "TRANSCRIBE_FAILED",
         "DETECT_FAILED",
         "SPLICE_FAILED",
+        FFMPEG_CRASHED,
     }
 )
 
@@ -532,6 +574,10 @@ def remove_ads(
         logger.warning("[AdRemover] No usable ad segments for %s (%s) — using original file", video_id, exc)
         summary = _generate_summary(segments, video_id, episode_title, duration_secs, cache_namespace=cache_namespace)
         return mp3_path, [], summary
+    except FfmpegCrashed as exc:
+        _record_ffmpeg_crash(f"{video_id}: {exc}")
+        logger.error("[AdRemover] Splicing crashed for %s: %s — holding the episode", video_id, exc)
+        return mp3_path, all_segments, FFMPEG_CRASHED
     except _OPERATIONAL_ERRORS as exc:
         logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc, exc_info=True)
         return mp3_path, all_segments, "SPLICE_FAILED"

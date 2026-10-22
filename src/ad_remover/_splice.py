@@ -315,7 +315,7 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"ffmpeg splice timed out after {exc.timeout}s for {mp3_path}") from exc
         except subprocess.CalledProcessError as exc:
-            if exc.returncode not in (-11, -6):
+            if exc.returncode not in _pkg().FFMPEG_CRASH_RETURNCODES:
                 raise RuntimeError(f"ffmpeg splice failed (exit {exc.returncode}):\n{exc.stderr}") from exc
             last_crash = exc
             if crash_attempt <= crash_retries:
@@ -398,6 +398,8 @@ def _splice_concat_demuxer(
                 )
             except subprocess.TimeoutExpired as exc:
                 raise RuntimeError(f"ffmpeg segment {i} extraction timed out after {exc.timeout}s") from exc
+            if result.returncode in _pkg().FFMPEG_CRASH_RETURNCODES:
+                raise _pkg().FfmpegCrashed(f"ffmpeg segment {i} extraction crashed (exit {result.returncode})")
             if result.returncode != 0:
                 raise RuntimeError(f"ffmpeg segment {i} extraction failed (exit {result.returncode}):\n{result.stderr}")
 
@@ -431,6 +433,8 @@ def _splice_concat_demuxer(
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"ffmpeg concat-demuxer join timed out after {exc.timeout}s") from exc
+        if result.returncode in _pkg().FFMPEG_CRASH_RETURNCODES:
+            raise _pkg().FfmpegCrashed(f"ffmpeg concat-demuxer join crashed (exit {result.returncode})")
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg concat-demuxer join failed (exit {result.returncode}):\n{result.stderr}")
 

@@ -48,3 +48,25 @@ def _disable_retry_wait():
     """Patch tenacity wait times to zero so retry tests are fast."""
     with patch("time.sleep"):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_ffmpeg_crash_breaker():
+    """The ffmpeg crash breaker is process-wide; keep it from leaking between tests.
+
+    Some tests re-import ``ad_remover``, so the copy bound inside ``sync`` /
+    ``podcast_sync`` can differ from ``sys.modules`` — reset every copy.
+    """
+
+    def _reset():
+        copies = {id(m): m for m in (sys.modules.get("ad_remover"),) if m is not None}
+        for holder in ("sync", "podcast_sync"):
+            module = getattr(sys.modules.get(holder), "ad_remover", None)
+            if module is not None:
+                copies[id(module)] = module
+        for module in copies.values():
+            module._reset_ffmpeg_crash()
+
+    _reset()
+    yield
+    _reset()

@@ -1,5 +1,6 @@
 """Unit tests for src/preflight.py."""
 
+import subprocess
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,7 @@ from preflight import (
     _check_cloudfront,
     _check_env_vars,
     _check_ffmpeg,
+    _check_ffmpeg_canary,
     _check_notion,
     _check_s3_bucket,
     _check_transcribe,
@@ -693,13 +695,17 @@ class TestCheckFfmpegSplice:
         assert "ffprobe not found" in out
         assert "mutagen" in out
 
-    def test_warns_but_passes_when_ffprobe_segfaults(self, capsys):
-        # A segfaulting ffprobe signals a partially corrupt install (what the
-        # broken runner showed) but is not fatal — warn, do not abort.
-        self._run(probe_rc=-11)
-        out = capsys.readouterr().out
-        assert "SEGFAULTED" in out
-        assert "mutagen" in out
+    def test_fails_when_ffprobe_segfaults(self, capsys):
+        # The Mac mini's segfaulting ffprobe went with an ffmpeg that crashed on
+        # every real splice; letting the run proceed published originals with ads.
+        with pytest.raises(SystemExit):
+            self._run(probe_rc=-11)
+        assert "SEGFAULTED" in capsys.readouterr().out
+
+    def test_fails_when_probe_clip_generation_crashes(self, capsys):
+        with pytest.raises(SystemExit):
+            self._run(gen_rc=-11)
+        assert "crashed (exit -11) generating the self-test clip" in capsys.readouterr().out
 
     def test_warns_but_passes_when_ffprobe_returns_empty(self, capsys):
         self._run(probe_rc=0, probe_stdout="")
@@ -863,6 +869,100 @@ class TestCheckBedrock:
 # ── run_preflight ─────────────────────────────────────────────────────────────
 
 
+class TestCheckFfmpegCanary:
+    """The canary runs real CDN audio through the production probe + splice path."""
+
+    @staticmethod
+    def _s3(download_error=None):
+        s3 = MagicMock()
+
+        def download(bucket, key, dest):
+            if download_error:
+                raise download_error
+            with open(dest, "wb") as fh:
+                fh.write(b"ID3-canary")
+
+        s3.download_file.side_effect = download
+        return s3
+
+    @staticmethod
+    def _write_output(_src, _segments, out):
+        with open(out, "wb") as fh:
+            fh.write(b"spliced")
+
+    def _run(self, *, s3=None, probe=None, splice=None, env=None):
+        import ad_remover
+
+        with (
+            patch("boto3.client", return_value=s3 or self._s3()),
+            patch.dict("os.environ", {"S3_BUCKET": "bkt", **(env or {})}),
+            patch.object(ad_remover, "_ffprobe_duration", side_effect=probe, return_value=100.0),
+            patch.object(ad_remover, "splice_audio", side_effect=splice or self._write_output) as mock_splice,
+        ):
+            _check_ffmpeg_canary("us-west-2")
+        return mock_splice
+
+    def test_passes_and_splices_the_middle_of_the_canary(self, capsys):
+        mock_splice = self._run()
+        assert "ffmpeg canary passed" in capsys.readouterr().out
+        segments = mock_splice.call_args[0][1]
+        assert segments == [{"start": 40.0, "end": 60.0}]
+
+    def test_downloads_configured_key(self):
+        s3 = self._s3()
+        self._run(s3=s3, env={"FFMPEG_CANARY_S3_KEY": "_meta/custom.mp3"})
+        assert s3.download_file.call_args[0][:2] == ("bkt", "_meta/custom.mp3")
+
+    def test_missing_canary_warns_without_failing(self, capsys):
+        mock_splice = self._run(s3=self._s3(_client_error("404")))
+        assert "No ffmpeg canary" in capsys.readouterr().out
+        mock_splice.assert_not_called()
+
+    def test_other_download_error_warns_and_skips(self, capsys):
+        mock_splice = self._run(s3=self._s3(_client_error("AccessDenied")))
+        assert "Could not download ffmpeg canary" in capsys.readouterr().out
+        mock_splice.assert_not_called()
+
+    def test_empty_key_skips(self, capsys):
+        s3 = self._s3()
+        self._run(s3=s3, env={"FFMPEG_CANARY_S3_KEY": ""})
+        assert "canary skipped" in capsys.readouterr().out
+        s3.download_file.assert_not_called()
+
+    def test_ffprobe_segfault_fails(self, capsys):
+        crash = subprocess.CalledProcessError(-11, ["ffprobe"])
+        with pytest.raises(SystemExit):
+            self._run(probe=crash)
+        assert "ffprobe crashed (exit -11)" in capsys.readouterr().out
+
+    def test_ffprobe_error_fails(self, capsys):
+        with pytest.raises(SystemExit):
+            self._run(probe=subprocess.CalledProcessError(1, ["ffprobe"], stderr="bad"))
+        assert "ffprobe failed (exit 1)" in capsys.readouterr().out
+
+    def test_unreadable_canary_fails(self, capsys):
+        with pytest.raises(SystemExit):
+            self._run(probe=ValueError("no duration"))
+        assert "ffprobe could not read the canary" in capsys.readouterr().out
+
+    def test_splice_crash_fails(self, capsys):
+        import ad_remover
+
+        with pytest.raises(SystemExit):
+            self._run(splice=ad_remover.FfmpegCrashed("join crashed (exit -11)"))
+        assert "ffmpeg crashed splicing the real-audio canary" in capsys.readouterr().out
+
+    def test_splice_error_fails(self, capsys):
+        with pytest.raises(SystemExit):
+            self._run(splice=RuntimeError("ffmpeg splice failed (exit 1)"))
+        assert "could not splice the canary" in capsys.readouterr().out
+
+    def test_empty_output_fails(self, capsys):
+        with pytest.raises(SystemExit):
+            self._run(splice=lambda *_a: None)
+        assert "produced no output" in capsys.readouterr().out
+
+
 class TestRunPreflight:
     """Integration-style tests for the run_preflight() orchestrator."""
 
@@ -875,6 +975,7 @@ class TestRunPreflight:
             "_check_cloudfront": patch("preflight._check_cloudfront"),
             "_check_yt_dlp": patch("preflight._check_yt_dlp"),
             "_check_ffmpeg": patch("preflight._check_ffmpeg"),
+            "_check_ffmpeg_canary": patch("preflight._check_ffmpeg_canary"),
             "_check_notion": patch("preflight._check_notion"),
             "_check_transcribe": patch("preflight._check_transcribe"),
             "_check_bedrock": patch("preflight._check_bedrock"),
@@ -893,6 +994,18 @@ class TestRunPreflight:
             mocks["_check_yt_dlp"].assert_called_once()
             mocks["_check_ffmpeg"].assert_called_once()
             mocks["_check_notion"].assert_not_called()
+        finally:
+            for p in patches.values():
+                p.stop()
+
+    @pytest.mark.parametrize(("remove_ads", "expected"), [("true", True), ("false", False)])
+    def test_ffmpeg_canary_runs_only_with_ad_removal(self, remove_ads, expected):
+        patches = self._patch_all_checks()
+        mocks = {k: p.start() for k, p in patches.items()}
+        try:
+            with patch.dict("os.environ", {"CONFIG_PROVIDER": "yaml", "REMOVE_ADS": remove_ads}):
+                run_preflight(dry_run=False)
+            assert mocks["_check_ffmpeg_canary"].called is expected
         finally:
             for p in patches.values():
                 p.stop()
