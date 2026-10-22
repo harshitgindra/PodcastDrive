@@ -11,7 +11,6 @@ Covers:
 """
 
 import os
-import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
@@ -591,19 +590,6 @@ class TestAdRemovalParity:
         id3 = episode_id_from_guid(guid3)
         assert id3  # non-empty
         assert "/" not in id3
-
-    def test_sync_podcast_py_exits_nonzero(self):
-        """sync_podcast.py is retired and must exit non-zero with deprecation message."""
-        import subprocess
-
-        result = subprocess.run(
-            [sys.executable, os.path.join(os.path.dirname(__file__), "..", "sync_podcast.py")],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert result.returncode != 0
-        assert "DEPRECATED" in result.stderr
 
 
 # ---------------------------------------------------------------------------

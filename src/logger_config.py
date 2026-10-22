@@ -1,7 +1,7 @@
 """Centralized logging configuration for playlist-downloader.
 
-Call ``setup_logging()`` once at application startup (in sync_podcast.py or
-any other entry point).  AWS Lambda already ships logs to CloudWatch, so the
+Call ``setup_logging()`` once at application startup (as orchestrator.py and
+reset.py do).  AWS Lambda already ships logs to CloudWatch, so the
 rotating file handler is only attached when running locally.
 
 Set ``LOG_FORMAT=json`` (env var) to emit structured JSON log lines instead of
