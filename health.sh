@@ -25,27 +25,40 @@ HEAL=false
 APPLY=false
 OUTPUT="md"
 
-for arg in "$@"; do
-  case $arg in
-    --days) shift; DAYS="${1:-7}"; shift ;;
-    --heal) HEAL=true ;;
-    --apply) APPLY=true ;;
-    --json) OUTPUT="json" ;;
-    --help|-h)
-      echo "Usage: ./health.sh [OPTIONS]"
-      echo ""
-      echo "Options:"
-      echo "  --days N     Analyze last N days (default: 7)"
-      echo "  --json       Output report as JSON instead of markdown"
-      echo "  --heal       Run self-healing (dry-run by default)"
-      echo "  --apply      Apply self-healing changes (use with --heal)"
-      echo ""
-      echo "Examples:"
-      echo "  ./health.sh                  # 7-day health report"
-      echo "  ./health.sh --days 14        # 14-day health report"
-      echo "  ./health.sh --heal           # preview self-healing actions"
-      echo "  ./health.sh --heal --apply   # execute self-healing"
-      exit 0
+usage() {
+  echo "Usage: ./health.sh [OPTIONS]"
+  echo ""
+  echo "Options:"
+  echo "  --days N     Analyze last N days (default: 7)"
+  echo "  --json       Output report as JSON instead of markdown"
+  echo "  --heal       Run self-healing (dry-run by default)"
+  echo "  --apply      Apply self-healing changes (use with --heal)"
+  echo ""
+  echo "Examples:"
+  echo "  ./health.sh                  # 7-day health report"
+  echo "  ./health.sh --days 14        # 14-day health report"
+  echo "  ./health.sh --heal           # preview self-healing actions"
+  echo "  ./health.sh --heal --apply   # execute self-healing"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --days)
+      if [ $# -lt 2 ] || ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+        echo "health.sh: --days needs a positive integer" >&2
+        exit 2
+      fi
+      DAYS="$2"
+      shift 2
+      ;;
+    --heal) HEAL=true; shift ;;
+    --apply) APPLY=true; shift ;;
+    --json) OUTPUT="json"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *)
+      echo "health.sh: unknown option: $1" >&2
+      usage >&2
+      exit 2
       ;;
   esac
 done
