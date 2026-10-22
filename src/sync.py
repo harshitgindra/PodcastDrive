@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import time
 from datetime import UTC, datetime, timedelta
+from typing import TypedDict
 
 import ad_remover
 import settings
@@ -23,6 +24,12 @@ from utils import extract_playlist_id, parse_upload_date
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+class ReconcileReport(TypedDict):
+    manifest_saved: bool
+    feed_failed: bool
+    omitted_ids: list[str]
 
 
 def process_playlist(
@@ -658,7 +665,7 @@ def _reconcile(
     playlist_id: str,
     playlist_meta: PlaylistMeta,
     manifest: dict | None = None,
-) -> None:
+) -> ReconcileReport:
     """Reconcile S3 files and RSS feed entries.
 
     Age-based expiration is handled automatically by the S3 lifecycle rule set
@@ -671,9 +678,10 @@ def _reconcile(
     - Entry count in feed == file count in S3
 
     Returns:
-        dict with ``manifest_saved`` (False when a pruned manifest could not be
-        written) and ``omitted_ids`` (episodes left out of the feed for lack of a
-        usable size), so the caller can report a degraded run.
+        ``manifest_saved`` (False when a pruned manifest could not be written),
+        ``feed_failed`` (the feed could not be built or uploaded) and
+        ``omitted_ids`` (episodes left out of the feed for lack of a usable
+        size), so the caller can report a degraded run.
     """
     s3_keys = s3.list_existing_episodes()
     logger.info("[Reconcile] S3 has %d episodes", len(s3_keys))
