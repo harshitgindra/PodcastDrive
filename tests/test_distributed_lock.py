@@ -269,6 +269,22 @@ class TestAcquireTakeover:
         assert loser._replace_lock_conditional(winner_etag, loser._new_token()) is False
         assert _read_remote_lock(s3_client)["runner"] == "winner"
 
+    def test_stale_lock_without_etag_is_not_taken_over(self, s3_client, make_lock):
+        """Without an ETag the replace could not be conditional, so refuse it."""
+        _put_lock(s3_client, runner="old-runner", age_seconds=DEFAULT_TTL_SECONDS + 10)
+        lock = make_lock()
+        stale = lock._read_lock()
+
+        with (
+            patch.object(lock, "_read_lock_with_etag", return_value=(stale, None)),
+            patch.object(lock, "_replace_lock_conditional") as mock_replace,
+        ):
+            with pytest.raises(LockHeldError):
+                lock.acquire()
+
+        mock_replace.assert_not_called()
+        assert _read_remote_lock(s3_client)["runner"] == "old-runner"
+
     @pytest.mark.parametrize("body", [b"not-json", b"[1, 2, 3]"])
     def test_acquire_fails_closed_for_unreadable_lock(self, s3_client, make_lock, body):
         s3_client.put_object(Bucket=BUCKET, Key=LOCK_KEY, Body=body)

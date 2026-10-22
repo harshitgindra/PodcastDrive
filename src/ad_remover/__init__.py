@@ -530,7 +530,7 @@ def remove_ads(
             _silences = []
 
     # Detect music bookends (intro/outro) if enabled — merged with ad_segments for a single splice
-    music_segments: list[AdSegment] = []
+    music_segments = []
     if (_trim_intro or _trim_outro) and segments:
         try:
             music_segments = detect_music_bookends(

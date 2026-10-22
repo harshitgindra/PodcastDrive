@@ -93,11 +93,7 @@ ignore_missing_imports = true
 # add one.
 [[tool.mypy.overrides]]
 module = [
-    "ad_remover",
-    "ad_remover._splice",
     "config_provider",
-    "distributed_lock",
-    "export_cookies",
     "mediasync.cli",
     "mediasync.migrate",
     "mediasync.tagger",

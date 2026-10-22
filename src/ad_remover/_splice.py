@@ -60,7 +60,10 @@ def _mutagen_duration(path: str) -> float:
     try:
         from mutagen.mp3 import MP3  # noqa: PLC0415
 
-        return MP3(path).info.length
+        info = MP3(path).info
+        if info is None:
+            raise ValueError("no MPEG stream info")
+        return info.length
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"mutagen could not read duration: {exc}") from exc
 

@@ -65,7 +65,7 @@ def filter_cookie_file(path: str) -> int:
     return len(kept)
 
 
-def find_firefox_profile() -> Path:
+def find_firefox_profile() -> Path | None:
     """Find the default-release Firefox profile."""
     if not FIREFOX_PROFILES_DIR.exists():
         return None

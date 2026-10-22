@@ -354,7 +354,8 @@ class S3Lock:
                 "Refusing to take it over."
             )
 
-        if existing is not None and self._is_expired(existing):
+        # Without an ETag the takeover cannot be conditional, so fail closed.
+        if existing is not None and etag is not None and self._is_expired(existing):
             logger.warning(
                 "Stale lock found (held by %s, last renewed %s) — taking over",
                 existing.get("runner", "?"),
