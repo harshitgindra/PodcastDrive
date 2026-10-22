@@ -15,13 +15,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      # Pinned to the uv.lock version: formatter output changes between
+      # releases, so an unpinned ruff could fail the format check on its own.
       - name: Install ruff
-        run: pip install "ruff>=0.6"
-      # `ruff check` only. `ruff format` is deliberately not gated yet: it would
-      # rewrite 39 files, and that churn does not belong in a behaviour-
-      # preserving refactor. Adopt it as a separate, isolated commit.
+        run: pip install "ruff==0.16.10"
       - name: Check lint
         run: ruff check src/ tests/
+      - name: Check formatting
+        run: ruff format --check src/ tests/
 
   typecheck:
     name: Type check (mypy)
