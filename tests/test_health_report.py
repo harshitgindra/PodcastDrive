@@ -881,6 +881,44 @@ class TestMaybeSendAlert:
         assert any("Failed to send health alert" in r.message for r in caplog.records)
 
 
+class TestAlertUrlValidation:
+    _REPORT = {"recommendations": [{"priority": "HIGH", "issue": "x", "action": "y"}]}
+
+    @pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.com/hook", "example.com/hook"])
+    def test_rejects_non_http_schemes(self, monkeypatch, caplog, url):
+        import logging
+
+        import health_report
+
+        monkeypatch.setenv("HEALTH_ALERT_URL", url)
+        opened = []
+        monkeypatch.setattr(health_report.urllib.request, "urlopen", lambda *a, **k: opened.append(a))
+
+        with caplog.at_level(logging.WARNING, logger="health_report"):
+            health_report._maybe_send_alert(self._REPORT)
+
+        assert opened == []
+        assert "must be an http(s) URL" in caplog.text
+
+    def test_logs_host_not_secret_path(self, monkeypatch, caplog):
+        import logging
+        import urllib.error
+
+        import health_report
+
+        monkeypatch.setenv("HEALTH_ALERT_URL", "https://hooks.example.com/services/T000/SECRET123")
+
+        def fail(*_a, **_k):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(health_report.urllib.request, "urlopen", fail)
+        with caplog.at_level(logging.INFO, logger="health_report"):
+            health_report._maybe_send_alert(self._REPORT)
+
+        assert "hooks.example.com" in caplog.text
+        assert "SECRET123" not in caplog.text
+
+
 class TestNoRunsIn8hDetection:
     """Tests for the no-runs-in-8h recommendation."""
 

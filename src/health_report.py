@@ -14,6 +14,7 @@ import argparse
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 import boto3
 
 import settings
+from podcast_downloader import require_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +390,14 @@ def _maybe_send_alert(report: dict) -> None:
     if not high_issues:
         return
 
+    # Webhook URLs usually embed their secret in the path; log only the host.
+    target = urllib.parse.urlsplit(alert_url).netloc or "(no host)"
+    try:
+        require_http_url(alert_url, "HEALTH_ALERT_URL")
+    except ValueError:
+        logger.warning("Not sending health alert: HEALTH_ALERT_URL must be an http(s) URL (host %s)", target)
+        return
+
     payload = {
         "title": "PodcastDrive health alert",
         "priority": "HIGH",
@@ -403,9 +413,9 @@ def _maybe_send_alert(report: dict) -> None:
     )
     try:
         with urllib.request.urlopen(req, timeout=10):
-            logger.info("Health alert sent to %s (%d HIGH issue(s))", alert_url, len(high_issues))
+            logger.info("Health alert sent to %s (%d HIGH issue(s))", target, len(high_issues))
     except (urllib.error.URLError, OSError) as exc:
-        logger.warning("Failed to send health alert to %s: %s", alert_url, exc)
+        logger.warning("Failed to send health alert to %s: %s", target, exc)
 
 
 def generate_health_report(days: int = 7, output_format: str = "md") -> str:
