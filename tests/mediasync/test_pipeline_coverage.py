@@ -191,16 +191,23 @@ class TestParallelMetadataOrder:
             {"id": "first", "title": "First"},
             {"id": "second", "title": "Second"},
         ]
-        later_finishes_first = threading.Event()
+        # "first" is held until the main thread has consumed "second", so
+        # completion order is deterministic. Releasing it from inside the
+        # "second" worker raced: "first" could finish before "second" returned.
+        second_consumed = threading.Event()
 
         def fetch_metadata(url):
             if url.endswith("first"):
-                assert later_finishes_first.wait(timeout=2)
+                assert second_consumed.wait(timeout=5)
                 return {"id": "first", "title": "First"}
-            later_finishes_first.set()
             return {"id": "second", "title": "Second"}
 
+        def record_cache(url, _meta):
+            if url.endswith("second"):
+                second_consumed.set()
+
         mock_meta.side_effect = fetch_metadata
+        mock_cache.side_effect = record_cache
 
         result = _fetch_playlist_items_metadata("https://youtube.com/playlist?list=PLxyz")
 
