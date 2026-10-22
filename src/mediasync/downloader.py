@@ -357,7 +357,7 @@ def _download_single(
             f"Duration {duration}s exceeds limit of {max_duration_secs}s"
         )
 
-    title = _sanitize_title(meta.get("title", "untitled"))
+    title = sanitize_title(meta.get("title", "untitled"))
     artist = meta.get("uploader") or meta.get("channel") or "Unknown"
     thumbnail = meta.get("thumbnail", "")
 
@@ -521,8 +521,12 @@ def _find_output(expected: Path) -> Path:
     raise DownloadError(f"Output file not found: {expected}")
 
 
-def _sanitize_title(title: str) -> str:
-    """Remove filesystem-unsafe characters from title."""
+def sanitize_title(title: str) -> str:
+    """Remove filesystem-unsafe characters from title.
+
+    Also used by the pipeline to predict existing storage keys, so both sides
+    must agree on every output.
+    """
     unsafe = '<>:"/\\|?*'
     result = title
     for ch in unsafe:

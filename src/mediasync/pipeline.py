@@ -27,6 +27,7 @@ from mediasync.downloader import (
     get_metadata,
     get_playlist_metadata,
     is_playlist,
+    sanitize_title,
 )
 from mediasync.notion_client import Format, MediaEntry, NotionClient, Status
 from mediasync.playlist import generate_m3u, make_relative_keys
@@ -188,7 +189,7 @@ def _reconcile_single_metadata(
     title_value = meta.get("title", "untitled")
     if not isinstance(title_value, str):
         raise DownloadError("Metadata fetch returned an invalid title")
-    title = _sanitize_title(title_value)
+    title = sanitize_title(title_value)
     artist_value = meta.get("uploader") or meta.get("channel") or "Unknown"
     if not isinstance(artist_value, str):
         raise DownloadError("Metadata fetch returned an invalid artist")
@@ -296,7 +297,7 @@ def _reconcile_playlist_item(
     title_value = meta.get("title", "untitled")
     if not isinstance(title_value, str):
         raise DownloadError(f"Playlist metadata item {idx} has an invalid title")
-    title = _sanitize_title(title_value)
+    title = sanitize_title(title_value)
     artist_value = meta.get("uploader") or meta.get("channel") or "Unknown"
     if not isinstance(artist_value, str):
         raise DownloadError(f"Playlist metadata item {idx} has an invalid artist")
@@ -401,16 +402,6 @@ def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
     if len(final) != len(video_urls):
         return None
     return final
-
-
-def _sanitize_title(title: str) -> str:
-    """Remove filesystem-unsafe characters from title (mirrors downloader logic)."""
-    unsafe = '<>:"/\\|?*'
-    result = title
-    for ch in unsafe:
-        result = result.replace(ch, "")
-    result = " ".join(result.split())
-    return result[:200]
 
 
 def _process_entry(

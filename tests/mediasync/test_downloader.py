@@ -15,11 +15,11 @@ from mediasync.downloader import (
     _build_cmd,
     _discard_partials,
     _find_output,
-    _sanitize_title,
     cleanup_results,
     clear_metadata_cache,
     download,
     get_metadata,
+    sanitize_title,
 )
 from mediasync.notion_client import Format
 
@@ -242,20 +242,27 @@ class TestFindOutput:
 
 class TestSanitizeTitle:
     def test_removes_unsafe_chars(self):
-        assert _sanitize_title('Test: "Video" <1>') == "Test Video 1"
+        assert sanitize_title('Test: "Video" <1>') == "Test Video 1"
 
     def test_collapses_whitespace(self):
-        assert _sanitize_title("too   many    spaces") == "too many spaces"
+        assert sanitize_title("too   many    spaces") == "too many spaces"
 
     def test_truncates_long_titles(self):
         long_title = "A" * 300
-        assert len(_sanitize_title(long_title)) == 200
+        assert len(sanitize_title(long_title)) == 200
 
     def test_handles_empty_string(self):
-        assert _sanitize_title("") == ""
+        assert sanitize_title("") == ""
 
     def test_removes_path_separators(self):
-        assert _sanitize_title("path/to\\file") == "pathtofile"
+        assert sanitize_title("path/to\\file") == "pathtofile"
+
+    def test_pipeline_reconciles_with_the_same_sanitizer(self):
+        # Reconcile predicts the keys download() wrote; a drifted copy would
+        # miss existing files and re-download them.
+        from mediasync import pipeline
+
+        assert pipeline.sanitize_title is sanitize_title
 
 
 class TestIsPlaylist:
