@@ -11,6 +11,7 @@ Uses mutagen for m4a/mp4, best-effort (never fails the pipeline).
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,12 @@ def _tag_mp4(path: Path, title: str, artist: str) -> None:
     from mutagen.mp4 import MP4
 
     audio = MP4(str(path))
-    # Only fill in missing fields — don'\''t overwrite what yt-dlp embedded
-    if not audio.tags.get("\xa9nam"):
+    # Only fill in missing fields — don't overwrite what yt-dlp embedded.
+    # A file with no tag atom has tags=None; assigning a key creates one.
+    existing: Mapping[str, object] = audio.tags or {}
+    if not existing.get("\xa9nam"):
         audio["\xa9nam"] = [title]
-    if not audio.tags.get("\xa9ART"):
+    if not existing.get("\xa9ART"):
         audio["\xa9ART"] = [artist]
     audio.save()
     logger.debug("Tagged MP4 (fill-in): %s — %s", artist, title)

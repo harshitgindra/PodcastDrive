@@ -94,9 +94,6 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "config_provider",
-    "mediasync.cli",
-    "mediasync.migrate",
-    "mediasync.tagger",
     "orchestrator",
     "podcast_downloader",
     "podcast_sync",

@@ -74,7 +74,7 @@ def migrate(config: Config, *, dry_run: bool = False) -> dict[str, int]:
                 stats["failed"] += 1
 
     # Regenerate standing playlists
-    if not dry_run:
+    if storage is not None:  # None exactly when dry_run
         stats["playlists"] = generate_standing_playlists(config, notion, storage)
 
     logger.info(
@@ -132,6 +132,7 @@ def _migrate_entry(
                 new_keys.append(new_key)
                 moved_any = True
             else:
+                assert storage is not None, "storage is required unless dry_run"
                 success = _move_file(storage, key, new_key)
                 if success:
                     new_keys.append(new_key)

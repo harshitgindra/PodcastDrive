@@ -158,9 +158,9 @@ def _check_health(config: Config) -> int:
         from mediasync.s3_client import S3Client
 
         try:
-            client = S3Client(config.s3_bucket, config.s3_region)
+            s3 = S3Client(config.s3_bucket, config.s3_region)
             # Verify bucket access with a HEAD request
-            client._client.head_bucket(Bucket=config.s3_bucket)
+            s3._client.head_bucket(Bucket=config.s3_bucket)
             print(f"OK: S3 bucket '{config.s3_bucket}' accessible")
             return 0
         except Exception as exc:

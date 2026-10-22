@@ -80,6 +80,18 @@ class TestTagMp4:
         mock_mp4.__setitem__.assert_not_called()
         mock_mp4.save.assert_called_once()
 
+    def test_file_without_a_tag_atom_is_tagged(self):
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = None
+        with patch("mutagen.mp4.MP4", return_value=mock_mp4):
+            from mediasync.tagger import _tag_mp4
+
+            _tag_mp4(Path("/fake/song.m4a"), "My Song", "My Artist")
+
+        mock_mp4.__setitem__.assert_any_call("\xa9nam", ["My Song"])
+        mock_mp4.__setitem__.assert_any_call("\xa9ART", ["My Artist"])
+        mock_mp4.save.assert_called_once()
+
 
 class TestTagMp3:
     def test_fills_missing_title_and_artist(self):
