@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
-from utils import env_float, env_int, extract_playlist_id, parse_upload_date, retry_aws_call
+from utils import env_float, env_int, extract_playlist_id, parse_upload_date, podcast_slug, retry_aws_call
 
 # ---------------------------------------------------------------------------
 # retry_aws_call
@@ -258,3 +258,38 @@ class TestEnvFloat:
         with caplog.at_level("WARNING", logger="utils"):
             assert env_float("PD_TEST_FLOAT", 1.5) == 1.5
         assert "PD_TEST_FLOAT" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# podcast_slug
+# ---------------------------------------------------------------------------
+
+
+class TestPodcastSlug:
+    @pytest.mark.parametrize(
+        ("name", "slug"),
+        [
+            ("My Great Podcast", "my-great-podcast"),
+            ("Hello, World!", "hello-world"),
+            ("The Best One Yet!", "the-best-one-yet"),
+            ("  -test-  ", "test"),
+            ("", "podcast"),
+            ("!!!", "podcast"),
+        ],
+    )
+    def test_slugs(self, name, slug):
+        assert podcast_slug(name) == slug
+
+    def test_truncated_to_60(self):
+        assert len(podcast_slug("a" * 100)) == 60
+
+    def test_truncation_keeps_trailing_hyphen(self):
+        # Pinned: existing S3 prefixes were written with this exact slug.
+        assert podcast_slug("a " * 50) == "a-" * 30
+
+    def test_reset_and_sync_share_one_implementation(self):
+        import podcast_sync
+        import reset
+
+        assert podcast_sync.podcast_slug is podcast_slug
+        assert reset.podcast_slug is podcast_slug

@@ -16,38 +16,11 @@ from podcast_sync import (
     CDN_RETRY_OVERRIDES,
     _build_podcast_feed_xml,
     _format_duration,
-    _podcast_slug,
     _splice_attempts_for_cdn,
     detect_cdn,
     process_podcast_feed,
 )
 from s3_manager import ManifestUnavailableError, S3Manager
-
-# ---------------------------------------------------------------------------
-# _podcast_slug
-# ---------------------------------------------------------------------------
-
-
-class TestPodcastSlug:
-    def test_basic(self):
-        assert _podcast_slug("My Podcast") == "my-podcast"
-
-    def test_special_chars(self):
-        assert _podcast_slug("Hello, World!") == "hello-world"
-
-    def test_leading_trailing_hyphens_stripped(self):
-        slug = _podcast_slug("  -test-  ")
-        assert not slug.startswith("-")
-        assert not slug.endswith("-")
-
-    def test_max_length_60(self):
-        long_name = "a " * 50
-        assert len(_podcast_slug(long_name)) <= 60
-
-    def test_empty_name_returns_podcast(self):
-        assert _podcast_slug("") == "podcast"
-        assert _podcast_slug("!!!") == "podcast"
-
 
 # ---------------------------------------------------------------------------
 # _format_duration

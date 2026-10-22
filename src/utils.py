@@ -67,6 +67,18 @@ def retry_aws_call(
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9@._-]+$")
 
 
+def podcast_slug(name: str) -> str:
+    """Convert a podcast name to the slug naming its S3 prefix and cache dirs.
+
+    Existing S3 data lives under these slugs, so the output must stay stable:
+    truncating after the strip can leave a trailing hyphen, and that is kept.
+    """
+    slug = name.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug.strip("-")[:60]
+    return slug or "podcast"
+
+
 def _validate_playlist_id(playlist_id: str) -> str:
     """Validate that a playlist/channel ID contains only safe characters.
 

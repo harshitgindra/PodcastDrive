@@ -24,39 +24,6 @@ def _make_podcast(name: str, url: str = "https://example.com/feed.xml", enabled:
 
 
 # ---------------------------------------------------------------------------
-# _podcast_slug
-# ---------------------------------------------------------------------------
-
-
-class TestPodcastSlug:
-    def test_basic_slug(self):
-        from reset import _podcast_slug
-
-        assert _podcast_slug("My Great Podcast") == "my-great-podcast"
-
-    def test_special_chars_replaced(self):
-        from reset import _podcast_slug
-
-        assert _podcast_slug("The Best One Yet!") == "the-best-one-yet"
-
-    def test_slug_truncated_to_60(self):
-        from reset import _podcast_slug
-
-        long_name = "a" * 100
-        assert len(_podcast_slug(long_name)) == 60
-
-    def test_empty_name_returns_podcast(self):
-        from reset import _podcast_slug
-
-        assert _podcast_slug("") == "podcast"
-
-    def test_only_special_chars_returns_podcast(self):
-        from reset import _podcast_slug
-
-        assert _podcast_slug("!!!") == "podcast"
-
-
-# ---------------------------------------------------------------------------
 # _collect_slugs
 # ---------------------------------------------------------------------------
 

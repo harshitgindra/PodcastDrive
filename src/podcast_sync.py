@@ -48,6 +48,7 @@ from podcast_downloader import (
 )
 from rss_generator import xml_safe
 from s3_manager import ManifestUnavailableError, S3Manager
+from utils import podcast_slug
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -66,21 +67,6 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _podcast_slug(name: str) -> str:
-    """Convert a podcast name to a filesystem/S3-safe slug.
-
-    Args:
-        name: Human-readable podcast name.
-
-    Returns:
-        Lowercased, hyphen-separated slug, e.g. ``"my-podcast"``.
-    """
-    slug = name.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")[:60]
-    return slug or "podcast"
 
 
 def _format_duration(seconds: int) -> str:
@@ -334,7 +320,7 @@ def process_podcast_feed(
     if max_episodes is None:
         max_episodes = settings.get("PODCAST_MAX_EPISODES")
 
-    slug = _podcast_slug(podcast.name)
+    slug = podcast_slug(podcast.name)
     tmp_dir = tempfile.mkdtemp(prefix=f"podcast-{slug}-")
     _run_start = time.monotonic()
 

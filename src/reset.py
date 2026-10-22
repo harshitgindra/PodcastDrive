@@ -14,20 +14,12 @@ Usage (via run.sh):
 from __future__ import annotations
 
 import logging
-import re
 import sys
 
 import settings
+from utils import podcast_slug
 
 logger = logging.getLogger(__name__)
-
-
-def _podcast_slug(name: str) -> str:
-    """Convert a podcast name to a filesystem/S3-safe slug (mirrors podcast_sync.py)."""
-    slug = name.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")[:60]
-    return slug or "podcast"
 
 
 def _collect_slugs() -> list[tuple[str, str]]:
@@ -66,7 +58,7 @@ def _collect_slugs() -> list[tuple[str, str]]:
         for podcast in rss_podcasts:
             if not podcast.enabled:
                 continue
-            slug = _podcast_slug(podcast.name)
+            slug = podcast_slug(podcast.name)
             slugs.append((podcast.name, slug))
     except Exception as exc:
         logger.warning("[Reset] Could not load RSS Podcast config: %s", exc)
