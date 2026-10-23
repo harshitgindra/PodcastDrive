@@ -1291,6 +1291,13 @@ class TestSpliceAttemptsForCdn:
         monkeypatch.setenv("SPLICE_MAX_ATTEMPTS_PER_RUN", "1")
         assert _splice_attempts_for_cdn("megaphone") == CDN_RETRY_OVERRIDES["megaphone"]
 
+    @pytest.mark.parametrize("value", ["0", "-3"])
+    def test_at_least_one_attempt_so_the_episode_is_downloaded(self, monkeypatch, value):
+        # The first attempt is the only download; 0 left cleaned_path None and
+        # crashed the episode at os.path.getsize(None).
+        monkeypatch.setenv("SPLICE_MAX_ATTEMPTS_PER_RUN", value)
+        assert _splice_attempts_for_cdn("unknown") == 1
+
 
 class TestCdnTagInManifest:
     """The detected CDN tag is persisted to the manifest for observability."""

@@ -1,5 +1,6 @@
 """S3 storage and CloudFront invalidation for YouTube Playlist to Podcast."""
 
+import functools
 import json
 import logging
 import ssl
@@ -7,6 +8,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 import boto3
 import certifi
@@ -66,7 +68,7 @@ class S3Manager:
         self.bucket = bucket
         self.playlist_id = playlist_id
         self.s3_client = boto3.client("s3")
-        self._cf_client = None
+        self._cf_client: Any = None
         self._distribution_id = settings.get("CLOUDFRONT_DISTRIBUTION_ID")
         self._lifecycle_days_set: int | None = None  # cache to skip redundant PUTs
         # False once a manifest was found but could not be read: save_manifest
@@ -439,9 +441,10 @@ class S3Manager:
                 continue
             delete_keys = [{"Key": obj["Key"]} for obj in objects]
             response = retry_aws_call(
-                lambda keys=delete_keys: self.s3_client.delete_objects(
+                functools.partial(
+                    self.s3_client.delete_objects,
                     Bucket=self.bucket,
-                    Delete={"Objects": keys, "Quiet": True},
+                    Delete={"Objects": delete_keys, "Quiet": True},
                 ),
                 label="s3.delete_objects[reset-episodes]",
             )

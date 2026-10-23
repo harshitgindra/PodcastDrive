@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import boto3
 import botocore.exceptions
@@ -38,7 +39,7 @@ def _ok(msg: str) -> None:
     print(f"  {_GREEN}✅  {msg}{_RESET}")
 
 
-def _fail(msg: str) -> None:
+def _fail(msg: str) -> NoReturn:
     print(f"  {_RED}❌  {msg}{_RESET}")
     sys.exit(1)
 

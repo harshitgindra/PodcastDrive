@@ -12,6 +12,7 @@ import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC
+from typing import Any
 
 import certifi
 
@@ -191,7 +192,7 @@ class NotionConfigProvider(ConfigProvider):
             "Content-Type": "application/json",
         }
 
-        podcasts = []
+        podcasts: list[PodcastConfig] = []
         has_more = True
         start_cursor = None
         # Notion returns has_more=True with a null next_cursor under some error
@@ -202,7 +203,7 @@ class NotionConfigProvider(ConfigProvider):
 
         while has_more and page_num < _MAX_NOTION_PAGES:
             page_num += 1
-            body = {}
+            body: dict[str, Any] = {}
             if start_cursor:
                 body["start_cursor"] = start_cursor
 
@@ -435,7 +436,7 @@ class NotionConfigProvider(ConfigProvider):
         now = datetime.now(UTC).isoformat()
         runner = settings.get("RUNNER")
 
-        properties = {
+        properties: dict[str, Any] = {
             "LastUpdated": {
                 "date": {
                     "start": now,

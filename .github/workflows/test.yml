@@ -34,7 +34,7 @@ jobs:
           python-version: "3.13"
           cache: "pip"
       # mypy resolves imports against the installed runtime dependencies.
-      # Scope and the per-module ratchet live in pyproject.toml [tool.mypy].
+      # Scope and settings live in pyproject.toml [tool.mypy].
       - name: Install dependencies and mypy
         run: pip install -r requirements.txt "mypy==2.4.0" "types-PyYAML==6.0.12.20260906"
       - name: Run mypy

@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import NoReturn
+from typing import NoReturn, Protocol
 
 import certifi
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -47,7 +47,11 @@ _DEFAULT_MAX_FEED_BYTES = 32 * 1024 * 1024  # 32 MiB — the largest real feeds 
 _DEFAULT_MAX_JSON_BYTES = 8 * 1024 * 1024  # 8 MiB — iTunes lookup/search responses
 
 
-def read_capped(resp: object, limit: int, what: str) -> bytes:
+class _Readable(Protocol):
+    def read(self, size: int, /) -> bytes: ...
+
+
+def read_capped(resp: _Readable, limit: int, what: str) -> bytes:
     """Read at most *limit* bytes from *resp*, raising if the body is larger.
 
     ``resp.read()`` with no argument buffers the entire response in memory, so a
@@ -375,7 +379,7 @@ _NS = {
 }
 
 
-def _parse_duration(raw: str) -> int:
+def _parse_duration(raw: str | None) -> int:
     """Parse an iTunes duration string (HH:MM:SS, MM:SS, or seconds) to int."""
     if not raw:
         return 0

@@ -104,10 +104,14 @@ def detect_cdn(url: str) -> str:
 
 
 def _splice_attempts_for_cdn(cdn: str) -> int:
-    """Resolve the max fresh-download splice-retry attempts for a CDN tag."""
+    """Resolve the max fresh-download splice-retry attempts for a CDN tag.
+
+    At least 1: the first attempt is also the only download, so 0 would leave
+    the episode with no audio file at all.
+    """
     if cdn in CDN_RETRY_OVERRIDES:
-        return CDN_RETRY_OVERRIDES[cdn]
-    return settings.get("SPLICE_MAX_ATTEMPTS_PER_RUN")
+        return max(1, CDN_RETRY_OVERRIDES[cdn])
+    return max(1, settings.get("SPLICE_MAX_ATTEMPTS_PER_RUN"))
 
 
 def _build_podcast_feed_xml(
@@ -833,6 +837,9 @@ def process_podcast_feed(
                         "cdn": cdn,
                     }
 
+                if cleaned_path is None:
+                    raise RuntimeError(f"No audio file was produced for {ep_id}")
+
                 # Evaluate ad removal quality on the cleaned file (opt-in via env var)
                 if cleaned_path != original_path:
                     try:
@@ -1076,12 +1083,8 @@ def process_podcast_feed(
                 key=lambda x: x[0].pub_date,
                 reverse=True,
             )
-            if pairs:
-                feed_episodes, feed_ep_ids = zip(*pairs, strict=True)
-                feed_episodes = list(feed_episodes)
-                feed_ep_ids = list(feed_ep_ids)
-            else:
-                feed_episodes, feed_ep_ids = [], []
+            feed_episodes = [ep for ep, _ in pairs]
+            feed_ep_ids = [eid for _, eid in pairs]
 
             # Use manifest for file sizes (avoids N head_object calls).
             # Fall back to head_object only for episodes missing from manifest.

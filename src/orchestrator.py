@@ -18,6 +18,7 @@ nonzero exit after all configured sources have been processed.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sys
@@ -306,11 +307,12 @@ def run_youtube_sources(*, dry_run: bool) -> bool:
         _, ok = run_one(
             name=podcast.name,
             identifier_key="playlist_id",
-            pipeline=lambda p=podcast, u=url: process_playlist(
-                u,
-                max_downloads=p.max_downloads,
-                max_age_days=p.max_age_days,
-                sleep_between=p.sleep_between,
+            pipeline=functools.partial(
+                process_playlist,
+                url,
+                max_downloads=podcast.max_downloads,
+                max_age_days=podcast.max_age_days,
+                sleep_between=podcast.sleep_between,
                 dry_run=dry_run,
             ),
             provider=provider,
@@ -347,7 +349,7 @@ def run_rss_sources(*, dry_run: bool) -> bool:
         _, ok = run_one(
             name=podcast.name,
             identifier_key="slug",
-            pipeline=lambda p=podcast: process_podcast_feed(p, provider=provider, dry_run=dry_run),
+            pipeline=functools.partial(process_podcast_feed, podcast, provider=provider, dry_run=dry_run),
             provider=provider,
             podcast=podcast,
             dry_run=dry_run,
