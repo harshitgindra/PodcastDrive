@@ -22,6 +22,7 @@ import logging
 import ssl
 import threading
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,6 +46,13 @@ NOTION_VERSION = "2022-06-28"
 #: client-side avoids spending retries on 429s in the first place.
 MIN_REQUEST_INTERVAL_SECS = 0.34
 REQUEST_ATTEMPTS = 3
+
+#: Notion rejects a rich_text segment longer than this (counted in UTF-16 code
+#: units) with HTTP 400.
+RICH_TEXT_SEGMENT_LIMIT = 2000
+#: Page reads return at most this many rich_text segments per property, so a
+#: longer value would be silently truncated on the next read.
+RICH_TEXT_READ_SEGMENT_LIMIT = 25
 
 
 class NotionError(RuntimeError):
@@ -189,11 +197,17 @@ class NotionClient:
             "Status": {"select": {"name": status.value}},
         }
         if file_key is not None:
-            properties["File Key"] = {"rich_text": [{"text": {"content": file_key}}]}
+            segments = _split_rich_text(file_key)
+            if len(segments) > RICH_TEXT_READ_SEGMENT_LIMIT:
+                raise NotionError(
+                    f"File Key for Notion page {page_id} is {len(file_key)} chars; "
+                    f"more than {RICH_TEXT_READ_SEGMENT_LIMIT} segments cannot be read back intact"
+                )
+            properties["File Key"] = {"rich_text": [{"text": {"content": seg}} for seg in segments]}
         if duration is not None:
             properties["Duration"] = {"number": duration}
         if error is not None:
-            properties["Error"] = {"rich_text": [{"text": {"content": error[:2000]}}]}
+            properties["Error"] = {"rich_text": [{"text": {"content": _split_rich_text(error)[0]}}]}
         if status == Status.DONE:
             properties["Processed At"] = {"date": {"start": datetime.now(timezone.utc).isoformat()}}
 
@@ -350,10 +364,7 @@ class NotionClient:
         except (KeyError, TypeError, ValueError):
             return None
 
-        file_key = ""
-        file_key_prop = props.get("File Key", {})
-        if file_key_prop.get("rich_text"):
-            file_key = file_key_prop["rich_text"][0]["plain_text"]
+        file_key = "".join(seg.get("plain_text", "") for seg in props.get("File Key", {}).get("rich_text") or [])
 
         # Priority is optional (number column, nullable)
         priority = None
@@ -417,7 +428,7 @@ class NotionClient:
         try:
             return self._send("POST", url, payload, idempotent=idempotent)
         except Exception as exc:
-            logger.error("Notion POST %s failed: %s", url, exc)
+            logger.error("Notion POST %s failed: %s", url, _describe_error(exc))
             return None
 
     def _get(self, url: str) -> dict[str, Any] | None:
@@ -425,7 +436,7 @@ class NotionClient:
         try:
             return self._send("GET", url)
         except Exception as exc:
-            logger.warning("Notion GET %s failed: %s", url, exc)
+            logger.warning("Notion GET %s failed: %s", url, _describe_error(exc))
             return None
 
     def _patch(self, url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -433,5 +444,32 @@ class NotionClient:
         try:
             return self._send("PATCH", url, payload)
         except Exception as exc:
-            logger.error("Notion PATCH %s failed: %s", url, exc)
+            logger.error("Notion PATCH %s failed: %s", url, _describe_error(exc))
             return None
+
+
+def _split_rich_text(text: str) -> list[str]:
+    """Split text into segments Notion accepts; joining them restores the text."""
+    segments: list[str] = []
+    current: list[str] = []
+    units = 0
+    for char in text:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if units + width > RICH_TEXT_SEGMENT_LIMIT:
+            segments.append("".join(current))
+            current, units = [], 0
+        current.append(char)
+        units += width
+    segments.append("".join(current))
+    return segments
+
+
+def _describe_error(exc: Exception) -> str:
+    """Include Notion's response body: a bare "400: Bad Request" hides which field was rejected."""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return str(exc)
+    try:
+        body = exc.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        body = ""
+    return f"{exc} — {body[:1000]}" if body else str(exc)

@@ -476,3 +476,100 @@ class TestCreateIsNotDuplicated:
 
         assert page_id == "new"
         assert mock_open.call_count == 2
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _as_response_page(props: dict) -> dict:
+    """Turn update_status' request properties into the shape Notion returns on read."""
+    file_key_segments = props["File Key"]["rich_text"]
+    return {
+        "id": "page-789",
+        "properties": {
+            "Name": {"type": "title", "title": [{"plain_text": "https://music.youtube.com/playlist?list=PL1"}]},
+            "Profile": {"type": "select", "select": {"name": "Harshit"}},
+            "Format": {"type": "select", "select": {"name": "audio"}},
+            "Status": {"type": "select", "select": props["Status"]["select"]},
+            "Delete": {"type": "checkbox", "checkbox": False},
+            "File Key": {
+                "type": "rich_text",
+                "rich_text": [{"plain_text": seg["text"]["content"]} for seg in file_key_segments],
+            },
+        },
+    }
+
+
+class TestRichTextLimits:
+    """Notion rejects (HTTP 400) any rich_text segment over 2000 characters.
+
+    A 100-item playlist joins 100 storage keys into File Key (~12.5k chars in the
+    2026-10-27/28 MediaSync runs), so marking the row done failed on every run.
+    """
+
+    @pytest.fixture
+    def playlist_keys(self):
+        return "; ".join(
+            f"MediaSync/Harshit/audio/Channel {i}/A Fairly Long Song Title Number {i}.m4a" for i in range(100)
+        )
+
+    def test_long_file_key_is_split_into_segments_within_the_limit(self, client, playlist_keys):
+        assert len(playlist_keys) > 2000
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
+            client.update_status("page-123", Status.DONE, file_key=playlist_keys, duration=1)
+
+        segments = mock_patch.call_args[0][1]["properties"]["File Key"]["rich_text"]
+        assert len(segments) > 1
+        assert all(_utf16_len(seg["text"]["content"]) <= 2000 for seg in segments)
+        assert "".join(seg["text"]["content"] for seg in segments) == playlist_keys
+
+    def test_segments_respect_the_limit_for_non_bmp_characters(self, client):
+        # Notion counts UTF-16 code units: an emoji is 2, so 2000 code points of emoji is 4000.
+        key = "MediaSync/Harshit/audio/🎵 Song 🎶.m4a; " * 300
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
+            client.update_status("page-123", Status.DONE, file_key=key)
+
+        segments = mock_patch.call_args[0][1]["properties"]["File Key"]["rich_text"]
+        assert all(_utf16_len(seg["text"]["content"]) <= 2000 for seg in segments)
+        assert "".join(seg["text"]["content"] for seg in segments) == key
+
+    def test_error_with_non_bmp_characters_is_truncated_within_the_limit(self, client):
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
+            client.update_status("page-123", Status.FAILED, error="🎵" * 1500)
+
+        segments = mock_patch.call_args[0][1]["properties"]["Error"]["rich_text"]
+        assert len(segments) == 1
+        assert _utf16_len(segments[0]["text"]["content"]) <= 2000
+
+    def test_file_key_too_long_to_read_back_is_refused_before_sending(self, client):
+        # Page reads return at most 25 rich_text segments; writing more would be
+        # silently truncated on the next read and orphan files from deletion.
+        with patch.object(client, "_patch") as mock_patch:
+            with pytest.raises(NotionError, match="File Key"):
+                client.update_status("page-123", Status.DONE, file_key="k" * (25 * 2000 + 1))
+
+        mock_patch.assert_not_called()
+
+    def test_multi_segment_file_key_is_read_back_whole(self, client, playlist_keys):
+        with patch.object(client, "_patch", return_value={"id": "page-123"}) as mock_patch:
+            client.update_status("page-123", Status.DONE, file_key=playlist_keys)
+
+        entry = client._parse_page(_as_response_page(mock_patch.call_args[0][1]["properties"]))
+
+        assert entry is not None
+        assert entry.file_key == playlist_keys
+
+    def test_rejected_patch_logs_notion_error_message(self, client, caplog):
+        body = json.dumps(
+            {"code": "validation_error", "message": "body.properties.File Key ... should be ≤ `2000`"},
+            ensure_ascii=False,
+        )
+        error = urllib.error.HTTPError("https://api.notion.com/v1/pages/p1", 400, "Bad Request", {}, None)
+        error.read = MagicMock(return_value=body.encode())  # type: ignore[method-assign]
+
+        with patch("urllib.request.urlopen", side_effect=error):
+            assert client._patch("https://api.notion.com/v1/pages/p1", {}) is None
+
+        assert "validation_error" in caplog.text
+        assert "should be ≤ `2000`" in caplog.text
