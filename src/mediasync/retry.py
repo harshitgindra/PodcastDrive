@@ -11,12 +11,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypeVar
 
-from retry import is_transient_download_error, retry_call
+from retry import is_media_forbidden_error, is_transient_download_error, retry_call
 
 __all__ = [
     "DEFAULT_BASE_DELAY",
     "DEFAULT_MAX_DELAY",
     "DEFAULT_MAX_RETRIES",
+    "is_media_forbidden_error",
     "is_transient_download_error",
     "retry_on_error",
 ]

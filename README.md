@@ -643,10 +643,14 @@ installed, yt-dlp still offers those formats and even serves a short range probe
 so the failure appears only on the real download. The video is fine; the URL is
 refused.
 
-The downloader handles it automatically by re-extracting with the clients in
+Both download paths handle it automatically by re-extracting with the clients in
 `YTDLP_FALLBACK_PLAYER_CLIENTS` (default `mweb`), which offers a progressive
 format that needs no token. The fallback costs bandwidth: it is a combined
 audio+video stream, so roughly 3x the bytes for the same MP3.
+
+MediaSync shares the same knob. It has no extra Notion status (its schema has only
+pending/downloading/done/failed), so a row that exhausts every client goes to
+**failed** with the 403 and the clients tried spelled out in the error field.
 
 If the fallback stops working, in order of preference:
 

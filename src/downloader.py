@@ -24,7 +24,7 @@ from tenacity import (
 import settings
 from retry import is_media_forbidden_error, is_transient_download_error
 from ytdlp_cookies import inject_cookies
-from ytdlp_runtime import inject_remote_components
+from ytdlp_runtime import fallback_player_clients, inject_remote_components
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,6 @@ class MediaForbiddenError(DownloadError):
     answers 403 for the actual download. Callers surface it as its own status so
     the run does not read as an ordinary, mysterious failure.
     """
-
-
-#: yt-dlp player clients tried, in order, after a 403. See the setting docs.
-FALLBACK_CLIENTS_ENV = "YTDLP_FALLBACK_PLAYER_CLIENTS"
 
 
 def _ensure_ffmpeg_on_path() -> None:
@@ -122,12 +118,6 @@ def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -
         raise DownloadError(f"Failed to download/convert {video_id}: {exc}") from exc
 
 
-def _fallback_player_clients() -> list[str]:
-    """Return the yt-dlp player clients to try after a 403, in order."""
-    raw = settings.get(FALLBACK_CLIENTS_ENV)
-    return [part.strip() for part in raw.split(",") if part.strip()]
-
-
 def _discard(path: str) -> None:
     """Delete *path* if it exists, ignoring any error."""
     if os.path.exists(path):
@@ -163,7 +153,7 @@ def _download_with_client_fallback(
     """
     last_exc: DownloadError | None = None
 
-    for client in [None, *_fallback_player_clients()]:
+    for client in [None, *fallback_player_clients()]:
         opts = dict(base_opts)
         if client is not None:
             opts["extractor_args"] = {"youtube": {"player_client": [client]}}
@@ -185,7 +175,7 @@ def _download_with_client_fallback(
             logger.info("%s: downloaded using fallback player_client=%s", video_id, client)
         return
 
-    tried = ", ".join(_fallback_player_clients()) or "no fallback configured"
+    tried = ", ".join(fallback_player_clients()) or "no fallback configured"
     raise MediaForbiddenError(
         f"YouTube refused the media URL for {video_id} (HTTP 403) on the default player "
         f"client and on every fallback ({tried}): {last_exc}"

@@ -86,3 +86,33 @@ def remote_component_args() -> list[str]:
         )
         return []
     return ["--remote-components", ",".join(components)]
+
+
+#: Environment variable listing the yt-dlp player clients to try after a 403.
+#: Comma-separated and ordered; an empty value disables the fallback.
+FALLBACK_CLIENTS_ENV = "YTDLP_FALLBACK_PLAYER_CLIENTS"
+
+
+def fallback_player_clients() -> list[str]:
+    """Return the yt-dlp player clients to try after a 403, in order.
+
+    YouTube binds some clients' media URLs to a per-video GVS PO token. Without
+    a token provider those URLs come back ``HTTP Error 403: Forbidden`` even
+    though the video is fine, so both download paths re-extract with a client
+    that needs no token. Shared here so the podcast pipeline and MediaSync
+    honour the same knob.
+
+    Returns:
+        List of client names, possibly empty.
+    """
+    raw = settings.get(FALLBACK_CLIENTS_ENV)
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def player_client_args(client: str) -> list[str]:
+    """Return the ``--extractor-args`` CLI flags pinning yt-dlp to *client*.
+
+    The library-based callers pass ``extractor_args`` in the options dict;
+    anything shelling out to the ``yt-dlp`` binary needs the equivalent argv.
+    """
+    return ["--extractor-args", f"youtube:player_client={client}"]

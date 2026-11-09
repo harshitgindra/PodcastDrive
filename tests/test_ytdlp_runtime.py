@@ -11,9 +11,12 @@ import pytest
 
 from ytdlp_runtime import (
     DEFAULT_REMOTE_COMPONENTS,
+    FALLBACK_CLIENTS_ENV,
     REMOTE_COMPONENTS_ENV,
+    fallback_player_clients,
     get_remote_components,
     inject_remote_components,
+    player_client_args,
 )
 
 
@@ -94,3 +97,29 @@ class TestInjectRemoteComponents:
         inject_remote_components(opts)
         with yt_dlp.YoutubeDL(opts) as ydl:
             assert ydl.params["remote_components"] == {"ejs:github"}
+
+
+class TestFallbackPlayerClients:
+    """Both download paths read the same knob, so it is tested once here."""
+
+    def test_defaults_to_mweb_when_unset(self, monkeypatch):
+        monkeypatch.delenv(FALLBACK_CLIENTS_ENV, raising=False)
+        assert fallback_player_clients() == ["mweb"]
+
+    def test_comma_separated_list_keeps_order(self, monkeypatch):
+        monkeypatch.setenv(FALLBACK_CLIENTS_ENV, "tv,mweb")
+        assert fallback_player_clients() == ["tv", "mweb"]
+
+    def test_whitespace_and_empty_entries_are_stripped(self, monkeypatch):
+        monkeypatch.setenv(FALLBACK_CLIENTS_ENV, " tv , , mweb ")
+        assert fallback_player_clients() == ["tv", "mweb"]
+
+    @pytest.mark.parametrize("value", ["", "   ", ",", " , "])
+    def test_empty_value_disables_the_fallback(self, monkeypatch, value):
+        monkeypatch.setenv(FALLBACK_CLIENTS_ENV, value)
+        assert fallback_player_clients() == []
+
+
+class TestPlayerClientArgs:
+    def test_renders_extractor_args_for_subprocess_callers(self):
+        assert player_client_args("mweb") == ["--extractor-args", "youtube:player_client=mweb"]

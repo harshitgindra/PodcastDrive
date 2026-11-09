@@ -11,6 +11,7 @@ from mediasync.downloader import (
     DownloadError,
     DownloadResult,
     DurationExceededError,
+    MediaForbiddenError,
     MissingDownloadError,
     _build_cmd,
     _discard_partials,
@@ -770,3 +771,160 @@ class TestPartialDownloadCleanup:
         real.write_bytes(b"real")
 
         assert _find_output(tmp_path / "Song.m4a") == real
+
+
+class TestForbiddenMediaClientFallback:
+    """A GVS PO-token 403 is retried with another yt-dlp player client."""
+
+    META = {"title": "Song", "duration": 60, "uploader": "A", "thumbnail": ""}
+
+    def _runner(self, tmp_path, *, forbidden_clients, calls):
+        """Return a subprocess.run double that 403s for selected clients.
+
+        *forbidden_clients* holds player-client names (``None`` for yt-dlp's own
+        choice) whose media download is refused; anything else succeeds and
+        writes the output file.
+        """
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            if "--dump-json" in cmd:
+                result.returncode = 0
+                result.stdout = json.dumps(self.META)
+                return result
+
+            client = None
+            for idx, arg in enumerate(cmd):
+                if arg == "--extractor-args":
+                    client = cmd[idx + 1].split("=", 1)[1]
+            calls.append(client)
+
+            if client in forbidden_clients:
+                (tmp_path / "Song.m4a.part").write_bytes(b"partial")
+                result.returncode = 1
+                result.stderr = "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+                return result
+
+            out = cmd[cmd.index("-o") + 1]
+            Path(out).write_bytes(b"audio")
+            result.returncode = 0
+            result.stderr = ""
+            return result
+
+        return mock_run
+
+    def _download(self, tmp_path):
+        return download(
+            "https://youtube.com/watch?v=abc",
+            Format.AUDIO,
+            output_dir=str(tmp_path),
+            max_duration_secs=7200,
+        )
+
+    def test_default_client_403_recovers_with_fallback(self, tmp_path):
+        calls: list[str | None] = []
+        with (
+            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch("subprocess.run", side_effect=self._runner(tmp_path, forbidden_clients={None}, calls=calls)),
+        ):
+            results = self._download(tmp_path)
+
+        assert calls == [None, "mweb"]
+        assert results[0].path.name == "Song.m4a"
+
+    def test_fallback_client_is_pinned_on_the_command_line(self, tmp_path):
+        cmd = _build_cmd("https://youtube.com/watch?v=abc", "audio", "/tmp/out.m4a", player_client="mweb")
+        assert "--extractor-args" in cmd
+        assert cmd[cmd.index("--extractor-args") + 1] == "youtube:player_client=mweb"
+
+    def test_no_player_client_pinned_by_default(self, tmp_path):
+        cmd = _build_cmd("https://youtube.com/watch?v=abc", "audio", "/tmp/out.m4a")
+        assert "--extractor-args" not in cmd
+
+    def test_clients_are_tried_in_configured_order(self, tmp_path):
+        calls: list[str | None] = []
+        with (
+            patch(
+                "mediasync.downloader.fallback_player_clients",
+                return_value=["tv", "mweb"],
+            ),
+            patch(
+                "subprocess.run",
+                side_effect=self._runner(tmp_path, forbidden_clients={None, "tv"}, calls=calls),
+            ),
+        ):
+            results = self._download(tmp_path)
+
+        assert calls == [None, "tv", "mweb"]
+        assert results[0].path.name == "Song.m4a"
+
+    def test_all_clients_forbidden_raises_media_forbidden(self, tmp_path):
+        calls: list[str | None] = []
+        with (
+            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch(
+                "subprocess.run",
+                side_effect=self._runner(tmp_path, forbidden_clients={None, "mweb"}, calls=calls),
+            ),
+            pytest.raises(MediaForbiddenError) as excinfo,
+        ):
+            self._download(tmp_path)
+
+        assert calls == [None, "mweb"]
+        assert "403" in str(excinfo.value)
+        assert "mweb" in str(excinfo.value)
+
+    def test_media_forbidden_is_a_download_error(self, tmp_path):
+        """The pipeline catches DownloadError, so the Notion row still fails cleanly."""
+        assert issubclass(MediaForbiddenError, DownloadError)
+
+    def test_no_fallback_configured_is_named_in_the_message(self, tmp_path):
+        with (
+            patch("mediasync.downloader.fallback_player_clients", return_value=[]),
+            patch(
+                "subprocess.run",
+                side_effect=self._runner(tmp_path, forbidden_clients={None}, calls=[]),
+            ),
+            pytest.raises(MediaForbiddenError) as excinfo,
+        ):
+            self._download(tmp_path)
+
+        assert "no fallback configured" in str(excinfo.value)
+
+    def test_partials_are_discarded_between_clients(self, tmp_path):
+        with (
+            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch(
+                "subprocess.run",
+                side_effect=self._runner(tmp_path, forbidden_clients={None}, calls=[]),
+            ),
+        ):
+            self._download(tmp_path)
+
+        assert not list(tmp_path.glob("*.part"))
+
+    def test_non_403_failure_is_not_retried_with_another_client(self, tmp_path):
+        """A real failure must surface at once instead of burning every client."""
+        calls: list[str | None] = []
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            if "--dump-json" in cmd:
+                result.returncode = 0
+                result.stdout = json.dumps(self.META)
+                return result
+            calls.append(cmd)
+            result.returncode = 1
+            result.stderr = "ERROR: Video unavailable"
+            return result
+
+        with (
+            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch("mediasync.downloader.retry_on_error", side_effect=lambda fn, **kw: fn()),
+            patch("subprocess.run", side_effect=mock_run),
+            pytest.raises(DownloadError) as excinfo,
+        ):
+            self._download(tmp_path)
+
+        assert not isinstance(excinfo.value, MediaForbiddenError)
+        assert len(calls) == 1

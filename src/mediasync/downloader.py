@@ -18,7 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mediasync.notion_client import Format
-from mediasync.retry import is_transient_download_error, retry_on_error
+from mediasync.retry import (
+    is_media_forbidden_error,
+    is_transient_download_error,
+    retry_on_error,
+)
 
 # Shared yt-dlp runtime wiring, deliberately imported from the top-level
 # package. MediaSync otherwise has no dependency on the podcast pipeline, but
@@ -27,7 +31,7 @@ from mediasync.retry import is_transient_download_error, retry_on_error
 # downloads silently degraded to storyboard-only formats on any host whose
 # challenge-solver cache had not already been warmed by the podcast pipeline.
 from ytdlp_cookies import cookie_args
-from ytdlp_runtime import remote_component_args
+from ytdlp_runtime import fallback_player_clients, player_client_args, remote_component_args
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,17 @@ class MissingDownloadError(DownloadError):
 
 class DurationExceededError(DownloadError):
     """Raised when video exceeds the configured max duration."""
+
+
+class MediaForbiddenError(DownloadError):
+    """Raised when YouTube refuses to serve the media URL itself (HTTP 403).
+
+    Neither the video nor the network is at fault: the format URL the extractor
+    handed back is bound to a per-video GVS PO token this deployment has no
+    provider for, so googlevideo answers 403 for the real download even though
+    metadata and a short range probe both succeed. The message names every
+    player client that was tried so the Notion row says what actually happened.
+    """
 
 
 @dataclass
@@ -389,33 +404,14 @@ def _download_single(
             ext = "m4a" if dl_format == "audio" else "mp4"
             output_path = os.path.join(output_dir, f"{stem}.{ext}")
 
-            cmd = _build_cmd(url, dl_format, output_path)
             logger.info("Downloading %s as %s \u2192 %s", url, dl_format, output_path)
-
-            attempt_count = [0]
-
-            # Loop variables are bound as defaults rather than captured: the
-            # closure is only invoked within this iteration today, but a late
-            # binding here would silently retry the *wrong* format.
-            def _run_download(
-                _cmd: list[str] = cmd,
-                _dl_format: str = dl_format,
-                _attempts: list[int] = attempt_count,
-            ) -> subprocess.CompletedProcess:
-                # Clean up partials from a previous failed attempt (not first try)
-                if _attempts[0] > 0:
-                    _discard_partials(output_dir, stem)
-                _attempts[0] += 1
-                proc = subprocess.run(_cmd, capture_output=True, text=True, timeout=3600)
-                if proc.returncode != 0:
-                    raise DownloadError(f"yt-dlp failed ({_dl_format}): {proc.stderr[:500]}")
-                return proc
-
-            retry_on_error(
-                _run_download,
+            _download_format_with_client_fallback(
+                url,
+                dl_format,
+                output_path,
+                output_dir=output_dir,
+                stem=stem,
                 max_retries=max_retries,
-                retryable=is_transient_download_error,
-                description=f"download {dl_format} for {url}",
             )
 
             actual_path = _find_output(Path(output_path))
@@ -486,12 +482,102 @@ def _download_playlist(
     return results
 
 
-def _build_cmd(url: str, fmt: str, output: str) -> list[str]:
-    """Build yt-dlp command for the given format."""
+def _download_format_with_client_fallback(
+    url: str,
+    dl_format: str,
+    output_path: str,
+    *,
+    output_dir: str,
+    stem: str,
+    max_retries: int,
+) -> None:
+    """Download one format, switching yt-dlp player client after a 403.
+
+    YouTube is rolling out an experiment that binds googlevideo URLs to a GVS
+    PO token per video for some player clients. With no token provider installed
+    the extractor still offers those formats and a range probe even succeeds,
+    but the real download comes back ``HTTP Error 403: Forbidden``. Repeating
+    the identical request is useless, so the inner retry treats a 403 as
+    permanent and this loop re-extracts with each configured fallback client,
+    which yields a format that needs no token.
+
+    Raises:
+        MediaForbiddenError: Every client ended in a 403.
+        DownloadError: Any other download failure, from the first client that
+            hit it. A non-403 failure is not retried with another client.
+    """
+    last_exc: DownloadError | None = None
+
+    for client in [None, *fallback_player_clients()]:
+        cmd = _build_cmd(url, dl_format, output_path, player_client=client)
+        if client is not None:
+            logger.warning(
+                "%s: media URL refused (403) - retrying with yt-dlp player_client=%s",
+                url,
+                client,
+            )
+
+        attempt_count = [0]
+
+        # Loop variables are bound as defaults rather than captured: a late
+        # binding here would silently retry the *wrong* command or format.
+        def _run_download(
+            _cmd: list[str] = cmd,
+            _dl_format: str = dl_format,
+            _attempts: list[int] = attempt_count,
+        ) -> subprocess.CompletedProcess:
+            # Clean up partials from a previous failed attempt (not first try)
+            if _attempts[0] > 0:
+                _discard_partials(output_dir, stem)
+            _attempts[0] += 1
+            proc = subprocess.run(_cmd, capture_output=True, text=True, timeout=3600)
+            if proc.returncode != 0:
+                raise DownloadError(f"yt-dlp failed ({_dl_format}): {proc.stderr[:500]}")
+            return proc
+
+        try:
+            retry_on_error(
+                _run_download,
+                max_retries=max_retries,
+                retryable=is_transient_download_error,
+                description=f"download {dl_format} for {url}",
+            )
+        except DownloadError as exc:
+            last_exc = exc
+            if not is_media_forbidden_error(exc):
+                raise
+            # A refused client can still have left a partial file behind, and
+            # the next client writes to the same path.
+            _discard_partials(output_dir, stem)
+            continue
+
+        if client is not None:
+            logger.info("%s: downloaded %s using fallback player_client=%s", url, dl_format, client)
+        return
+
+    tried = ", ".join(fallback_player_clients()) or "no fallback configured"
+    raise MediaForbiddenError(
+        f"YouTube refused the media URL for {url} (HTTP 403) on the default player "
+        f"client and on every fallback ({tried}): {last_exc}"
+    ) from last_exc
+
+
+def _build_cmd(url: str, fmt: str, output: str, *, player_client: str | None = None) -> list[str]:
+    """Build yt-dlp command for the given format.
+
+    Args:
+        url: Video or playlist URL.
+        fmt: ``"audio"`` or ``"video"``.
+        output: Output path template.
+        player_client: Pin extraction to this yt-dlp player client. Used by the
+            403 fallback; ``None`` leaves yt-dlp's own client choice alone.
+    """
     cmd = ["yt-dlp", "--no-playlist"]
 
     cmd += cookie_args()
     cmd += remote_component_args()
+    if player_client is not None:
+        cmd += player_client_args(player_client)
 
     # Embed YouTube thumbnail as cover art and metadata (title, artist, etc.)
     cmd += ["--embed-thumbnail", "--embed-metadata"]
