@@ -83,6 +83,11 @@ def success_status(result: dict[str, Any]) -> str:
     """
     if result.get("bot_detected"):
         return "Error: Bot Detection"
+    if result.get("forbidden", 0):
+        # Checked before the generic failure: a bare "Failed" for a 403 sent
+        # every past investigation to the logs to find out that the videos were
+        # fine and only the media URL was refused.
+        return "Error: Media Forbidden (403)"
     if result.get("failed", 0):
         return "Failed"
     if result.get("splice_failed", 0):

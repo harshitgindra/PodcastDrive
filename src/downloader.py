@@ -22,7 +22,7 @@ from tenacity import (
 )
 
 import settings
-from retry import is_transient_download_error
+from retry import is_media_forbidden_error, is_transient_download_error
 from ytdlp_cookies import inject_cookies
 from ytdlp_runtime import inject_remote_components
 
@@ -31,6 +31,21 @@ logger = logging.getLogger(__name__)
 
 class DownloadError(Exception):
     """Raised when a video download or conversion fails."""
+
+
+class MediaForbiddenError(DownloadError):
+    """Raised when YouTube refuses to serve the media URL itself (HTTP 403).
+
+    Distinct from a generic :class:`DownloadError` because the cause is neither
+    the video nor the network: the format URL the extractor handed back is bound
+    to a GVS PO token that this deployment has no provider for, so googlevideo
+    answers 403 for the actual download. Callers surface it as its own status so
+    the run does not read as an ordinary, mysterious failure.
+    """
+
+
+#: yt-dlp player clients tried, in order, after a 403. See the setting docs.
+FALLBACK_CLIENTS_ENV = "YTDLP_FALLBACK_PLAYER_CLIENTS"
 
 
 def _ensure_ffmpeg_on_path() -> None:
@@ -107,6 +122,76 @@ def _ydl_download(ydl_opts: dict, video_url: str, tmp_dir: str, video_id: str) -
         raise DownloadError(f"Failed to download/convert {video_id}: {exc}") from exc
 
 
+def _fallback_player_clients() -> list[str]:
+    """Return the yt-dlp player clients to try after a 403, in order."""
+    raw = settings.get(FALLBACK_CLIENTS_ENV)
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _discard(path: str) -> None:
+    """Delete *path* if it exists, ignoring any error."""
+    if os.path.exists(path):
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+
+def _download_with_client_fallback(
+    base_opts: dict,
+    video_url: str,
+    tmp_dir: str,
+    video_id: str,
+    mp3_path: str,
+) -> None:
+    """Download *video_url*, switching yt-dlp player client after a 403.
+
+    YouTube is rolling out an experiment that binds googlevideo URLs to a GVS
+    PO token per video for some clients (``web_embedded`` in particular). With
+    no PO token provider installed the extractor still returns those formats,
+    and a short range probe even succeeds, but the real download comes back as
+    ``HTTP Error 403: Forbidden``. The video is fine and so is the network: only
+    that one client URL is refused, and asking a different client for the same
+    video yields a format that needs no token.
+
+    Retrying the identical request is useless, so the inner retry predicate
+    treats a 403 as permanent and this loop re-extracts with each configured
+    fallback client instead.
+
+    Raises:
+        MediaForbiddenError: Every client ended in a 403.
+        DownloadError: Any other download failure, from the first client that
+            hit it. A non-403 failure is not retried with another client.
+    """
+    last_exc: DownloadError | None = None
+
+    for client in [None, *_fallback_player_clients()]:
+        opts = dict(base_opts)
+        if client is not None:
+            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+            logger.warning(
+                "%s: media URL refused (403) - retrying with yt-dlp player_client=%s",
+                video_id,
+                client,
+            )
+        try:
+            _ydl_download(opts, video_url, tmp_dir, video_id)
+        except DownloadError as exc:
+            _discard(mp3_path)
+            last_exc = exc
+            if not is_media_forbidden_error(exc):
+                raise
+            continue
+
+        if client is not None:
+            logger.info("%s: downloaded using fallback player_client=%s", video_id, client)
+        return
+
+    tried = ", ".join(_fallback_player_clients()) or "no fallback configured"
+    raise MediaForbiddenError(
+        f"YouTube refused the media URL for {video_id} (HTTP 403) on the default player "
+        f"client and on every fallback ({tried}): {last_exc}"
+    ) from last_exc
+
+
 def download_and_convert(
     video_url: str,
     video_id: str,
@@ -126,7 +211,10 @@ def download_and_convert(
         Absolute path to the resulting MP3 file.
 
     Raises:
-        DownloadError: If the download or conversion fails after all retries.
+        MediaForbiddenError: If every player client got HTTP 403 for the media
+            URL: a PO-token-bound format, not a missing video.
+        DownloadError: If the download or conversion fails for any other reason
+            after all retries.
     """
     _ensure_ffmpeg_on_path()
 
@@ -149,13 +237,7 @@ def download_and_convert(
     inject_cookies(ydl_opts)
     inject_remote_components(ydl_opts)
 
-    try:
-        _ydl_download(ydl_opts, video_url, tmp_dir, video_id)
-    except DownloadError:
-        if os.path.exists(mp3_path):
-            with contextlib.suppress(OSError):
-                os.remove(mp3_path)
-        raise
+    _download_with_client_fallback(ydl_opts, video_url, tmp_dir, video_id, mp3_path)
 
     # Clean up intermediate files (webm, opus, m4a, etc.)
     _cleanup_intermediate_files(tmp_dir, video_id)

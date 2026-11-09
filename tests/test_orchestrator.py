@@ -148,6 +148,13 @@ class TestSuccessStatus:
             # bot detection outranks episode and splice failures
             ({"bot_detected": True, "splice_failed": 1}, "Error: Bot Detection"),
             ({"bot_detected": True, "failed": 1}, "Error: Bot Detection"),
+            # A refused media URL names itself instead of hiding in "Failed":
+            # the videos are fine and no retry or cookie refresh will help, so
+            # the status has to say which wall the run hit.
+            ({"forbidden": 1, "failed": 1}, "Error: Media Forbidden (403)"),
+            ({"forbidden": 0, "failed": 1}, "Failed"),
+            # ... but a global block still outranks it.
+            ({"bot_detected": True, "forbidden": 1, "failed": 1}, "Error: Bot Detection"),
         ],
     )
     def test_mapping(self, result, expected):

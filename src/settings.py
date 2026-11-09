@@ -188,6 +188,15 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 'images only and every download fails with "Requested format is not available". '
                 "Set to an empty string only if the solver cache is pre-seeded.",
             ),
+            _s(
+                "YTDLP_FALLBACK_PLAYER_CLIENTS",
+                "mweb",
+                "Comma-separated yt-dlp player clients tried, in order, after the default "
+                "client chain hands back a media URL YouTube then refuses (HTTP 403 Forbidden). "
+                "Those URLs are bound to a GVS PO token this deployment has no provider for; "
+                "the listed clients serve formats that do not need one. Set to an empty string "
+                "to disable the fallback.",
+            ),
             _i("RECONCILE_MIN_ORPHANS", 3, "Orphan count below which S3 reconciliation deletes nothing."),
             _f("RECONCILE_MAX_ORPHAN_RATIO", 0.5, "Refuse to reconcile when orphans exceed this fraction of objects."),
         ),

@@ -10,6 +10,8 @@ import pytest
 # Imported at module scope on purpose: an installed ``ytdlp_plugins.extractor``
 # package shadows this project's ``extractor`` module once yt-dlp has loaded its
 # plugins, so a late in-function import can resolve to the wrong module.
+import orchestrator
+from downloader import MediaForbiddenError
 from extractor import BotDetectedError, ExtractionError
 from models import PlaylistMeta, VideoEntry
 from s3_manager import ManifestUnavailableError
@@ -189,6 +191,7 @@ class TestProcessPlaylistHappyPath:
             "unavailable",
             "failed",
             "episodes_failed",
+            "forbidden",
             "manifest_failed",
             "feed_failed",
             "feed_omitted_ids",
@@ -1571,3 +1574,89 @@ class TestAdRemovalFallbackPublication:
         assert result["failed"] == 1
         assert result["ad_removal_failed"] == 0
         s3.upload_episode.assert_called_once()
+
+
+class TestForbiddenMediaAccounting:
+    """A 403 on the media URL must reach the status, not just the traceback.
+
+    Production symptom: a handful of YouTube entries failed every run with
+    ``HTTP Error 403: Forbidden`` after the metadata had extracted cleanly, and
+    Notion only ever said "Failed" - indistinguishable from a bad feed, an
+    ffmpeg hold or an upload error, so each investigation started by reading the
+    log. The count is now carried out of the pipeline so the status can name it.
+    """
+
+    def _run(self, download_side_effect, videos=None):
+        playlist_meta = _make_playlist_meta()
+        video_entries = videos if videos is not None else [_make_video("vid001")]
+        good_meta = {
+            "upload_date": _RECENT_DATE,
+            "description": "",
+            "thumbnail": "",
+            "duration": 300,
+            "title": "Video Title",
+        }
+
+        with (
+            patch.dict(os.environ, BASE_ENV, clear=True),
+            patch("sync.S3Manager") as mock_s3_cls,
+            patch("sync.extract_playlist", return_value=(playlist_meta, video_entries)),
+            patch("sync.extract_video_metadata", return_value=good_meta),
+            patch("sync.download_and_convert", side_effect=download_side_effect) as mock_dl,
+            patch("sync.validate_audio_file", return_value=(True, "")),
+            patch("sync.build_episode_metadata", return_value=[]),
+            patch("sync.generate_rss", return_value="<rss/>"),
+            patch("sync.shutil.rmtree"),
+            patch("os.makedirs"),
+            patch("os.remove"),
+        ):
+            s3 = _make_s3_manager()
+            mock_s3_cls.return_value = s3
+            result = process_playlist("https://youtube.com/playlist?list=PLtest")
+            return result, mock_dl
+
+    def test_forbidden_download_is_counted_separately(self):
+        result, _ = self._run(MediaForbiddenError("HTTP 403 on every client"))
+
+        assert result["forbidden"] == 1
+        assert result["failed"] == 1, "still a failure, so the run cannot report success"
+        assert result["unavailable"] == 0, "the video exists; only its media URL was refused"
+        assert result["new_episodes"] == 0
+
+    def test_ordinary_failures_do_not_set_the_counter(self):
+        result, _ = self._run(Exception("Network error"))
+
+        assert result["forbidden"] == 0
+        assert result["failed"] == 1
+
+    def test_the_run_continues_to_the_next_candidate(self):
+        """One refused video must not cost the rest of the playlist."""
+        result, mock_dl = self._run(
+            [MediaForbiddenError("403"), "/tmp/PLtest/vid002.mp3"],
+            videos=[_make_video("vid001"), _make_video("vid002")],
+        )
+
+        assert result["forbidden"] == 1
+        assert result["new_episodes"] == 1
+        assert mock_dl.call_count == 2
+
+    def test_the_reason_is_logged_with_the_remedy(self, caplog):
+        with caplog.at_level(logging.ERROR, logger="sync"):
+            self._run(MediaForbiddenError("HTTP 403 on every client"))
+
+        assert "MEDIA FORBIDDEN (403)" in caplog.text
+        assert "YTDLP_FALLBACK_PLAYER_CLIENTS" in caplog.text
+
+    def test_the_count_is_in_the_summary_line(self, caplog):
+        with caplog.at_level(logging.INFO, logger="sync"):
+            self._run(MediaForbiddenError("403"))
+
+        summaries = [r for r in caplog.records if "SYNC SUMMARY" in r.getMessage()]
+        assert len(summaries) == 1
+        assert "forbidden=1" in summaries[0].getMessage()
+
+    def test_notion_status_names_the_403(self):
+        """End-to-end of the reporting path: result dict -> Notion status."""
+        result, _ = self._run(MediaForbiddenError("403"))
+
+        assert orchestrator.success_status(result) == "Error: Media Forbidden (403)"

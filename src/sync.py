@@ -15,7 +15,7 @@ from typing import TypedDict
 import ad_remover
 import settings
 from ad_remover import FFMPEG_CRASHED, REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
-from downloader import download_and_convert
+from downloader import MediaForbiddenError, download_and_convert
 from extractor import BotDetectedError, ExtractionError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
@@ -217,6 +217,7 @@ def process_playlist(
         skipped_old = 0
         skipped_unavailable = 0
         failed_count = 0
+        forbidden_count = 0
         ad_removal_failed_count = 0
         bot_detected = False
         repairs_succeeded = 0
@@ -426,6 +427,21 @@ def process_playlist(
                 if sleep_between > 0 and (i + 1) < len(candidates):
                     time.sleep(sleep_between)
 
+            except MediaForbiddenError as exc:
+                # YouTube served a media URL it then refused (403). Counted
+                # separately from an ordinary failure so the status says why:
+                # the format was bound to a GVS PO token no provider here can
+                # mint, and no fallback player client could serve the audio.
+                failed_count += 1
+                forbidden_count += 1
+                logger.error(
+                    "[Step 4] MEDIA FORBIDDEN (403) %s: %s. "
+                    "The video exists; YouTube refused every available media URL. "
+                    "Try widening YTDLP_FALLBACK_PLAYER_CLIENTS or installing a PO token provider.",
+                    video.video_id,
+                    exc,
+                )
+
             except ExtractionError as exc:
                 failed_count += 1
                 logger.error(
@@ -509,13 +525,14 @@ def process_playlist(
         reported_failed = failed_count + (1 if publication_failed else 0)
 
         log_fn(
-            "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d unavailable=%d failed=%d "
+            "=== SYNC SUMMARY === playlist=%s new=%d skipped_old=%d unavailable=%d failed=%d forbidden=%d "
             "bot_detected=%s manifest_failed=%s feed_failed=%s feed_omitted=%d total_s3=%d elapsed=%.1fs",
             playlist_id,
             new_count,
             skipped_old,
             skipped_unavailable,
             reported_failed,
+            forbidden_count,
             bot_detected,
             manifest_save_failed,
             feed_failed,
@@ -531,6 +548,7 @@ def process_playlist(
             "unavailable": skipped_unavailable,
             "failed": reported_failed,
             "episodes_failed": failed_count,
+            "forbidden": forbidden_count,
             "manifest_failed": manifest_save_failed,
             "feed_failed": feed_failed,
             "feed_omitted_ids": sorted(feed_omitted_ids),

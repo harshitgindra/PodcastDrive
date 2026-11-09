@@ -631,6 +631,32 @@ Every run:
 
 ## Troubleshooting
 
+### `HTTP Error 403: Forbidden` on a few YouTube episodes
+
+Symptom: metadata extracts fine, then the download fails with
+`unable to download video data: HTTP Error 403: Forbidden`, for some videos only.
+Notion shows **Error: Media Forbidden (403)**.
+
+Cause: YouTube is binding googlevideo media URLs to a GVS PO token per video for
+some player clients (`web_embedded` in particular). Without a PO token provider
+installed, yt-dlp still offers those formats and even serves a short range probe,
+so the failure appears only on the real download. The video is fine; the URL is
+refused.
+
+The downloader handles it automatically by re-extracting with the clients in
+`YTDLP_FALLBACK_PLAYER_CLIENTS` (default `mweb`), which offers a progressive
+format that needs no token. The fallback costs bandwidth: it is a combined
+audio+video stream, so roughly 3x the bytes for the same MP3.
+
+If the fallback stops working, in order of preference:
+
+1. Add another client: `YTDLP_FALLBACK_PLAYER_CLIENTS=mweb,tv_simply`.
+2. Install a PO token provider (see the yt-dlp
+   [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)) so the
+   default audio-only formats work again. Note the provider needs Node; this
+   deployment currently has only `deno` for the n-challenge solver.
+3. Upgrade yt-dlp — client defaults change as YouTube rolls experiments out.
+
 ### Ad removal skipped / falling back to original
 
 Check the logs for `[AdRemover]` lines. Common causes:

@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError, EndpointResolutionError
 
 from retry import (
     RETRYABLE_AWS_CODES,
+    is_media_forbidden_error,
     is_rate_limited,
     is_transient_aws_error,
     is_transient_download_error,
@@ -261,3 +262,41 @@ class TestIsRateLimited:
     @pytest.mark.parametrize("exc", [http_error(500), http_error(503), TimeoutError(), OSError("reset")])
     def test_failures_the_server_may_have_applied_are_not(self, exc):
         assert is_rate_limited(exc) is False
+
+
+class TestIsMediaForbiddenError:
+    """A 403 on a googlevideo media URL is its own failure mode.
+
+    It is not a dead video (the metadata extracted fine) and not a transient
+    blip (the same URL answers 403 forever). It means the format was bound to a
+    GVS PO token this deployment cannot mint, so the cure is a different player
+    client, not another attempt.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            "HTTP Error 403: FORBIDDEN",
+            "yt_dlp.networking.exceptions.HTTPError: HTTP Error 403: Forbidden",
+        ],
+    )
+    def test_forbidden_media_messages_are_recognised(self, message):
+        assert is_media_forbidden_error(Exception(message)) is True
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "HTTP Error 429: Too Many Requests",
+            "HTTP Error 404: Not Found",
+            "Video unavailable",
+            "403",
+            "Forbidden",
+        ],
+    )
+    def test_other_messages_are_not(self, message):
+        assert is_media_forbidden_error(Exception(message)) is False
+
+    def test_a_forbidden_download_is_not_retried_in_place(self):
+        """Retrying the refused URL only delays the client switch that fixes it."""
+        assert is_transient_download_error(Exception("HTTP Error 403: Forbidden")) is False

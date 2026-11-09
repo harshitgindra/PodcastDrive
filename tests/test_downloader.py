@@ -1,12 +1,13 @@
 """Unit tests for the audio downloader module."""
 
+import logging
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from downloader import DownloadError, download_and_convert
+from downloader import DownloadError, MediaForbiddenError, download_and_convert
 
 # Speed up retry tests: 1 attempt, no sleep
 _FAST_RETRY = {
@@ -470,3 +471,181 @@ class TestOnlyTransientFailuresAreRetried:
 
             for ext in ["webm", "mp3"]:
                 assert not os.path.exists(os.path.join(tmp_dir, f"{video_id}.{ext}"))
+
+
+class TestForbiddenMediaClientFallback:
+    """HTTP 403 on the media URL is a client problem, not a dead video.
+
+    YouTube binds some googlevideo URLs to a GVS PO token (the ``web_embedded``
+    client is the one seen in production). With no PO token provider, the
+    extractor hands back those formats, a short range probe even succeeds, and
+    the real download then returns 403. A different player client serves the
+    same audio, so the downloader re-extracts instead of reporting the episode
+    dead.
+    """
+
+    FORBIDDEN = "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+
+    @staticmethod
+    def _ydl(mock_ydl_cls, side_effects):
+        mock_ydl = MagicMock()
+        mock_ydl.download.side_effect = side_effects
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl_cls.return_value = mock_ydl
+        return mock_ydl
+
+    @staticmethod
+    def _clients_used(mock_ydl_cls):
+        used = []
+        for call in mock_ydl_cls.call_args_list:
+            opts = call.args[0] if call.args else call.kwargs["params"]
+            extractor_args = opts.get("extractor_args") or {}
+            clients = extractor_args.get("youtube", {}).get("player_client")
+            used.append(clients[0] if clients else None)
+        return used
+
+    @patch.dict(os.environ, {"YTDLP_FALLBACK_PLAYER_CLIENTS": "mweb"})
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_403_is_retried_with_the_fallback_client(self, mock_ydl_cls):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_id = "forbid1"
+            mp3_path = os.path.join(tmp_dir, f"{video_id}.mp3")
+
+            calls = []
+
+            def forbidden_then_ok(urls):
+                calls.append(urls)
+                if len(calls) == 1:
+                    raise Exception(self.FORBIDDEN)
+                with open(mp3_path, "wb") as handle:
+                    handle.write(b"\xff\xfb\x90\x00" * 100)
+
+            self._ydl(mock_ydl_cls, forbidden_then_ok)
+
+            result = download_and_convert("https://youtube.com/watch?v=forbid1", video_id, tmp_dir)
+
+            assert result == mp3_path
+            assert self._clients_used(mock_ydl_cls) == [None, "mweb"]
+
+    @patch.dict(os.environ, {"YTDLP_FALLBACK_PLAYER_CLIENTS": "mweb,tv_simply"})
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_every_client_forbidden_raises_media_forbidden_error(self, mock_ydl_cls):
+        self._ydl(mock_ydl_cls, Exception(self.FORBIDDEN))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(MediaForbiddenError) as excinfo:
+                download_and_convert("https://youtube.com/watch?v=forbid2", "forbid2", tmp_dir)
+
+        assert "403" in str(excinfo.value)
+        assert "mweb, tv_simply" in str(excinfo.value)
+        assert self._clients_used(mock_ydl_cls) == [None, "mweb", "tv_simply"]
+
+    def test_media_forbidden_error_is_a_download_error(self):
+        """Callers that only know about DownloadError keep working."""
+        assert issubclass(MediaForbiddenError, DownloadError)
+
+    @patch.dict(os.environ, {"YTDLP_FALLBACK_PLAYER_CLIENTS": "mweb"})
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_other_failures_do_not_trigger_a_client_switch(self, mock_ydl_cls):
+        """Only a 403 is per-client. Anything else must fail on the spot."""
+        self._ydl(mock_ydl_cls, Exception("ERROR: [youtube] x: Video unavailable"))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(DownloadError) as excinfo:
+                download_and_convert("https://youtube.com/watch?v=x", "x", tmp_dir)
+
+        assert not isinstance(excinfo.value, MediaForbiddenError)
+        assert self._clients_used(mock_ydl_cls) == [None]
+
+    @patch.dict(os.environ, {"YTDLP_FALLBACK_PLAYER_CLIENTS": ""})
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_fallback_can_be_disabled(self, mock_ydl_cls):
+        self._ydl(mock_ydl_cls, Exception(self.FORBIDDEN))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(MediaForbiddenError) as excinfo:
+                download_and_convert("https://youtube.com/watch?v=x", "x", tmp_dir)
+
+        assert "no fallback configured" in str(excinfo.value)
+        assert self._clients_used(mock_ydl_cls) == [None]
+
+    @patch.dict(os.environ, {"YTDLP_FALLBACK_PLAYER_CLIENTS": "mweb"})
+    @patch("downloader._MAX_RETRIES", 4)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_403_does_not_burn_the_retry_budget_per_client(self, mock_ydl_cls):
+        """Re-requesting the same refused URL cannot help; switching clients can."""
+        mock_ydl = self._ydl(mock_ydl_cls, Exception(self.FORBIDDEN))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(MediaForbiddenError):
+                download_and_convert("https://youtube.com/watch?v=x", "x", tmp_dir)
+
+        assert mock_ydl.download.call_count == 2, "one attempt per client, not DOWNLOAD_MAX_RETRIES each"
+
+    @patch.dict(os.environ, {"YTDLP_FALLBACK_PLAYER_CLIENTS": "mweb"})
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_partial_output_from_the_refused_attempt_is_discarded(self, mock_ydl_cls):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_id = "forbid3"
+            mp3_path = os.path.join(tmp_dir, f"{video_id}.mp3")
+
+            calls = []
+
+            def partial_then_ok(urls):
+                calls.append(urls)
+                if len(calls) == 1:
+                    with open(mp3_path, "wb") as handle:
+                        handle.write(b"partial")
+                    raise Exception(self.FORBIDDEN)
+                with open(mp3_path, "wb") as handle:
+                    handle.write(b"\xff\xfb\x90\x00" * 100)
+
+            self._ydl(mock_ydl_cls, partial_then_ok)
+
+            result = download_and_convert("https://youtube.com/watch?v=forbid3", video_id, tmp_dir)
+
+            assert os.path.getsize(result) == 400, "the refused attempt partial leaked into the result"
+
+    @patch.dict(os.environ, {"YTDLP_FALLBACK_PLAYER_CLIENTS": "mweb"})
+    @patch("downloader._MAX_RETRIES", 1)
+    @patch("downloader._RETRY_WAIT_MIN", 0)
+    @patch("downloader._RETRY_WAIT_MAX", 0)
+    @patch("downloader.yt_dlp.YoutubeDL")
+    def test_the_client_switch_is_logged(self, mock_ydl_cls, caplog):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_id = "forbid4"
+            mp3_path = os.path.join(tmp_dir, f"{video_id}.mp3")
+
+            calls = []
+
+            def forbidden_then_ok(urls):
+                calls.append(urls)
+                if len(calls) == 1:
+                    raise Exception(self.FORBIDDEN)
+                with open(mp3_path, "wb") as handle:
+                    handle.write(b"\xff\xfb\x90\x00" * 100)
+
+            self._ydl(mock_ydl_cls, forbidden_then_ok)
+
+            with caplog.at_level(logging.INFO, logger="downloader"):
+                download_and_convert("https://youtube.com/watch?v=forbid4", video_id, tmp_dir)
+
+        assert "player_client=mweb" in caplog.text

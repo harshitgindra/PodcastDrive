@@ -190,6 +190,13 @@ _PERMANENT_DOWNLOAD_INDICATORS = (
     "members-only",
     "members only",
     "drm",
+    # A 403 on a googlevideo media URL is YouTube refusing that exact URL, not a
+    # hiccup: re-requesting it with the same credentials always gets the same
+    # answer. The fix is a different player client (see
+    # ``downloader.download_and_convert``), so burning the retry budget here only
+    # delays reaching it.
+    "http error 403",
+    "forbidden",
 )
 
 
@@ -225,6 +232,23 @@ def is_transient_http_error(exc: BaseException) -> bool:
         code = exc.code
         return code in TRANSIENT_HTTP_STATUSES or 500 <= code <= 599
     return isinstance(exc, OSError | urllib.error.URLError | TimeoutError)
+
+
+def is_media_forbidden_error(exc: BaseException) -> bool:
+    """Did *exc* come from YouTube refusing to serve a media URL (HTTP 403)?
+
+    YouTube binds some googlevideo URLs to a GVS PO token (notably those issued
+    to the ``web_embedded`` client). Without a PO token provider the URL still
+    answers a small range probe, then returns 403 for the real download, so the
+    failure looks nothing like the "video unavailable" family and must be
+    classified separately: it is per-client, not per-video, and a different
+    player client usually serves the same audio fine.
+
+    yt-dlp reports it as text rather than a typed exception, hence the string
+    match.
+    """
+    msg = str(exc).lower()
+    return "403" in msg and "forbidden" in msg
 
 
 def is_rate_limited(exc: BaseException) -> bool:
