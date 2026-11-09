@@ -623,6 +623,10 @@ class TestCheckFfmpegSplice:
         probe_rc=0,
         probe_stdout="2.001",
         probe_which=True,
+        copy_rc=0,
+        copy_bytes=b"segment",
+        join_rc=0,
+        join_bytes=b"joined-audio",
     ):
         import preflight
 
@@ -632,6 +636,20 @@ class TestCheckFfmpegSplice:
                 res.returncode = probe_rc
                 res.stdout = probe_stdout
                 res.stderr = "probe boom"
+            elif "copy" in cmd:  # a stream-copy segment extraction
+                res.returncode = copy_rc
+                res.stderr = "copy boom"
+                if copy_bytes is not None:
+                    import pathlib
+
+                    pathlib.Path(cmd[-1]).write_bytes(copy_bytes)
+            elif "concat" in cmd:  # the concat-demuxer join
+                res.returncode = join_rc
+                res.stderr = "join boom"
+                if join_bytes is not None:
+                    import pathlib
+
+                    pathlib.Path(cmd[-1]).write_bytes(join_bytes)
             elif "-filter_complex" in cmd:  # the splice graph
                 res.returncode = splice_rc
                 res.stderr = "boom"
@@ -659,6 +677,41 @@ class TestCheckFfmpegSplice:
     def test_passes_on_healthy_splice(self, capsys):
         self._run(splice_rc=0)
         assert "splice self-test passed" in capsys.readouterr().out
+
+    def test_passes_on_healthy_concat_demuxer(self, capsys):
+        self._run()
+        assert "concat-demuxer self-test passed" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("rc", [-11, -6])
+    def test_fails_when_stream_copy_extraction_crashes(self, capsys, rc):
+        """The production crash: the filter graph is fine, the stream copy segfaults."""
+        with pytest.raises(SystemExit):
+            self._run(copy_rc=rc)
+        out = capsys.readouterr().out
+        assert "splice self-test passed" in out, "the graph probe must still have passed"
+        assert "stream-copying segment 0" in out
+
+    @pytest.mark.parametrize("rc", [-11, -6])
+    def test_fails_when_concat_join_crashes(self, capsys, rc):
+        with pytest.raises(SystemExit):
+            self._run(join_rc=rc)
+        assert "concat demuxer" in capsys.readouterr().out
+
+    def test_warns_but_passes_when_segment_extraction_fails_cleanly(self, capsys):
+        # A clean non-zero exit is environmental, not a crashing binary.
+        self._run(copy_rc=1, copy_bytes=None)
+        out = capsys.readouterr().out
+        assert "could not extract segment 0" in out
+        assert "concat-demuxer self-test passed" not in out
+
+    def test_fails_when_concat_join_output_is_empty(self):
+        with pytest.raises(SystemExit):
+            self._run(join_bytes=b"")
+
+    def test_fails_when_concat_join_exits_nonzero(self, capsys):
+        with pytest.raises(SystemExit):
+            self._run(join_rc=1)
+        assert "concat-demuxer self-test failed" in capsys.readouterr().out
 
     def test_fails_on_sigsegv(self, capsys):
         with pytest.raises(SystemExit):

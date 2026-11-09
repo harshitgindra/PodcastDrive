@@ -342,6 +342,60 @@ def splice_audio(mp3_path: str, ad_segments: list[AdSegment], output_path: str) 
     _pkg()._splice_concat_demuxer(mp3_path, keep, output_path)
 
 
+def _run_ffmpeg_crash_retried(
+    cmd: list[str],
+    *,
+    timeout_key: str,
+    label: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one ffmpeg sub-command, re-running it in place when it crashes.
+
+    The ARM Homebrew ffmpeg builds segfault probabilistically: the identical
+    command often succeeds on a re-run. A single crashed segment used to raise
+    straight away, which trips the process-global crash breaker and holds every
+    remaining episode in the run, so each sub-command gets the same
+    ``SPLICE_CRASH_RETRIES`` budget the filter-graph path already uses.
+
+    Args:
+        cmd:         The ffmpeg argument vector to run.
+        timeout_key: Settings key naming this command's timeout.
+        label:       Human-readable step name used in error messages.
+
+    Returns:
+        The completed process, whose return code is neither 0-with-a-signal nor
+        a crash code (callers still check for a plain non-zero exit).
+
+    Raises:
+        RuntimeError: If the command times out.
+        FfmpegCrashed: If every attempt crashed with a signal.
+    """
+    crash_retries = max(0, settings.get("SPLICE_CRASH_RETRIES"))
+    attempts = crash_retries + 1
+    result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_ffmpeg_timeout(timeout_key),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{label} timed out after {exc.timeout}s") from exc
+        if result.returncode not in _pkg().FFMPEG_CRASH_RETURNCODES:
+            return result
+        if attempt < attempts:
+            logger.warning(
+                "[AdRemover] ffmpeg crashed (exit %d) on %s attempt %d/%d - re-running",
+                result.returncode,
+                label,
+                attempt,
+                attempts,
+            )
+    assert result is not None  # attempts >= 1, so the loop always ran
+    raise _pkg().FfmpegCrashed(f"{label} crashed (exit {result.returncode}) after {attempts} attempt(s)")
+
+
 def _splice_concat_demuxer(
     mp3_path: str,
     keep: list[tuple[float, float]],
@@ -392,17 +446,11 @@ def _splice_concat_demuxer(
                 "copy",
                 seg_path,
             ]
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=_ffmpeg_timeout("FFMPEG_SEGMENT_TIMEOUT_SECS"),
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(f"ffmpeg segment {i} extraction timed out after {exc.timeout}s") from exc
-            if result.returncode in _pkg().FFMPEG_CRASH_RETURNCODES:
-                raise _pkg().FfmpegCrashed(f"ffmpeg segment {i} extraction crashed (exit {result.returncode})")
+            result = _pkg()._run_ffmpeg_crash_retried(
+                cmd,
+                timeout_key="FFMPEG_SEGMENT_TIMEOUT_SECS",
+                label=f"ffmpeg segment {i} extraction",
+            )
             if result.returncode != 0:
                 raise RuntimeError(f"ffmpeg segment {i} extraction failed (exit {result.returncode}):\n{result.stderr}")
 
@@ -427,17 +475,11 @@ def _splice_concat_demuxer(
             "2",
             output_path,
         ]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=_ffmpeg_timeout("FFMPEG_SPLICE_TIMEOUT_SECS"),
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"ffmpeg concat-demuxer join timed out after {exc.timeout}s") from exc
-        if result.returncode in _pkg().FFMPEG_CRASH_RETURNCODES:
-            raise _pkg().FfmpegCrashed(f"ffmpeg concat-demuxer join crashed (exit {result.returncode})")
+        result = _pkg()._run_ffmpeg_crash_retried(
+            cmd,
+            timeout_key="FFMPEG_SPLICE_TIMEOUT_SECS",
+            label="ffmpeg concat-demuxer join",
+        )
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg concat-demuxer join failed (exit {result.returncode}):\n{result.stderr}")
 

@@ -290,6 +290,105 @@ def _check_ffmpeg() -> None:
     _check_ffmpeg_splice(ffmpeg_bin)
 
 
+def _check_ffmpeg_stream_copy_splice(ffmpeg_bin: str, src: str, work: str) -> None:
+    """Probe the concat-demuxer fallback: stream-copy two intervals, then join them.
+
+    The filter-graph self-test never touches this path, yet it is where the ARM
+    Homebrew ffmpeg 8.x build actually segfaults in production ("ffmpeg segment
+    N extraction crashed (exit -11)"). A binary that passes the graph probe and
+    dies here used to clear preflight and then crash on every episode, so this
+    runs the same two sub-commands ``_splice_concat_demuxer`` runs.
+
+    Args:
+        ffmpeg_bin: The ffmpeg binary under test.
+        src:        An existing probe clip of at least ~2 s.
+        work:       Scratch directory for the segments and concat list.
+    """
+    segment_paths: list[str] = []
+    for i, (start, end) in enumerate(((0.0, 0.5), (1.0, 1.5))):
+        seg_path = os.path.join(work, f"seg_{i}.mp3")
+        try:
+            seg = subprocess.run(
+                [ffmpeg_bin, "-y", "-ss", str(start), "-to", str(end), "-i", src, "-c:a", "copy", seg_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            _fail(f"ffmpeg concat-demuxer self-test timed out extracting segment {i} (FFMPEG_BIN={ffmpeg_bin!r})")
+            return
+        except OSError as exc:
+            _fail(f"ffmpeg concat-demuxer self-test could not run (FFMPEG_BIN={ffmpeg_bin!r}): {exc}")
+            return
+        if seg.returncode in (-11, -6):
+            sig = "SEGFAULTED (exit -11)" if seg.returncode == -11 else "ABORTED (exit -6)"
+            _fail(
+                f"ffmpeg {sig} stream-copying segment {i} of the self-test clip "
+                f"(FFMPEG_BIN={ffmpeg_bin!r}). This is the concat-demuxer fallback the ad "
+                "splicer uses when the filter graph crashes, so every episode will be held "
+                "unpublished. Reinstall ffmpeg, or pin FFMPEG_BIN to a build that survives this."
+            )
+            return
+        if seg.returncode != 0 or not os.path.exists(seg_path) or os.path.getsize(seg_path) == 0:
+            _warn(
+                f"ffmpeg concat-demuxer self-test could not extract segment {i} "
+                f"(exit {seg.returncode}); skipping. The splice fallback may still fail at runtime."
+            )
+            return
+        segment_paths.append(seg_path)
+
+    list_path = os.path.join(work, "concat.txt")
+    with open(list_path, "w") as fh:
+        for seg_path in segment_paths:
+            fh.write(f"file '{seg_path}'\n")
+
+    out = os.path.join(work, "concat_out.mp3")
+    try:
+        join = subprocess.run(
+            [
+                ffmpeg_bin,
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                "-codec:a",
+                "libmp3lame",
+                "-q:a",
+                "2",
+                out,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        _fail(f"ffmpeg concat-demuxer self-test timed out joining segments (FFMPEG_BIN={ffmpeg_bin!r})")
+        return
+    except OSError as exc:
+        _fail(f"ffmpeg concat-demuxer self-test could not run (FFMPEG_BIN={ffmpeg_bin!r}): {exc}")
+        return
+
+    if join.returncode in (-11, -6):
+        sig = "SEGFAULTED (exit -11)" if join.returncode == -11 else "ABORTED (exit -6)"
+        _fail(
+            f"ffmpeg {sig} joining the self-test segments with the concat demuxer "
+            f"(FFMPEG_BIN={ffmpeg_bin!r}). The ad splicer's fallback path cannot run on this "
+            "build and every episode will be held unpublished."
+        )
+        return
+    if join.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        _fail(
+            f"ffmpeg concat-demuxer self-test failed (exit {join.returncode}, FFMPEG_BIN={ffmpeg_bin!r}):\n"
+            f"{join.stderr.strip()[:500]}"
+        )
+        return
+
+    _ok("ffmpeg concat-demuxer self-test passed (stream-copy extraction + concat join produces output)")
+
+
 def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
     """Run a synthetic splice that mirrors the production filter graph.
 
@@ -389,6 +488,8 @@ def _check_ffmpeg_splice(ffmpeg_bin: str) -> None:
             return
 
         _ok("ffmpeg splice self-test passed (atrim+concat+loudnorm+libmp3lame produces output)")
+
+        _check_ffmpeg_stream_copy_splice(ffmpeg_bin, src, work)
 
         # Production probes duration via ffprobe (probe_duration_with_fallbacks:
         # ffprobe -> ffprobe -f mp3 -> mutagen).  A broken ffprobe degrades to the

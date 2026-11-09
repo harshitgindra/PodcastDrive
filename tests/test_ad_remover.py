@@ -4717,6 +4717,55 @@ class TestSpliceNoUsableSegmentsOutcome:
         assert summary == "SPLICE_FAILED"
         assert self._splice_failed("/orig.mp3", cleaned, ads)
 
+    def test_cached_path_ffmpeg_crash_holds_instead_of_publishing_with_ads(self, monkeypatch, tmp_path):
+        """A signal-killed ffmpeg on the cached path is a host fault, not an episode fault.
+
+        The generic handler used to absorb it (FfmpegCrashed is a RuntimeError),
+        so the episode was published with its ads still in and charged a splice
+        retry while the crashing binary went unreported.
+        """
+        import ad_remover
+
+        cached_ads = [{"start": 10.0, "end": 50.0}]
+        self._patch_cached_path(monkeypatch, ad_remover, cached_ads)
+
+        def _crash(*_a, **_k):
+            raise ad_remover.FfmpegCrashed("ffmpeg segment 0 extraction crashed (exit -11)")
+
+        monkeypatch.setattr(ad_remover, "splice_audio", _crash)
+        assert ad_remover.ffmpeg_crash_reason() is None
+
+        cleaned, ads, summary = ad_remover.remove_ads("/orig.mp3", "ep-1", str(tmp_path))
+
+        assert cleaned == "/orig.mp3"
+        assert ads == cached_ads
+        assert summary == ad_remover.FFMPEG_CRASHED, "must signal a hold, not a generated summary"
+        assert ad_remover.ffmpeg_crash_reason() == "ep-1: ffmpeg segment 0 extraction crashed (exit -11)"
+
+    def test_ffmpeg_crashed_is_not_absorbed_by_the_operational_handler(self):
+        """Regression guard: the FfmpegCrashed handler must precede _OPERATIONAL_ERRORS.
+
+        Both remove_ads splice sites catch the generic tuple, which includes
+        RuntimeError, so ordering is the only thing keeping a host crash
+        distinguishable.
+        """
+        import inspect
+
+        import ad_remover
+
+        assert issubclass(ad_remover.FfmpegCrashed, ad_remover._OPERATIONAL_ERRORS)
+        src = inspect.getsource(ad_remover.remove_ads)
+        order = [
+            line.strip()
+            for line in src.splitlines()
+            if "except FfmpegCrashed" in line or "except _OPERATIONAL_ERRORS" in line
+        ]
+        crash_handlers = [i for i, line in enumerate(order) if "FfmpegCrashed" in line]
+        assert len(crash_handlers) == 2, "both the cached and non-cached splice sites need one"
+        for i in crash_handlers:
+            assert i + 1 < len(order), "a crash handler must be followed by its generic handler"
+            assert "_OPERATIONAL_ERRORS" in order[i + 1]
+
     @staticmethod
     def _patch_cached_path(monkeypatch, ad_remover, cached_ads):
         """Force remove_ads down the cached-ad-segments branch."""
@@ -4792,16 +4841,20 @@ class TestFfmpegCrashed:
     @staticmethod
     def _run_returning(monkeypatch, codes):
         calls = iter(codes)
+        seen = []
 
         def fake_run(cmd, **kwargs):
+            seen.append(cmd)
             return subprocess.CompletedProcess(cmd, next(calls), "", "boom")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
+        return seen
 
     @pytest.mark.parametrize("rc", [-11, -6])
     def test_segment_extraction_crash_raises_ffmpeg_crashed(self, monkeypatch, tmp_path, rc):
         import ad_remover
 
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "0")
         self._run_returning(monkeypatch, [rc])
         src = tmp_path / "in.mp3"
         src.write_bytes(b"audio")
@@ -4814,6 +4867,7 @@ class TestFfmpegCrashed:
     def test_join_crash_raises_ffmpeg_crashed(self, monkeypatch, tmp_path):
         import ad_remover
 
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "0")
         self._run_returning(monkeypatch, [0, 0, -11])
         src = tmp_path / "in.mp3"
         src.write_bytes(b"audio")
@@ -4829,6 +4883,74 @@ class TestFfmpegCrashed:
         src.write_bytes(b"audio")
 
         with pytest.raises(RuntimeError, match="join failed") as excinfo:
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
+        assert not isinstance(excinfo.value, ad_remover.FfmpegCrashed)
+
+    def test_segment_extraction_retries_a_crash_then_succeeds(self, monkeypatch, tmp_path):
+        """A probabilistic segfault on one segment must not fail the whole splice."""
+        import ad_remover
+
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "2")
+        seen = self._run_returning(monkeypatch, [-11, 0, 0])
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
+
+        assert len(seen) == 3  # crashed extraction, retried extraction, join
+
+    def test_segment_extraction_crash_raised_only_after_retries(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "2")
+        seen = self._run_returning(monkeypatch, [-11, -11, -11])
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        with pytest.raises(
+            ad_remover.FfmpegCrashed, match=r"segment 0 extraction crashed \(exit -11\) after 3 attempt"
+        ):
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
+
+        assert len(seen) == 3
+
+    def test_non_signal_segment_failure_is_not_retried(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "2")
+        seen = self._run_returning(monkeypatch, [1])
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        with pytest.raises(RuntimeError, match="segment 0 extraction failed") as excinfo:
+            ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
+
+        assert not isinstance(excinfo.value, ad_remover.FfmpegCrashed)
+        assert len(seen) == 1
+
+    def test_join_retries_a_crash_then_succeeds(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        monkeypatch.setenv("SPLICE_CRASH_RETRIES", "2")
+        seen = self._run_returning(monkeypatch, [0, -11, 0])
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
+
+        assert len(seen) == 3  # extraction, crashed join, retried join
+
+    def test_crash_retry_timeout_stays_a_runtime_error(self, monkeypatch, tmp_path):
+        import ad_remover
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 7)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        src = tmp_path / "in.mp3"
+        src.write_bytes(b"audio")
+
+        with pytest.raises(RuntimeError, match="segment 0 extraction timed out after 7s") as excinfo:
             ad_remover._splice_concat_demuxer(str(src), [(0.0, 5.0)], str(tmp_path / "out.mp3"))
         assert not isinstance(excinfo.value, ad_remover.FfmpegCrashed)
 

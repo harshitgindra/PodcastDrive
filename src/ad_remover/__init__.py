@@ -232,6 +232,7 @@ from ad_remover._ffmpeg import (  # noqa: E402
 from ad_remover._splice import (  # noqa: E402
     _ffprobe_duration,  # noqa: F401 - re-exported for callers/tests
     _mutagen_duration,  # noqa: F401 - re-exported for callers/tests
+    _run_ffmpeg_crash_retried,  # noqa: F401 - re-exported for callers/tests
     _splice_concat_demuxer,  # noqa: F401 - re-exported for callers/tests
     probe_duration_with_fallbacks,  # noqa: F401 - re-exported for callers/tests
     splice_audio,
@@ -485,6 +486,16 @@ def remove_ads(
                         _cached_transcript, video_id, episode_title, duration_secs, cache_namespace=cache_namespace
                     ),
                 )
+            except FfmpegCrashed as exc:
+                # Must precede _OPERATIONAL_ERRORS: FfmpegCrashed is a RuntimeError,
+                # so the generic handler below used to absorb a host crash as an
+                # ordinary episode failure. The caller then published the original
+                # *with its ads* and charged the episode a splice retry, while the
+                # crashing binary went unreported — the non-cached path right
+                # holds the episode instead, and so must this one.
+                _record_ffmpeg_crash(f"{video_id}: {exc}")
+                logger.error("[AdRemover] Splicing crashed (cached) for %s: %s — holding the episode", video_id, exc)
+                return mp3_path, all_cached, FFMPEG_CRASHED
             except _OPERATIONAL_ERRORS as exc:
                 logger.error("[AdRemover] Splicing failed for %s: %s — using original file", video_id, exc)
                 return (
