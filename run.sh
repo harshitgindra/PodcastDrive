@@ -57,7 +57,45 @@ RUNNER_PID=$$
 LEASE_LOST_FLAG="${LOG_DIR}/.lease_lost"
 rm -f "$LEASE_LOST_FLAG"
 
+# A run killed between its start-of-run record and its end-of-run close-out
+# leaves that record in S3 on status "running" for good, and health_report then
+# reports it as a stale orphaned run forever. $RUN_RECORD_FILE exists only
+# inside that window, so finding it from the EXIT trap is proof this run never
+# reached its own close-out.
+RUN_RECORD_FILE="${LOG_DIR}/.run_record.json"
+
+finalize_interrupted_run() {
+    local exit_code="${1:-1}"
+    [ -f "$RUN_RECORD_FILE" ] || return 0
+    if [ -z "${VENV_PYTHON:-}" ] || [ ! -x "${VENV_PYTHON}" ]; then
+        # Nothing to write with (we died before the venv was resolved). Leave the
+        # file alone: the next run overwrites it, and inventing a terminal status
+        # from here is worse than leaving the record open.
+        return 0
+    fi
+    PODCAST_RUN_EXIT_CODE="$exit_code" PODCAST_RUN_RECORD="$RUN_RECORD_FILE" \
+        PYTHONPATH="${SCRIPT_DIR}/src" "${VENV_PYTHON}" -c '
+import json, os
+
+from run_history import record_run_end, save_run_history
+
+path = os.environ["PODCAST_RUN_RECORD"]
+with open(path) as handle:
+    record = json.load(handle)
+record["exit_code"] = int(os.environ.get("PODCAST_RUN_EXIT_CODE") or 1)
+save_run_history(record_run_end(record, status="interrupted", errors=1))
+os.remove(path)
+' >/dev/null 2>&1 || true
+    if [ -f "$RUN_RECORD_FILE" ]; then
+        warn "Could not close out the run history record ${RUN_RECORD_FILE} — the next run will overwrite it."
+    else
+        warn "Run never reached its end-of-run block (exit ${exit_code}) — history record closed as interrupted."
+    fi
+}
+
 cleanup() {
+    # First statement: every command below clobbers $?.
+    local exit_code=$?
     if [ -n "${LOCK_RENEW_PID:-}" ]; then
         kill "$LOCK_RENEW_PID" 2>/dev/null || true
         wait "$LOCK_RENEW_PID" 2>/dev/null || true
@@ -68,6 +106,8 @@ cleanup() {
         DIST_LOCK_HELD=false
     fi
     rm -f "$LEASE_LOST_FLAG"
+    # After the lease release, so a slow S3 write cannot keep peers locked out.
+    finalize_interrupted_run "$exit_code"
 }
 trap cleanup EXIT
 
@@ -362,19 +402,6 @@ if [ "$DRY_RUN" = false ]; then
   ok "Distributed lock held (lease ${LOCK_TTL_SECONDS}s, renewed every ${LOCK_RENEW_INTERVAL}s)"
 fi
 
-# --- Record run start (S3 history) ---
-if [ "$DRY_RUN" = false ]; then
-  "${VENV_PYTHON}" -c "
-from run_history import record_run_start, save_run_history
-import json, os
-record = record_run_start()
-save_run_history(record)
-# Save record to temp file for end-of-run update
-with open(os.path.join(os.environ.get(\"LOG_DIR\", \"logs\"), \".run_record.json\"), \"w\") as f:
-    json.dump(record, f)
-" 2>/dev/null || true
-fi
-
 # --- Reset mode: wipe all S3 data for enabled podcasts then exit ---
 if [ "$DO_RESET" = true ]; then
     FORCE_FLAG=""
@@ -412,6 +439,26 @@ if [ "${DO_CLEAR_CACHE:-false}" = true ]; then
             done || true
     fi
     exit 0
+fi
+
+# --- Record run start (S3 history) ---
+# Deliberately after the early-exit modes above: --reset and --clear-cache are
+# not sync runs, so a record opened before them would always be closed out as
+# interrupted. Everything from here on does reach the end-of-run block or the
+# EXIT trap.
+if [ "$DRY_RUN" = false ]; then
+  PODCAST_RUN_RECORD="$RUN_RECORD_FILE" "${VENV_PYTHON}" -c '
+import json, os
+
+from run_history import record_run_start, save_run_history
+
+record = record_run_start()
+save_run_history(record)
+# Kept on disk so the end-of-run block — or the EXIT trap, if the run dies
+# first — can close this record out instead of leaving it on "running".
+with open(os.environ["PODCAST_RUN_RECORD"], "w") as handle:
+    json.dump(record, handle)
+' 2>/dev/null || true
 fi
 
 # --- Reprocess mode: delete episodes + cache, then fall through to normal sync ---
@@ -602,11 +649,11 @@ echo "  Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 # --- Record run end + upload logs to S3 ---
 if [ "$DRY_RUN" = false ]; then
-  PODCAST_RUN_STATUS="$RUN_STATUS" "${VENV_PYTHON}" -c "
+  PODCAST_RUN_STATUS="$RUN_STATUS" PODCAST_RUN_RECORD="$RUN_RECORD_FILE" "${VENV_PYTHON}" -c "
 import json, os
 from run_history import record_run_end, save_run_history
 from log_uploader import upload_run_log
-record_file = os.path.join(os.environ.get(\"LOG_DIR\", \"logs\"), \".run_record.json\")
+record_file = os.environ[\"PODCAST_RUN_RECORD\"]
 if os.path.exists(record_file):
     with open(record_file) as f:
         record = json.load(f)

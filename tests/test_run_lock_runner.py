@@ -9,9 +9,13 @@ What must hold:
     lock file (deleting it does not release the lock);
   * acquisition fails closed — exit 99 skips the run, anything else aborts it;
   * a lost lease tears the run down instead of logging and continuing;
-  * secrets are tightened to 0600 at startup.
+  * secrets are tightened to 0600 at startup;
+  * a run that dies before its end-of-run block still closes its history
+    record, instead of leaving it on "running" for health_report to report as
+    a stale orphan forever.
 """
 
+import json
 import os
 import shutil
 import signal
@@ -500,3 +504,168 @@ class TestSecretPermissionsGuard:
         assert result.returncode == 0, result.stderr
         assert "Tightened permissions" not in result.stdout
         assert "Could not tighten" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Run-record finalization on EXIT
+# ---------------------------------------------------------------------------
+
+
+class TestInterruptedRunRecord:
+    """The EXIT trap must close out a run record the run itself never reached.
+
+    Every interrupted run used to leave its start-of-run record in S3 on
+    status ``running``, which ``health_report`` counts under
+    ``stale_running_entries`` indefinitely.
+    """
+
+    def _fake_run_history(self, tmp_path: Path, out: Path) -> None:
+        """Install a stand-in ``run_history`` on the PYTHONPATH run.sh exports.
+
+        The trap runs ``PYTHONPATH=$SCRIPT_DIR/src``, and the harness points
+        SCRIPT_DIR at tmp_path, so dropping a module there is enough to capture
+        what the shell asked to be written without touching S3.
+        """
+        src = tmp_path / "src"
+        src.mkdir(exist_ok=True)
+        (src / "run_history.py").write_text(
+            textwrap.dedent(f"""\
+                import json
+
+                OUT = {str(out)!r}
+
+
+                def record_run_end(record, *, status="success", podcasts_processed=0,
+                                   episodes_downloaded=0, errors=0):
+                    record = dict(record)
+                    record["status"] = status
+                    record["errors"] = errors
+                    record["finished_at"] = "2026-01-01T00:00:00+00:00"
+                    return record
+
+
+                def save_run_history(record):
+                    with open(OUT, "a") as handle:
+                        handle.write(json.dumps(record) + "\\n")
+            """),
+            encoding="utf-8",
+        )
+
+    def _script(self, harness, tmp_path, body, *, python=None):
+        return harness(
+            _block(TRAPS_BLOCK) + body,
+            prelude=f'DRY_RUN=false\nVENV_PYTHON="{python or sys.executable}"\n',
+        )
+
+    def _record(self, tmp_path, **extra):
+        record = {"run_id": "test-run", "started_at": "2026-01-01T00:00:00+00:00", "status": "running"}
+        record.update(extra)
+        path = tmp_path / "logs" / ".run_record.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path
+
+    def test_crash_closes_the_record_as_interrupted(self, harness, tmp_path):
+        out = tmp_path / "saved.jsonl"
+        self._fake_run_history(tmp_path, out)
+        record = self._record(tmp_path)
+        script = self._script(harness, tmp_path, "exit 7\n")
+
+        result = _run(script)
+
+        assert result.returncode == 7, "the trap must not rewrite the exit code"
+        saved = [json.loads(line) for line in out.read_text().splitlines()]
+        assert len(saved) == 1
+        assert saved[0]["status"] == "interrupted"
+        assert saved[0]["exit_code"] == 7
+        assert saved[0]["errors"] == 1
+        assert saved[0]["run_id"] == "test-run"
+        assert not record.exists(), "the closed-out record must not be closed out twice"
+
+    def test_sigterm_closes_the_record(self, harness, tmp_path):
+        """SIGTERM is how a timed-out or cancelled scheduled run dies."""
+        out = tmp_path / "saved.jsonl"
+        self._fake_run_history(tmp_path, out)
+        self._record(tmp_path)
+        # Short sleeps in a loop, not one long one: bash defers a trapped
+        # signal until the current foreground command returns, and only this
+        # shell is signalled, not its children.
+        script = self._script(harness, tmp_path, "echo READY\nwhile true; do sleep 0.2; done\n")
+
+        proc = subprocess.Popen(["bash", str(script)], stdout=subprocess.PIPE, text=True)
+        try:
+            assert proc.stdout.readline().strip() == "READY"
+            proc.terminate()
+            proc.wait(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+        saved = [json.loads(line) for line in out.read_text().splitlines()]
+        assert [r["status"] for r in saved] == ["interrupted"]
+
+    def test_clean_exit_after_the_end_block_saves_nothing(self, harness, tmp_path):
+        """The end-of-run block removes the record, so the trap has no work."""
+        out = tmp_path / "saved.jsonl"
+        self._fake_run_history(tmp_path, out)
+        record = self._record(tmp_path)
+        script = self._script(harness, tmp_path, f'rm -f "{record}"\necho DONE\n')
+
+        result = _run(script)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "DONE" in result.stdout
+        assert not out.exists(), "closed records must not be written twice"
+
+    def test_no_record_means_no_write(self, harness, tmp_path):
+        """A --dry-run or pre-record death has nothing to close out."""
+        out = tmp_path / "saved.jsonl"
+        self._fake_run_history(tmp_path, out)
+        script = self._script(harness, tmp_path, "exit 3\n")
+
+        result = _run(script)
+
+        assert result.returncode == 3
+        assert not out.exists()
+
+    def test_missing_interpreter_leaves_the_record_for_the_next_run(self, harness, tmp_path):
+        """Dying before the venv is resolved must not crash the trap."""
+        out = tmp_path / "saved.jsonl"
+        self._fake_run_history(tmp_path, out)
+        record = self._record(tmp_path)
+        script = harness(_block(TRAPS_BLOCK) + "exit 4\n", prelude="DRY_RUN=false\n")
+
+        result = _run(script)
+
+        assert result.returncode == 4
+        assert record.exists(), "no interpreter, so no invented status"
+        assert not out.exists()
+
+    def test_interruption_is_reported_to_the_operator(self, harness, tmp_path):
+        out = tmp_path / "saved.jsonl"
+        self._fake_run_history(tmp_path, out)
+        self._record(tmp_path)
+        script = self._script(harness, tmp_path, "exit 5\n")
+
+        result = _run(script)
+
+        assert "never reached its end-of-run block" in result.stdout
+        assert "exit 5" in result.stdout
+
+    def test_record_opens_after_the_early_exit_modes(self):
+        """--reset and --clear-cache exit early, so they must open no record.
+
+        Opening it first is what made every ``./run.sh --reset`` leave an
+        orphan: the early ``exit`` never reaches the end-of-run close-out.
+        """
+        start = RUN_SH_TEXT.index("# --- Record run start (S3 history) ---")
+        for early in (
+            "# --- Reset mode: wipe all S3 data for enabled podcasts then exit ---",
+            "# --- Cache-bust mode: delete ad-segments cache for a podcast slug ---",
+        ):
+            assert RUN_SH_TEXT.index(early) < start, f"{early} must precede the run record"
+
+    def test_both_record_blocks_share_one_path(self):
+        """A drifted path would silently orphan every record again."""
+        assert RUN_SH_TEXT.count('RUN_RECORD_FILE="${LOG_DIR}/.run_record.json"') == 1
+        assert RUN_SH_TEXT.count('PODCAST_RUN_RECORD="$RUN_RECORD_FILE"') == 3
