@@ -392,16 +392,20 @@ def _fetch_playlist_items_metadata(url: str) -> list[dict] | None:
         meta = get_metadata(vurl)  # Uses cache if available
         return idx, meta
 
+    # closing() so an early abort shuts the pool down here instead of leaving the
+    # worker threads to whenever the abandoned generator gets collected.
     try:
-        for _, future in iter_parallel(_fetch_one, enumerate(video_urls), max_workers=8):
-            try:
-                idx, meta = future.result()
-                results_meta[idx] = meta
-                # Cache for later download
-                cache_metadata(video_urls[idx], meta)
-            except DownloadError:
-                # One item failed; abort reconciliation
-                return None
+        fetches = iter_parallel(_fetch_one, enumerate(video_urls), max_workers=8)
+        with contextlib.closing(fetches) as completed:
+            for _, future in completed:
+                try:
+                    idx, meta = future.result()
+                    results_meta[idx] = meta
+                    # Cache for later download
+                    cache_metadata(video_urls[idx], meta)
+                except DownloadError:
+                    # One item failed; abort reconciliation
+                    return None
     except (DownloadError, OSError, RuntimeError, ValueError):
         return None
 
