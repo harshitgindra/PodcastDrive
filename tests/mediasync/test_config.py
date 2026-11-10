@@ -30,6 +30,12 @@ class TestConfigFromEnv:
         assert config.s3_bucket == "hg-mediafiles"
         assert config.profiles == [Profile("Harshit"), Profile("Dishita")]
 
+    def test_lease_ttl_is_configurable(self, full_env):
+        with patch.dict(os.environ, {**full_env, "MEDIASYNC_LEASE_TTL_SECS": "600"}, clear=True):
+            config = Config.from_env()
+
+        assert config.lease_ttl_secs == 600
+
     def test_default_values(self, full_env):
         with patch.dict(os.environ, full_env, clear=True):
             config = Config.from_env()
@@ -38,6 +44,7 @@ class TestConfigFromEnv:
         assert config.s3_prefix == "MediaSync"
         assert config.max_duration_secs == 7200
         assert config.output_dir == "/tmp/mediasync"
+        assert config.lease_ttl_secs == 10800
         assert config.herald_enabled is True
         # Nothing injected the job id, so notify falls through to the default chat.
         assert config.herald_job_id == ""

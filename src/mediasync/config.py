@@ -37,6 +37,10 @@ class Config:
     max_retries: int = 3
     group_by_channel: bool = True
     output_dir: str = "/tmp/mediasync"
+    #: How long a row left in 'downloading' is treated as owned by the run
+    #: that claimed it. Past this, another run may take it over. Must stay
+    #: comfortably above the longest single download.
+    lease_ttl_secs: int = 10800
     herald_enabled: bool = True
     # The job id the Herald listener injects; empty means "send to the
     # configured default chat". Never invent a token: routing looks it up in
@@ -67,6 +71,7 @@ class Config:
         Optional:
             MEDIASYNC_MAX_DURATION_SECS (default: 7200)
             MEDIASYNC_OUTPUT_DIR (default: /tmp/mediasync)
+            MEDIASYNC_LEASE_TTL_SECS (default: 10800)
             MEDIASYNC_HERALD_ENABLED (default: true)
             HERALD_JOB_ID (injected by the Herald listener; unset means
                           notifications go to the default chat)
@@ -119,6 +124,7 @@ class Config:
             max_retries=env_int("MEDIASYNC_MAX_RETRIES", 3),
             group_by_channel=os.environ.get("MEDIASYNC_GROUP_BY_CHANNEL", "true").lower() == "true",
             output_dir=os.environ.get("MEDIASYNC_OUTPUT_DIR", "/tmp/mediasync"),
+            lease_ttl_secs=env_int("MEDIASYNC_LEASE_TTL_SECS", 10800),
             herald_enabled=os.environ.get("MEDIASYNC_HERALD_ENABLED", "true").lower() == "true",
             herald_job_id=os.environ.get("HERALD_JOB_ID", "").strip(),
         )

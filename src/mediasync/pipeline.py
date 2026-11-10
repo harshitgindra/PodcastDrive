@@ -10,7 +10,9 @@ import contextlib
 import logging
 import os
 import shutil
+import socket
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from common.parallel import iter_parallel
 from mediasync.artwork import download_thumbnail
@@ -89,13 +91,29 @@ def run(config: Config) -> RunStats:
             stats.skipped += 1
             continue
 
+        if _claim_is_live(entry, config):
+            logger.info("Another run is still working on this entry, leaving it alone: %s", entry.url)
+            stats.skipped += 1
+            continue
+
         if _is_duplicate(notion, entry, done_urls):
             logger.info("Duplicate URL for profile %s: %s", entry.profile, entry.url)
             notion.update_status(entry.page_id, Status.DONE, error="Skipped: duplicate URL")
             stats.skipped += 1
             continue
 
-        success = _process_entry(entry, notion, storage, config)
+        try:
+            success = _process_entry(entry, notion, storage, config)
+        except Exception as exc:
+            # One bad entry must not take the whole run with it. Without this
+            # boundary an unexpected error here escaped run(), so every
+            # remaining pending row, the standing-playlist refresh and the
+            # summary were all skipped, and the row stayed mid-flight with no
+            # record of why.
+            logger.error("Unexpected failure processing %s: %s", entry.url, exc, exc_info=True)
+            _record_failure(notion, entry, f"Unexpected error: {exc}")
+            success = False
+
         if success:
             stats.processed += 1
             # A later pending row with the same URL is now a duplicate.
@@ -116,6 +134,50 @@ def run(config: Config) -> RunStats:
         stats.skipped,
     )
     return stats
+
+
+def _claim_marker() -> str:
+    """Describe the run claiming an entry, for the Error column and the log."""
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return f"Downloading on {socket.gethostname()} (pid {os.getpid()}) since {stamp}"
+
+
+def _claim_is_live(entry: MediaEntry, config: Config) -> bool:
+    """True when another run looks like it still owns this entry.
+
+    get_pending() deliberately returns rows left in 'downloading' so work
+    abandoned by a crashed run is picked up again. With two schedulers (the Mac
+    mini and the EC2 runner) that also means a row the other box is actively
+    downloading looks available, and both would download and upload the same
+    media. Notion hands us last_edited_time for free and claiming an entry
+    stamps the row, so a recent edit means someone else holds it, while an old
+    one is a stale claim we are free to take over.
+
+    A row with no readable timestamp is treated as unclaimed: retrying work is
+    recoverable, never retrying it is not.
+    """
+    if entry.status is not Status.DOWNLOADING:
+        return False
+    if entry.last_edited_at is None:
+        return False
+    age_secs = (datetime.now(timezone.utc) - entry.last_edited_at).total_seconds()
+    if age_secs >= config.lease_ttl_secs:
+        logger.warning(
+            "Taking over a claim on %s left %.0fs ago (older than the %ds lease)",
+            entry.url,
+            age_secs,
+            config.lease_ttl_secs,
+        )
+        return False
+    return True
+
+
+def _record_failure(notion: NotionClient, entry: MediaEntry, message: str) -> None:
+    """Best-effort failure note on the row; never raises."""
+    try:
+        notion.update_status(entry.page_id, Status.FAILED, error=message)
+    except Exception as exc:
+        logger.error("Could not record the failure on Notion page %s: %s", entry.page_id, exc)
 
 
 def _process_deletions(notion: NotionClient, storage: StorageBackend) -> int:
@@ -438,7 +500,7 @@ def _process_entry(
         )
         return True
 
-    notion.update_status(entry.page_id, Status.DOWNLOADING)
+    notion.update_status(entry.page_id, Status.DOWNLOADING, error=_claim_marker())
 
     try:
         results = download(

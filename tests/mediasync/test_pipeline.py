@@ -1,6 +1,7 @@
 """Tests for mediasync.pipeline module."""
 
 import dataclasses
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from mediasync.downloader import DownloadError, DownloadResult, DurationExceeded
 from mediasync.notion_client import Format, MediaEntry, Status
 from mediasync.pipeline import (
     RunStats,
+    _claim_is_live,
     _is_duplicate,
     _process_deletions,
     _process_entry,
@@ -281,7 +283,9 @@ class TestProcessEntry:
                 success = _process_entry(pending_entry, mock_notion, mock_storage, config)
 
         assert success is True
-        mock_notion.update_status.assert_any_call(pending_entry.page_id, Status.DOWNLOADING)
+        claim = mock_notion.update_status.call_args_list[0]
+        assert claim.args == (pending_entry.page_id, Status.DOWNLOADING)
+        assert claim.kwargs["error"].startswith("Downloading on ")
         final_call = mock_notion.update_status.call_args_list[-1]
         assert final_call[0][1] == Status.DONE
 
@@ -763,3 +767,132 @@ class TestSanitizeFolderName:
 
         assert _sanitize_folder_name("") == "Unknown"
         assert _sanitize_folder_name("???") == "Unknown"
+
+
+def _claimed(entry, *, age_secs):
+    """Copy of *entry* left mid-download and last touched *age_secs* ago."""
+    return dataclasses.replace(
+        entry,
+        status=Status.DOWNLOADING,
+        last_edited_at=datetime.now(timezone.utc) - timedelta(seconds=age_secs),
+    )
+
+
+class TestProcessingClaim:
+    """A row in 'downloading' belongs to the run that claimed it until it ages out."""
+
+    def test_a_pending_entry_is_never_claimed(self, pending_entry, config):
+        assert _claim_is_live(pending_entry, config) is False
+
+    def test_a_freshly_claimed_entry_is_left_to_its_owner(self, pending_entry, config):
+        assert _claim_is_live(_claimed(pending_entry, age_secs=60), config) is True
+
+    def test_a_claim_older_than_the_lease_can_be_taken_over(self, pending_entry, config, caplog):
+        entry = _claimed(pending_entry, age_secs=config.lease_ttl_secs + 1)
+
+        with caplog.at_level("WARNING"):
+            assert _claim_is_live(entry, config) is False
+
+        assert "Taking over a claim" in caplog.text
+
+    def test_an_unreadable_timestamp_is_treated_as_unclaimed(self, pending_entry, config):
+        entry = dataclasses.replace(pending_entry, status=Status.DOWNLOADING, last_edited_at=None)
+
+        assert _claim_is_live(entry, config) is False
+
+    @patch("mediasync.pipeline._process_entry", return_value=True)
+    @patch("mediasync.pipeline._is_duplicate", return_value=False)
+    @patch("mediasync.pipeline.create_storage")
+    @patch("mediasync.pipeline.NotionClient")
+    def test_run_skips_an_entry_another_run_is_downloading(
+        self, MockNotion, MockStorage, mock_dup, mock_proc, config, pending_entry
+    ):
+        mock_notion = MockNotion.return_value
+        mock_notion.get_deletions.return_value = []
+        mock_notion.get_pending.return_value = [_claimed(pending_entry, age_secs=30)]
+
+        stats = run(config)
+
+        assert stats == RunStats(processed=0, failed=0, deleted=0, skipped=1)
+        mock_proc.assert_not_called()
+        # The other run owns the row; this one must not rewrite its status.
+        mock_notion.update_status.assert_not_called()
+
+    @patch("mediasync.pipeline._process_entry", return_value=True)
+    @patch("mediasync.pipeline._is_duplicate", return_value=False)
+    @patch("mediasync.pipeline.create_storage")
+    @patch("mediasync.pipeline.NotionClient")
+    def test_run_resumes_an_entry_whose_claim_went_stale(
+        self, MockNotion, MockStorage, mock_dup, mock_proc, config, pending_entry
+    ):
+        mock_notion = MockNotion.return_value
+        mock_notion.get_deletions.return_value = []
+        mock_notion.get_pending.return_value = [_claimed(pending_entry, age_secs=config.lease_ttl_secs + 60)]
+
+        stats = run(config)
+
+        assert stats.processed == 1
+        mock_proc.assert_called_once()
+
+    def test_claiming_an_entry_records_who_holds_it(self, pending_entry, config, tmp_path):
+        notion = MagicMock()
+        storage = MagicMock()
+        with patch("mediasync.pipeline.download", side_effect=DownloadError("nope")):
+            assert _process_entry(pending_entry, notion, storage, config) is False
+
+        claim = notion.update_status.call_args_list[0]
+        assert claim.args == (pending_entry.page_id, Status.DOWNLOADING)
+        marker = claim.kwargs["error"]
+        assert marker.startswith("Downloading on ")
+        assert "pid " in marker
+
+
+class TestRunEntryFailureBoundary:
+    """An unexpected error on one entry must not end the run."""
+
+    @patch("mediasync.pipeline.generate_standing_playlists")
+    @patch("mediasync.pipeline._is_duplicate", return_value=False)
+    @patch("mediasync.pipeline.create_storage")
+    @patch("mediasync.pipeline.NotionClient")
+    def test_a_crashing_entry_is_counted_and_the_run_continues(
+        self, MockNotion, MockStorage, mock_dup, mock_playlists, config, pending_entry, caplog
+    ):
+        second = dataclasses.replace(pending_entry, page_id="page-9", url="https://youtube.com/watch?v=second")
+        mock_notion = MockNotion.return_value
+        mock_notion.get_deletions.return_value = []
+        mock_notion.get_pending.return_value = [pending_entry, second]
+
+        def _explode_once(entry, *args, **kwargs):
+            if entry.page_id == pending_entry.page_id:
+                raise RuntimeError("boom")
+            return True
+
+        with patch("mediasync.pipeline._process_entry", side_effect=_explode_once), caplog.at_level("ERROR"):
+            stats = run(config)
+
+        assert stats.processed == 1
+        assert stats.failed == 1
+        assert "Unexpected failure processing" in caplog.text
+        # The row is marked failed rather than left mid-flight, and the rest of
+        # the run (including the standing-playlist refresh) still happens.
+        mock_notion.update_status.assert_called_once_with(
+            pending_entry.page_id, Status.FAILED, error="Unexpected error: boom"
+        )
+        mock_playlists.assert_called_once()
+
+    @patch("mediasync.pipeline._is_duplicate", return_value=False)
+    @patch("mediasync.pipeline.create_storage")
+    @patch("mediasync.pipeline.NotionClient")
+    def test_a_failing_notion_write_does_not_end_the_run(
+        self, MockNotion, MockStorage, mock_dup, config, pending_entry, caplog
+    ):
+        mock_notion = MockNotion.return_value
+        mock_notion.get_deletions.return_value = []
+        mock_notion.get_pending.return_value = [pending_entry]
+        mock_notion.update_status.side_effect = RuntimeError("notion down")
+
+        with patch("mediasync.pipeline._process_entry", side_effect=RuntimeError("boom")), caplog.at_level("ERROR"):
+            stats = run(config)
+
+        assert stats.failed == 1
+        assert "Could not record the failure" in caplog.text

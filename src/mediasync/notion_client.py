@@ -82,6 +82,10 @@ class MediaEntry:
     delete: bool
     file_key: str = ""
     priority: int | None = None
+    #: Notion's own last_edited_time for the row, which is how a run tells a
+    #: freshly claimed entry from one abandoned by a crashed run. None when
+    #: Notion did not send a parseable timestamp.
+    last_edited_at: datetime | None = None
 
 
 class NotionClient:
@@ -381,6 +385,7 @@ class NotionClient:
             delete=delete,
             file_key=file_key,
             priority=priority,
+            last_edited_at=_parse_timestamp(page.get("last_edited_time")),
         )
 
     def _wait_for_slot(self) -> None:
@@ -446,6 +451,19 @@ class NotionClient:
         except Exception as exc:
             logger.error("Notion PATCH %s failed: %s", url, _describe_error(exc))
             return None
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Parse a Notion ISO-8601 timestamp, tolerating the trailing Z form."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _split_rich_text(text: str) -> list[str]:

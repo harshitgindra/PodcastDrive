@@ -2,6 +2,7 @@
 
 import json
 import urllib.error
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -55,6 +56,38 @@ def done_page():
             },
         },
     }
+
+
+class TestParseLastEdited:
+    """last_edited_time is how a run tells a live claim from an abandoned one."""
+
+    def test_parses_the_notion_z_suffixed_timestamp(self, client, sample_page):
+        sample_page["last_edited_time"] = "2026-11-09T18:30:00.000Z"
+
+        entry = client._parse_page(sample_page)
+
+        assert entry.last_edited_at == datetime(2026, 11, 9, 18, 30, tzinfo=timezone.utc)
+
+    def test_a_naive_timestamp_is_read_as_utc(self, client, sample_page):
+        sample_page["last_edited_time"] = "2026-11-09T18:30:00"
+
+        entry = client._parse_page(sample_page)
+
+        assert entry.last_edited_at == datetime(2026, 11, 9, 18, 30, tzinfo=timezone.utc)
+
+    @pytest.mark.parametrize("value", ["", "not a date", None, 1762712345])
+    def test_an_unusable_timestamp_is_none_rather_than_an_error(self, client, sample_page, value):
+        sample_page["last_edited_time"] = value
+
+        entry = client._parse_page(sample_page)
+
+        assert entry is not None
+        assert entry.last_edited_at is None
+
+    def test_a_missing_timestamp_is_none(self, client, sample_page):
+        assert "last_edited_time" not in sample_page
+
+        assert client._parse_page(sample_page).last_edited_at is None
 
 
 class TestParsePage:

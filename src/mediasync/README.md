@@ -109,6 +109,7 @@ Set a number in the **Priority** column. Lower = processed first. Unset entries 
 | MEDIASYNC_MAX_RETRIES | No | 3 | Download retry attempts |
 | MEDIASYNC_GROUP_BY_CHANNEL | No | true | Organize by channel folder |
 | MEDIASYNC_OUTPUT_DIR | No | /tmp/mediasync | Temp download directory |
+| MEDIASYNC_LEASE_TTL_SECS | No | 10800 | How long a row left in `downloading` stays owned by the run that claimed it; past this another run may take it over |
 | MEDIASYNC_HERALD_ENABLED | No | true | Send notifications via Herald |
 
 ## Herald integration
