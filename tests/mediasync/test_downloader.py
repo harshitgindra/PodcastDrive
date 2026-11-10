@@ -824,7 +824,7 @@ class TestForbiddenMediaClientFallback:
     def test_default_client_403_recovers_with_fallback(self, tmp_path):
         calls: list[str | None] = []
         with (
-            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch("mediasync.downloader.player_client_chain", return_value=[None, "mweb"]),
             patch("subprocess.run", side_effect=self._runner(tmp_path, forbidden_clients={None}, calls=calls)),
         ):
             results = self._download(tmp_path)
@@ -845,8 +845,8 @@ class TestForbiddenMediaClientFallback:
         calls: list[str | None] = []
         with (
             patch(
-                "mediasync.downloader.fallback_player_clients",
-                return_value=["tv", "mweb"],
+                "mediasync.downloader.player_client_chain",
+                return_value=[None, "tv", "mweb"],
             ),
             patch(
                 "subprocess.run",
@@ -861,7 +861,7 @@ class TestForbiddenMediaClientFallback:
     def test_all_clients_forbidden_raises_media_forbidden(self, tmp_path):
         calls: list[str | None] = []
         with (
-            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch("mediasync.downloader.player_client_chain", return_value=[None, "mweb"]),
             patch(
                 "subprocess.run",
                 side_effect=self._runner(tmp_path, forbidden_clients={None, "mweb"}, calls=calls),
@@ -874,13 +874,36 @@ class TestForbiddenMediaClientFallback:
         assert "403" in str(excinfo.value)
         assert "mweb" in str(excinfo.value)
 
+    def test_primary_client_is_tried_first_and_costs_no_403(self, tmp_path):
+        """The real win: YouTube now 403s yt-dlp's own pick for every video."""
+        calls: list[str | None] = []
+        with (
+            patch("mediasync.downloader.player_client_chain", return_value=["mweb", None]),
+            patch("subprocess.run", side_effect=self._runner(tmp_path, forbidden_clients={None}, calls=calls)),
+        ):
+            results = self._download(tmp_path)
+
+        assert calls == ["mweb"], "a working primary client must not pay a refused attempt first"
+        assert results[0].path.name == "Song.m4a"
+
+    def test_primary_client_403_falls_back_to_the_yt_dlp_default(self, tmp_path):
+        calls: list[str | None] = []
+        with (
+            patch("mediasync.downloader.player_client_chain", return_value=["mweb", None]),
+            patch("subprocess.run", side_effect=self._runner(tmp_path, forbidden_clients={"mweb"}, calls=calls)),
+        ):
+            results = self._download(tmp_path)
+
+        assert calls == ["mweb", None]
+        assert results[0].path.name == "Song.m4a"
+
     def test_media_forbidden_is_a_download_error(self, tmp_path):
         """The pipeline catches DownloadError, so the Notion row still fails cleanly."""
         assert issubclass(MediaForbiddenError, DownloadError)
 
     def test_no_fallback_configured_is_named_in_the_message(self, tmp_path):
         with (
-            patch("mediasync.downloader.fallback_player_clients", return_value=[]),
+            patch("mediasync.downloader.player_client_chain", return_value=[None]),
             patch(
                 "subprocess.run",
                 side_effect=self._runner(tmp_path, forbidden_clients={None}, calls=[]),
@@ -889,11 +912,11 @@ class TestForbiddenMediaClientFallback:
         ):
             self._download(tmp_path)
 
-        assert "no fallback configured" in str(excinfo.value)
+        assert "yt-dlp default" in str(excinfo.value)
 
     def test_partials_are_discarded_between_clients(self, tmp_path):
         with (
-            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch("mediasync.downloader.player_client_chain", return_value=[None, "mweb"]),
             patch(
                 "subprocess.run",
                 side_effect=self._runner(tmp_path, forbidden_clients={None}, calls=[]),
@@ -919,7 +942,7 @@ class TestForbiddenMediaClientFallback:
             return result
 
         with (
-            patch("mediasync.downloader.fallback_player_clients", return_value=["mweb"]),
+            patch("mediasync.downloader.player_client_chain", return_value=[None, "mweb"]),
             patch("mediasync.downloader.retry_on_error", side_effect=lambda fn, **kw: fn()),
             patch("subprocess.run", side_effect=mock_run),
             pytest.raises(DownloadError) as excinfo,

@@ -189,6 +189,16 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 "Set to an empty string only if the solver cache is pre-seeded.",
             ),
             _s(
+                "YTDLP_PLAYER_CLIENT",
+                "mweb",
+                "The yt-dlp player client tried FIRST for every download. The client yt-dlp "
+                "picks by itself now hands back media URLs bound to a GVS PO token this "
+                "deployment has no provider for, so every download paid a guaranteed HTTP "
+                "403 and a re-extraction before the fallback below rescued it. Set to an "
+                "empty string to restore yt-dlp's own choice as the first attempt; it stays "
+                "in the chain as the last attempt either way.",
+            ),
+            _s(
                 "YTDLP_FALLBACK_PLAYER_CLIENTS",
                 "mweb",
                 "Comma-separated yt-dlp player clients tried, in order, after the default "

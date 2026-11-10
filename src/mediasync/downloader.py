@@ -31,7 +31,13 @@ from mediasync.retry import (
 # downloads silently degraded to storyboard-only formats on any host whose
 # challenge-solver cache had not already been warmed by the podcast pipeline.
 from ytdlp_cookies import cookie_args
-from ytdlp_runtime import fallback_player_clients, player_client_args, remote_component_args
+from ytdlp_runtime import (
+    describe_client,
+    describe_client_chain,
+    player_client_args,
+    player_client_chain,
+    remote_component_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -493,13 +499,15 @@ def _download_format_with_client_fallback(
 ) -> None:
     """Download one format, switching yt-dlp player client after a 403.
 
-    YouTube is rolling out an experiment that binds googlevideo URLs to a GVS
-    PO token per video for some player clients. With no token provider installed
-    the extractor still offers those formats and a range probe even succeeds,
-    but the real download comes back ``HTTP Error 403: Forbidden``. Repeating
-    the identical request is useless, so the inner retry treats a 403 as
-    permanent and this loop re-extracts with each configured fallback client,
-    which yields a format that needs no token.
+    YouTube binds googlevideo URLs to a GVS PO token per video for some player
+    clients. With no token provider installed the extractor still offers those
+    formats and a range probe even succeeds, but the real download comes back
+    ``HTTP Error 403: Forbidden``. Repeating the identical request is useless,
+    so the inner retry treats a 403 as permanent and this loop re-extracts with
+    the next client in :func:`ytdlp_runtime.player_client_chain`, which yields a
+    format that needs no token. The chain starts with the configured primary
+    (``YTDLP_PLAYER_CLIENT``) because the client yt-dlp picks by itself is now
+    token-bound for every video, making it a guaranteed wasted attempt.
 
     Raises:
         MediaForbiddenError: Every client ended in a 403.
@@ -507,14 +515,15 @@ def _download_format_with_client_fallback(
             hit it. A non-403 failure is not retried with another client.
     """
     last_exc: DownloadError | None = None
+    chain = player_client_chain()
 
-    for client in [None, *fallback_player_clients()]:
+    for index, client in enumerate(chain):
         cmd = _build_cmd(url, dl_format, output_path, player_client=client)
-        if client is not None:
+        if index:
             logger.warning(
                 "%s: media URL refused (403) - retrying with yt-dlp player_client=%s",
                 url,
-                client,
+                describe_client(client),
             )
 
         attempt_count = [0]
@@ -551,14 +560,18 @@ def _download_format_with_client_fallback(
             _discard_partials(output_dir, stem)
             continue
 
-        if client is not None:
-            logger.info("%s: downloaded %s using fallback player_client=%s", url, dl_format, client)
+        if index:
+            logger.info(
+                "%s: downloaded %s using fallback player_client=%s",
+                url,
+                dl_format,
+                describe_client(client),
+            )
         return
 
-    tried = ", ".join(fallback_player_clients()) or "no fallback configured"
     raise MediaForbiddenError(
-        f"YouTube refused the media URL for {url} (HTTP 403) on the default player "
-        f"client and on every fallback ({tried}): {last_exc}"
+        f"YouTube refused the media URL for {url} (HTTP 403) on every player "
+        f"client tried ({describe_client_chain(chain)}): {last_exc}"
     ) from last_exc
 
 

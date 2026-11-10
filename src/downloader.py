@@ -24,7 +24,13 @@ from tenacity import (
 import settings
 from retry import is_media_forbidden_error, is_transient_download_error
 from ytdlp_cookies import inject_cookies
-from ytdlp_runtime import fallback_player_clients, inject_remote_components
+from ytdlp_runtime import (
+    describe_client,
+    describe_client_chain,
+    inject_logger,
+    inject_remote_components,
+    player_client_chain,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,13 +140,18 @@ def _download_with_client_fallback(
 ) -> None:
     """Download *video_url*, switching yt-dlp player client after a 403.
 
-    YouTube is rolling out an experiment that binds googlevideo URLs to a GVS
-    PO token per video for some clients (``web_embedded`` in particular). With
-    no PO token provider installed the extractor still returns those formats,
-    and a short range probe even succeeds, but the real download comes back as
-    ``HTTP Error 403: Forbidden``. The video is fine and so is the network: only
-    that one client URL is refused, and asking a different client for the same
-    video yields a format that needs no token.
+    YouTube binds googlevideo URLs to a GVS PO token per video for some
+    clients. With no PO token provider installed the extractor still returns
+    those formats, and a short range probe even succeeds, but the real download
+    comes back as ``HTTP Error 403: Forbidden``. The video is fine and so is the
+    network: only that one client URL is refused, and asking a different client
+    for the same video yields a format that needs no token.
+
+    The clients come from :func:`ytdlp_runtime.player_client_chain`, whose first
+    entry is the configured primary (``YTDLP_PLAYER_CLIENT``). Every client
+    yt-dlp picks by itself is now token-bound, so starting there used to cost a
+    guaranteed 403 plus a re-extraction on every download; it is kept at the end
+    of the chain instead.
 
     Retrying the identical request is useless, so the inner retry predicate
     treats a 403 as permanent and this loop re-extracts with each configured
@@ -152,15 +163,17 @@ def _download_with_client_fallback(
             hit it. A non-403 failure is not retried with another client.
     """
     last_exc: DownloadError | None = None
+    chain = player_client_chain()
 
-    for client in [None, *fallback_player_clients()]:
+    for index, client in enumerate(chain):
         opts = dict(base_opts)
         if client is not None:
             opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+        if index:
             logger.warning(
                 "%s: media URL refused (403) - retrying with yt-dlp player_client=%s",
                 video_id,
-                client,
+                describe_client(client),
             )
         try:
             _ydl_download(opts, video_url, tmp_dir, video_id)
@@ -171,14 +184,13 @@ def _download_with_client_fallback(
                 raise
             continue
 
-        if client is not None:
-            logger.info("%s: downloaded using fallback player_client=%s", video_id, client)
+        if index:
+            logger.info("%s: downloaded using fallback player_client=%s", video_id, describe_client(client))
         return
 
-    tried = ", ".join(fallback_player_clients()) or "no fallback configured"
     raise MediaForbiddenError(
-        f"YouTube refused the media URL for {video_id} (HTTP 403) on the default player "
-        f"client and on every fallback ({tried}): {last_exc}"
+        f"YouTube refused the media URL for {video_id} (HTTP 403) on every player "
+        f"client tried ({describe_client_chain(chain)}): {last_exc}"
     ) from last_exc
 
 
@@ -226,6 +238,7 @@ def download_and_convert(
     }
     inject_cookies(ydl_opts)
     inject_remote_components(ydl_opts)
+    inject_logger(ydl_opts, video_id, logger)
 
     _download_with_client_fallback(ydl_opts, video_url, tmp_dir, video_id, mp3_path)
 

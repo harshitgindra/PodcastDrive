@@ -247,7 +247,17 @@ def is_media_forbidden_error(exc: BaseException) -> bool:
     yt-dlp reports it as text rather than a typed exception, hence the string
     match.
     """
-    msg = str(exc).lower()
+    return looks_media_forbidden(str(exc))
+
+
+def looks_media_forbidden(message: str) -> bool:
+    """Same test as :func:`is_media_forbidden_error`, for a bare message.
+
+    yt-dlp also reports the refusal through its ``logger`` protocol, which hands
+    over a string and no exception, so the log adapter needs the predicate
+    without wrapping the text in an exception first.
+    """
+    msg = message.lower()
     return "403" in msg and "forbidden" in msg
 
 
