@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import ssl
@@ -33,8 +34,12 @@ import settings
 from ad_remover._cache import _save_transcript_cache, _save_transcript_text
 from ad_remover._cachekeys import _safe_namespace
 from ad_remover._ffmpeg import _ffmpeg_bin, _ffprobe_bin
+from ad_remover._segments import _transcript_is_coarse
 
 logger = logging.getLogger("ad_remover")
+
+#: Punctuation that is allowed to close a transcript segment early.
+_SENTENCE_END_CHARS = (".", "?", "!", "\u2026")
 
 
 def _pkg():
@@ -279,7 +284,11 @@ def _run_transcribe_job(
             transcript_data = json.loads(resp.read())
 
         items = transcript_data.get("results", {}).get("items", [])
-        segments = _items_to_segments(items)
+        segments = _items_to_segments(
+            items,
+            max_secs=settings.get("AD_SEGMENT_MAX_SECS"),
+            min_secs=settings.get("AD_SEGMENT_MIN_SECS"),
+        )
         logger.info("[AdRemover] Transcription complete: %d segments from %d items", len(segments), len(items))
         return segments
 
@@ -337,11 +346,23 @@ def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") ->
     s3_client = _pkg().boto3.client("s3", region_name=region)
     transcribe_client = _pkg().boto3.client("transcribe", region_name=region)
 
-    # 0. Check transcript cache (skip expensive Transcribe job if already done)
+    # 0. Check transcript cache (skip expensive Transcribe job if already done).
+    #    Entries written before segments were length-capped hold one
+    #    episode-long segment and are useless for timestamped ad detection, so
+    #    they are re-transcribed instead of reused.
     if use_cache:
         cached = _pkg()._load_transcript_cache(s3_client, bucket, video_id, cache_namespace)
         if cached is not None:
-            return cached
+            if _transcript_is_coarse(cached, settings.get("AD_SEGMENT_MAX_SECS")):
+                logger.warning(
+                    "[AdRemover] Cached transcript for %s has segments far longer than the "
+                    "%.0fs cap (%d segments) — re-transcribing for usable timestamps",
+                    video_id,
+                    settings.get("AD_SEGMENT_MAX_SECS"),
+                    len(cached),
+                )
+            else:
+                return cached
 
     def _run(local_path: str, clip_id: str, label_suffix: str = "") -> list[dict]:
         return _run_transcribe_job(
@@ -414,29 +435,66 @@ def transcribe_audio(mp3_path: str, video_id: str, cache_namespace: str = "") ->
     return segments
 
 
-def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[dict]:
+def _items_to_segments(
+    items: list[dict],
+    gap_threshold: float = 1.5,
+    max_secs: float = 20.0,
+    min_secs: float = 8.0,
+) -> list[dict]:
     """Collapse Transcribe word-items into phrase segments.
 
-    Consecutive words separated by less than *gap_threshold* seconds are
-    grouped into a single segment.
+    A segment is closed when any of three things happens: a silence of more
+    than *gap_threshold* seconds, a sentence-ending punctuation mark once the
+    segment already runs *min_secs*, or the segment reaching *max_secs*.
+
+    The silence rule alone used to be the only one, and edited podcast audio
+    almost never contains a 1.5s gap: whole episodes collapsed into one segment
+    (972 word-items into 1 segment was observed), leaving the ad-detection
+    prompt with a single ``[0.0 - 436.2]`` line and no interior timestamps. The
+    model then had to guess ad boundaries, which is why detections came back as
+    round numbers like ``240.0-250.0``.
 
     Args:
         items:         Raw ``items`` list from the Transcribe JSON response.
         gap_threshold: Maximum silence (seconds) allowed within a segment.
+        max_secs:      Hard cap on segment length in seconds. 0 disables it.
+        min_secs:      A sentence boundary only closes a segment once it has
+                       reached this length, so segments stay quotable.
 
     Returns:
         List of ``{"start": float, "end": float, "text": str}`` dicts.
     """
+    cap = max_secs if max_secs > 0 else math.inf
+
     segments: list[dict] = []
     current_words: list[str] = []
     current_start: float | None = None
     current_end: float = 0.0
+    sentence_ended = False
+
+    def _flush() -> None:
+        nonlocal current_words, current_start, sentence_ended
+        if current_words and current_start is not None:
+            segments.append(
+                {
+                    "start": current_start,
+                    "end": current_end,
+                    "text": " ".join(current_words),
+                }
+            )
+        current_words = []
+        current_start = None
+        sentence_ended = False
 
     for item in items:
         if item.get("type") != "pronunciation":
-            # Punctuation items have no timing — append to current text
+            # Punctuation items have no timing — append to current text, and
+            # remember a sentence end as a preferred place to split.
             if current_words and item.get("alternatives"):
-                current_words.append(item["alternatives"][0].get("content", ""))
+                content = item["alternatives"][0].get("content", "")
+                current_words.append(content)
+                if content.endswith(_SENTENCE_END_CHARS):
+                    sentence_ended = True
             continue
 
         alts = item.get("alternatives", [])
@@ -451,29 +509,20 @@ def _items_to_segments(items: list[dict], gap_threshold: float = 1.5) -> list[di
             current_start = start
             current_end = end
             current_words = [word]
-        elif start - current_end > gap_threshold:
-            # Flush the current segment
-            segments.append(
-                {
-                    "start": current_start,
-                    "end": current_end,
-                    "text": " ".join(current_words),
-                }
-            )
+            sentence_ended = False
+            continue
+
+        duration = current_end - current_start
+        if start - current_end > gap_threshold or duration >= cap or (sentence_ended and duration >= min_secs):
+            _flush()
             current_start = start
             current_end = end
             current_words = [word]
-        else:
-            current_words.append(word)
-            current_end = end
+            continue
 
-    if current_words and current_start is not None:
-        segments.append(
-            {
-                "start": current_start,
-                "end": current_end,
-                "text": " ".join(current_words),
-            }
-        )
+        current_words.append(word)
+        current_end = end
+        sentence_ended = False
 
+    _flush()
     return segments

@@ -307,6 +307,33 @@ class TestEvaluateAdRemovalResiduals:
         assert len(result["proposals"]) == 1
         assert result["proposals"][0]["type"] == "boundary_extension"
 
+    def test_residual_text_comes_from_overlapping_transcript(self, monkeypatch, tmp_path):
+        """A coarse transcript used to leave every proposal saying "(no transcript text)".
+
+        Text was selected by containment, so a transcript segment longer than
+        the residual matched nothing and the report could not say what the
+        residual actually was.
+        """
+        monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
+
+        residual = {"start": 240.0, "end": 250.0}
+        segments = [{"start": 0.0, "end": 436.0, "text": "one episode-long segment mentioning a promo code"}]
+
+        with (
+            patch("ad_remover.transcribe_audio", return_value=segments),
+            patch("ad_remover.detect_ads", return_value=[residual]),
+        ):
+            result = evaluate_ad_removal(
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
+                original_ad_segments=[{"start": 2.1, "end": 13.1}],
+                reports_dir=str(tmp_path),
+            )
+
+        assert "promo code" in result["residual_ad_segments"][0]["text"]
+        assert "(no transcript text)" not in result["proposals"][0]["suggestion"]
+
     def test_missed_result_when_residual_far_from_original(self, monkeypatch, tmp_path):
         """Residual far from all originals → overall result MISSED."""
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")

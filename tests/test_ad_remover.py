@@ -174,6 +174,225 @@ class TestItemsToSegments:
         assert ad_remover._items_to_segments(items) == []
 
 
+class TestSegmentLengthCap:
+    """A segment must stay short enough to carry a usable timestamp.
+
+    Only a >1.5s silence used to close a segment, and edited podcast audio
+    almost never has one: a whole episode arrived as a single segment and the
+    detection prompt had no interior timestamps to cite.
+    """
+
+    @staticmethod
+    def _speech(word_count, *, word_secs=0.4, gap=0.05, sentence_every=0):
+        """Continuous speech with no silence long enough to split a segment."""
+        items = []
+        t = 0.0
+        for i in range(word_count):
+            items.append(
+                {
+                    "type": "pronunciation",
+                    "start_time": f"{t:.2f}",
+                    "end_time": f"{t + word_secs:.2f}",
+                    "alternatives": [{"content": f"w{i}"}],
+                }
+            )
+            t += word_secs + gap
+            if sentence_every and (i + 1) % sentence_every == 0:
+                items.append({"type": "punctuation", "alternatives": [{"content": "."}]})
+        return items
+
+    def test_unbroken_speech_is_not_one_giant_segment(self):
+        import ad_remover
+
+        items = self._speech(600)  # ~270s of speech, zero silences
+        segs = ad_remover._items_to_segments(items, max_secs=20.0, min_secs=8.0)
+
+        assert len(segs) > 10
+        assert max(s["end"] - s["start"] for s in segs) < 22.0
+
+    def test_sentence_boundary_closes_a_segment_once_long_enough(self):
+        import ad_remover
+
+        items = self._speech(120, sentence_every=10)
+        segs = ad_remover._items_to_segments(items, max_secs=20.0, min_secs=8.0)
+
+        # Split at a sentence end rather than mid-phrase, so every segment is
+        # quotable, and none is shorter than the floor.
+        assert all(s["text"].endswith(".") for s in segs[:-1])
+        assert min(s["end"] - s["start"] for s in segs[:-1]) >= 8.0
+
+    def test_short_sentences_are_not_split_apart(self):
+        """The floor keeps one-word sentences from becoming one segment each."""
+        import ad_remover
+
+        items = self._speech(6, sentence_every=1)
+        segs = ad_remover._items_to_segments(items, max_secs=20.0, min_secs=8.0)
+        assert len(segs) == 1
+
+    def test_zero_max_secs_disables_the_cap(self):
+        import ad_remover
+
+        items = self._speech(600)
+        segs = ad_remover._items_to_segments(items, max_secs=0, min_secs=0)
+        assert len(segs) == 1
+
+    def test_silence_still_splits_below_the_cap(self):
+        """The original gap rule is unchanged."""
+        import ad_remover
+
+        items = [
+            {"type": "pronunciation", "start_time": "0.0", "end_time": "1.0", "alternatives": [{"content": "Intro"}]},
+            {"type": "pronunciation", "start_time": "5.0", "end_time": "6.0", "alternatives": [{"content": "Ad"}]},
+        ]
+        segs = ad_remover._items_to_segments(items, max_secs=20.0, min_secs=8.0)
+        assert [x["text"] for x in segs] == ["Intro", "Ad"]
+
+    def test_configured_caps_are_used_by_the_transcribe_job(self, monkeypatch):
+        """_run_transcribe_job reads AD_SEGMENT_MAX_SECS/MIN_SECS."""
+        import json
+
+        from ad_remover import _transcribe as ad_transcribe
+
+        monkeypatch.setenv("AD_SEGMENT_MAX_SECS", "5")
+        monkeypatch.setenv("AD_SEGMENT_MIN_SECS", "0")
+
+        transcript = {"results": {"items": self._speech(60)}}
+        mock_s3 = MagicMock()
+        mock_transcribe = MagicMock()
+        mock_transcribe.get_transcription_job.return_value = {
+            "TranscriptionJob": {
+                "TranscriptionJobStatus": "COMPLETED",
+                "Transcript": {"TranscriptFileUri": "https://example.com/t.json"},
+            }
+        }
+
+        class _Resp:
+            def read(self):
+                return json.dumps(transcript).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        import urllib.request as ur
+
+        monkeypatch.setattr(ur, "urlopen", lambda *a, **k: _Resp())
+
+        segs = ad_transcribe._run_transcribe_job(
+            mock_s3,
+            mock_transcribe,
+            bucket="b",
+            local_path=__file__,
+            clip_id="ep1",
+            namespace="ns",
+            language_code="en-US",
+            poll_interval=0,
+            max_wait=10,
+        )
+        assert max(s["end"] - s["start"] for s in segs) < 6.0
+
+
+class TestTranscriptOverlapping:
+    """Transcript text is selected by overlap, never by containment."""
+
+    def test_a_segment_longer_than_the_window_is_returned(self):
+        """The regression: containment returned nothing exactly when it mattered."""
+        import ad_remover
+
+        segments = [{"start": 0.0, "end": 436.0, "text": "whole episode"}]
+        assert ad_remover._transcript_overlapping(segments, 240.0, 250.0) == segments
+
+    def test_non_overlapping_segments_are_excluded(self):
+        import ad_remover
+
+        segments = [
+            {"start": 0.0, "end": 10.0, "text": "before"},
+            {"start": 100.0, "end": 110.0, "text": "inside"},
+            {"start": 300.0, "end": 310.0, "text": "after"},
+        ]
+        got = ad_remover._transcript_overlapping(segments, 95.0, 115.0)
+        assert [s["text"] for s in got] == ["inside"]
+
+    def test_pad_widens_the_window(self):
+        import ad_remover
+
+        segments = [{"start": 0.0, "end": 10.0, "text": "lead-in"}]
+        assert ad_remover._transcript_overlapping(segments, 12.0, 20.0) == []
+        assert ad_remover._transcript_overlapping(segments, 12.0, 20.0, pad=5) == segments
+
+    def test_verification_has_text_for_a_single_segment_transcript(self):
+        """Previously logged "No transcript text ... keeping segment" and skipped the check."""
+        import ad_remover
+
+        bedrock = MagicMock()
+        bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": '"is_ad": false, "reason": "host outro"}'}]}}
+        }
+        segments = [{"start": 0.0, "end": 1800.0, "text": "that was our guest, a professor at Rice"}]
+        kept = ad_remover._verify_ad_segment({"start": 1003.4, "end": 1109.0}, segments, bedrock, "model-id")
+
+        bedrock.converse.assert_called_once()
+        assert kept is False
+
+
+class TestTranscriptIsCoarse:
+    """Cached transcripts written before the cap are re-transcribed, not reused."""
+
+    def test_episode_long_segment_is_coarse(self):
+        import ad_remover
+
+        assert ad_remover._transcript_is_coarse([{"start": 0.0, "end": 436.0}], 20.0) is True
+
+    def test_capped_segments_are_not_coarse(self):
+        import ad_remover
+
+        segs = [{"start": 0.0, "end": 19.0}, {"start": 19.0, "end": 37.0}]
+        assert ad_remover._transcript_is_coarse(segs, 20.0) is False
+
+    def test_no_cap_means_nothing_is_coarse(self):
+        import ad_remover
+
+        assert ad_remover._transcript_is_coarse([{"start": 0.0, "end": 9999.0}], 0) is False
+
+    def test_empty_transcript_is_not_coarse(self):
+        import ad_remover
+
+        assert ad_remover._transcript_is_coarse([], 20.0) is False
+
+    def test_coarse_cache_entry_is_not_reused(self, monkeypatch, caplog):
+        import json
+        import logging
+
+        import ad_remover
+        from ad_remover import _transcribe as ad_transcribe
+
+        monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("TRANSCRIBE_CACHE_ENABLED", "true")
+        monkeypatch.setenv("AD_SEGMENT_MAX_SECS", "20")
+
+        cached = [{"start": 0.0, "end": 436.0, "text": "one giant segment"}]
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: json.dumps(cached).encode())}
+        mock_transcribe = MagicMock()
+        monkeypatch.setattr(
+            ad_remover, "boto3", MagicMock(client=lambda service, **kw: mock_s3 if service == "s3" else mock_transcribe)
+        )
+        monkeypatch.setattr(
+            ad_remover, "_run_transcribe_job", lambda *a, **k: [{"start": 0.0, "end": 5.0, "text": "x"}]
+        )
+        monkeypatch.setattr(
+            ad_transcribe, "_run_transcribe_job", lambda *a, **k: [{"start": 0.0, "end": 5.0, "text": "x"}]
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = ad_remover.transcribe_audio("/fake.mp3", "ep_coarse")
+
+        assert result != cached
+        assert any("re-transcribing" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # transcribe_audio
 # ---------------------------------------------------------------------------
@@ -3102,6 +3321,13 @@ class TestPromptImprovements:
 
         assert "What is NOT an ad" in ad_remover._AD_DETECTION_PROMPT
         assert "subscribe" in ad_remover._AD_DETECTION_PROMPT
+
+    def test_boundaries_must_be_copied_from_the_transcript(self):
+        """Guessed, round boundaries were the visible symptom of a coarse transcript."""
+        import ad_remover
+
+        prompt = ad_remover._AD_DETECTION_PROMPT
+        assert "Never estimate, round or interpolate a timestamp" in prompt
 
     def test_hints_section_before_rules(self):
         """Change 8: {hints_section} appears before '## Rules' in the prompt."""

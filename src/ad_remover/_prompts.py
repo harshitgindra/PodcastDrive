@@ -68,6 +68,11 @@ Do NOT flag these as ads:
    above even when the voice and style match the rest of the episode.
 4. A single ad segment should rarely exceed 3 minutes (180 seconds). If you find
    yourself marking a very long stretch as an ad, double-check it is not content.
+5. Copy every boundary from the transcript itself: "start" must be the start
+   timestamp of the first transcript line of the ad, and "end" the end timestamp
+   of its last line. Never estimate, round or interpolate a timestamp, and never
+   report a stretch that no transcript line covers. A rounded boundary such as
+   240.0 is a sign you guessed — re-read the lines and use their real values.
 
 ## Reasoning step (do NOT include in output)
 Before writing the JSON, briefly note each candidate segment and why you

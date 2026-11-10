@@ -21,6 +21,59 @@ logger = logging.getLogger("ad_remover")
 AdSegment = dict
 
 
+def _transcript_overlapping(
+    transcript_segments: list[dict],
+    start: float,
+    end: float,
+    pad: float = 0.0,
+) -> list[dict]:
+    """Return the transcript segments that overlap ``[start - pad, end + pad]``.
+
+    Every caller used to select transcript text by *containment*
+    (``s["start"] >= start and s["end"] <= end``), which returns nothing as soon
+    as a transcript segment is longer than the window being asked about. That is
+    exactly the case that needs the text most: verification then kept the
+    segment unchecked, narrowing gave up and discarded a real ad, and the
+    evaluator reported a residual with no transcript to explain it.
+
+    Args:
+        transcript_segments: Transcript segments with ``start``/``end``/``text``.
+        start:               Window start, in seconds.
+        end:                 Window end, in seconds.
+        pad:                 Seconds of slack added to both sides.
+
+    Returns:
+        The overlapping segments, in input order.
+    """
+    lo = start - pad
+    hi = end + pad
+    return [s for s in transcript_segments if s["end"] > lo and s["start"] < hi]
+
+
+def _transcript_is_coarse(segments: list[dict], max_secs: float, factor: float = 3.0) -> bool:
+    """Whether *segments* are too coarse to carry usable timestamps.
+
+    Transcripts cached before segments were length-capped can hold a single
+    episode-long segment, which leaves the detection prompt with no interior
+    timestamps at all. Such an entry is worth re-transcribing rather than
+    reusing.
+
+    Args:
+        segments: Cached transcript segments.
+        max_secs: The configured segment length cap. 0 means no cap, so nothing
+            counts as coarse.
+        factor:   How far past the cap a segment may run before the transcript
+            is judged coarse.
+
+    Returns:
+        ``True`` when any segment runs more than ``max_secs * factor`` long.
+    """
+    if not segments or max_secs <= 0:
+        return False
+    limit = max_secs * factor
+    return any((s.get("end", 0.0) - s.get("start", 0.0)) > limit for s in segments)
+
+
 def _split_segments_into_chunks(segments: list[dict], max_chars: int, overlap_secs: float) -> list[list[dict]]:
     """Split transcript segments into chunks that fit within max_chars.
 

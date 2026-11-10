@@ -28,6 +28,7 @@ from ad_remover._segments import (
     _merge_overlapping_ads,
     _parse_ad_response,
     _split_segments_into_chunks,
+    _transcript_overlapping,
 )
 
 logger = logging.getLogger("ad_remover")
@@ -61,8 +62,7 @@ def _verify_ad_segment(
     """
     text = "\n".join(
         f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}"
-        for s in transcript_segments
-        if s["start"] >= segment["start"] - 5 and s["end"] <= segment["end"] + 5
+        for s in _transcript_overlapping(transcript_segments, segment["start"], segment["end"], pad=5)
     )
     if not text.strip():
         # No transcript coverage — keep the detection rather than risk missing an ad
@@ -151,8 +151,7 @@ def _narrow_oversized_segment(
     """
     text = "\n".join(
         f"[{s['start']:.1f} - {s['end']:.1f}]  {s['text']}"
-        for s in transcript_segments
-        if s["start"] >= segment["start"] - 2 and s["end"] <= segment["end"] + 2
+        for s in _transcript_overlapping(transcript_segments, segment["start"], segment["end"], pad=2)
     )
     if not text.strip():
         logger.warning(
@@ -387,7 +386,7 @@ def detect_ads(segments: list[dict], ad_hints: str = "") -> list[AdSegment]:
 
     if valid and segments:
         for ad in valid:
-            covered = [s["text"] for s in segments if s["start"] >= ad["start"] - 5 and s["end"] <= ad["end"] + 5]
+            covered = [s["text"] for s in _transcript_overlapping(segments, ad["start"], ad["end"], pad=5)]
             snippet = " ".join(covered)[:300]
             logger.info(
                 "[AdRemover] Ad segment [%.1f–%.1f]: %s…",

@@ -288,6 +288,17 @@ SECTIONS: Final[tuple[tuple[str, tuple[Setting, ...]], ...]] = (
                 60.0,
                 "Overlap between consecutive detection chunks, so ads at a seam are seen.",
             ),
+            _f(
+                "AD_SEGMENT_MAX_SECS",
+                20.0,
+                "Longest transcript segment, in seconds. Long runs of speech are split so ad "
+                "detection has real timestamps to cite instead of guessing. 0 disables the cap.",
+            ),
+            _f(
+                "AD_SEGMENT_MIN_SECS",
+                8.0,
+                "Shortest transcript segment that a sentence boundary is allowed to close, in seconds.",
+            ),
             _s(
                 "AD_TRANSCRIBE_WINDOWS",
                 "",

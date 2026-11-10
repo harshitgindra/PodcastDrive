@@ -223,7 +223,7 @@ def evaluate_ad_removal(
     logger.info("[AdEvaluator] Evaluating ad removal quality for %s", episode_id)
 
     # Import here to avoid circular deps and keep optional dependency clear
-    from ad_remover import detect_ads, transcribe_audio
+    from ad_remover import _transcript_overlapping, detect_ads, transcribe_audio
 
     # --- Step 1: Re-transcribe the cleaned file ---
     try:
@@ -250,7 +250,7 @@ def evaluate_ad_removal(
     # Attach transcript text to residual segments for better proposals
     for residual in residual_segments:
         covered_text = " ".join(
-            s["text"] for s in segments if s["start"] >= residual["start"] - 2 and s["end"] <= residual["end"] + 2
+            s["text"] for s in _transcript_overlapping(segments, residual["start"], residual["end"], pad=2)
         )
         residual["text"] = covered_text[:300]
 

@@ -117,6 +117,8 @@ from ad_remover._segments import (
     _merge_overlapping_ads,
     _parse_ad_response,  # noqa: F401 - re-exported for callers/tests
     _split_segments_into_chunks,  # noqa: F401 - re-exported for callers/tests
+    _transcript_is_coarse,  # noqa: F401 - re-exported for callers/tests
+    _transcript_overlapping,  # noqa: F401 - re-exported for callers/tests
 )
 from utils import retry_aws_call  # noqa: F401 - re-exported as the ad_remover.retry_aws_call patch target
 
