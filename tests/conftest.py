@@ -70,3 +70,18 @@ def _reset_ffmpeg_crash_breaker():
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_overcast_budget():
+    """The Overcast ping budget is per run, so it is process-wide state.
+
+    Without a reset, the first few tests to upload a feed spend the budget and
+    every later test sees pinging already exhausted.
+    """
+    module = sys.modules.get("s3_manager")
+    if module is not None:
+        module._OVERCAST_BUDGET.reset()
+    yield
+    if module is not None:
+        module._OVERCAST_BUDGET.reset()

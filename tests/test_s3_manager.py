@@ -4,12 +4,29 @@ import logging
 import os
 import tempfile
 import unittest.mock
+import urllib.error
 
 import boto3
 import pytest
 from moto import mock_aws
 
+import s3_manager as s3_manager_module
+import settings as settings_module
 from s3_manager import ManifestUnavailableError, S3Manager
+
+_REAL_SETTINGS_GET = settings_module.get
+
+
+def _settings_with(**overrides):
+    """settings.get with a few values forced, everything else as configured."""
+
+    def fake_get(name):
+        if name in overrides:
+            return overrides[name]
+        return _REAL_SETTINGS_GET(name)
+
+    return fake_get
+
 
 BUCKET = "test-podcast-bucket"
 PLAYLIST_ID = "PLtest123"
@@ -381,6 +398,130 @@ class TestUploadFeed:
 
         s3_manager._invalidate_cloudfront.assert_called_once()
         s3_manager._ping_overcast.assert_called_once()
+
+
+class TestFeedChangeDetection:
+    """Only a feed whose episodes changed deserves an invalidation and a ping.
+
+    Every build stamps a fresh <lastBuildDate>, so a plain byte comparison said
+    "changed" for all fifteen podcasts on every run. That spent a CloudFront
+    invalidation and an Overcast ping per feed per hour on identical content,
+    and the pings came back 429.
+    """
+
+    FEED = (
+        "<rss><channel><title>Show</title>"
+        "<lastBuildDate>{stamp}</lastBuildDate>"
+        "<item><title>{episode}</title></item>"
+        "</channel></rss>"
+    )
+
+    def test_a_new_timestamp_alone_is_not_a_change(self, s3_manager):
+        s3_manager.upload_feed(self.FEED.format(stamp="Mon, 10 Nov 2026 10:00:00 -0000", episode="Ep 1"))
+
+        s3_manager._invalidate_cloudfront = unittest.mock.MagicMock()
+        s3_manager._ping_overcast = unittest.mock.MagicMock()
+        s3_manager.upload_feed(self.FEED.format(stamp="Mon, 10 Nov 2026 11:00:00 -0000", episode="Ep 1"))
+
+        s3_manager._invalidate_cloudfront.assert_not_called()
+        s3_manager._ping_overcast.assert_not_called()
+
+    def test_a_new_episode_is_a_change_even_with_the_same_timestamp(self, s3_manager):
+        stamp = "Mon, 10 Nov 2026 10:00:00 -0000"
+        s3_manager.upload_feed(self.FEED.format(stamp=stamp, episode="Ep 1"))
+
+        s3_manager._invalidate_cloudfront = unittest.mock.MagicMock()
+        s3_manager._ping_overcast = unittest.mock.MagicMock()
+        s3_manager.upload_feed(self.FEED.format(stamp=stamp, episode="Ep 2"))
+
+        s3_manager._invalidate_cloudfront.assert_called_once()
+        s3_manager._ping_overcast.assert_called_once()
+
+    def test_the_newer_body_is_still_stored(self, s3_manager):
+        """Skipping the side effects must not skip the upload itself."""
+        s3_manager.upload_feed(self.FEED.format(stamp="Mon, 10 Nov 2026 10:00:00 -0000", episode="Ep 1"))
+        newer = self.FEED.format(stamp="Mon, 10 Nov 2026 11:00:00 -0000", episode="Ep 1")
+        key = s3_manager.upload_feed(newer)
+
+        stored = s3_manager.s3_client.get_object(Bucket=BUCKET, Key=key)["Body"].read().decode()
+        assert stored == newer
+
+
+class TestOvercastPingBudget:
+    """The ping budget is per run and shared by every podcast in the process."""
+
+    def test_budget_of_zero_disables_pinging(self, s3_manager):
+        with unittest.mock.patch.object(
+            s3_manager_module.settings,
+            "get",
+            _settings_with(CLOUDFRONT_BASE="https://cdn", OVERCAST_PING_BUDGET=0),
+        ):
+            with unittest.mock.patch.object(s3_manager_module.urllib.request, "urlopen") as urlopen:
+                s3_manager._ping_overcast()
+        urlopen.assert_not_called()
+
+    def test_pings_stop_once_the_budget_is_spent(self, s3_manager):
+        with unittest.mock.patch.object(
+            s3_manager_module.settings,
+            "get",
+            _settings_with(CLOUDFRONT_BASE="https://cdn", OVERCAST_PING_BUDGET=2),
+        ):
+            with unittest.mock.patch.object(s3_manager_module.urllib.request, "urlopen") as urlopen:
+                urlopen.return_value.__enter__.return_value.status = 200
+                for _ in range(5):
+                    s3_manager._ping_overcast()
+        assert urlopen.call_count == 2
+
+    def test_a_rate_limited_ping_stops_the_rest_of_the_run(self, s3_manager):
+        """429 is answered per client, so the next feed would only waste a ping."""
+        error = urllib.error.HTTPError("https://overcast.fm/ping", 429, "Too Many", {}, None)
+        with unittest.mock.patch.object(
+            s3_manager_module.settings,
+            "get",
+            _settings_with(CLOUDFRONT_BASE="https://cdn", OVERCAST_PING_BUDGET=10),
+        ):
+            with unittest.mock.patch.object(s3_manager_module.urllib.request, "urlopen", side_effect=error) as urlopen:
+                s3_manager._ping_overcast()
+                first_round = urlopen.call_count
+                s3_manager._ping_overcast()
+                s3_manager._ping_overcast()
+
+        # One ping plus its single retry, and nothing after that.
+        assert first_round == 2
+        assert urlopen.call_count == 2
+
+    def test_pings_are_spaced_rather_than_sent_back_to_back(self, s3_manager):
+        """Back-to-back pings are what trips the limiter."""
+        with unittest.mock.patch.object(
+            s3_manager_module.settings,
+            "get",
+            _settings_with(CLOUDFRONT_BASE="https://cdn", OVERCAST_PING_BUDGET=5, OVERCAST_PING_MIN_GAP_SECS=15.0),
+        ):
+            with unittest.mock.patch.object(s3_manager_module.urllib.request, "urlopen") as urlopen:
+                urlopen.return_value.__enter__.return_value.status = 200
+                with unittest.mock.patch.object(s3_manager_module.time, "sleep") as sleep:
+                    s3_manager._ping_overcast()
+                    assert sleep.call_args_list == []  # the first ping waits for nothing
+                    s3_manager._ping_overcast()
+
+        assert sleep.call_count == 1
+        assert 0 < sleep.call_args[0][0] <= 15.0
+
+    def test_a_skipped_ping_is_not_a_warning(self, s3_manager, caplog):
+        """Fifteen warnings a run trained us to ignore the log; this is routine."""
+        with unittest.mock.patch.object(
+            s3_manager_module.settings,
+            "get",
+            _settings_with(CLOUDFRONT_BASE="https://cdn", OVERCAST_PING_BUDGET=1),
+        ):
+            with unittest.mock.patch.object(s3_manager_module.urllib.request, "urlopen") as urlopen:
+                urlopen.return_value.__enter__.return_value.status = 200
+                s3_manager._ping_overcast()
+                with caplog.at_level(logging.INFO):
+                    s3_manager._ping_overcast()
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("Skipping Overcast ping" in r.message for r in caplog.records)
 
 
 class TestGetObjectSize:

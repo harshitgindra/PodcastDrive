@@ -3,7 +3,9 @@
 import functools
 import json
 import logging
+import re
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -23,6 +25,77 @@ logger = logging.getLogger(__name__)
 #: Shared SSL context for the Overcast ping — built once at import rather than on
 #: every feed upload (each build loads and parses the certifi CA bundle).
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+
+#: Matches the one element of a feed body that changes on every build. The whole
+#: point of comparing bodies is to tell "nothing happened" from "a new episode";
+#: a rebuild timestamp answers neither, and leaving it in made every feed look
+#: changed on every run, which invalidated the CDN and pinged Overcast 15 times
+#: an hour for nothing.
+_LAST_BUILD_DATE = re.compile(rb"<lastBuildDate>.*?</lastBuildDate>", re.DOTALL)
+
+
+class _OvercastBudget:
+    """Process-wide ration of Overcast crawl pings for one run.
+
+    Overcast's ping endpoint is shared and rate-limited, and the limiter is per
+    client rather than per feed: pinging fifteen podcasts in a row means the
+    later ones get 429s whatever their content. One budget, held across every
+    S3Manager in the process, keeps the pings that can still work and drops the
+    ones that cannot.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._spent = 0
+        self._last_ping_at = 0.0
+        self._rate_limited = False
+
+    def reset(self) -> None:
+        """Forget this run's spending. For tests and long-lived processes."""
+        with self._lock:
+            self._spent = 0
+            self._last_ping_at = 0.0
+            self._rate_limited = False
+
+    def claim(self) -> tuple[bool, float]:
+        """Claim one ping: (allowed, seconds to wait first).
+
+        The wait is returned rather than slept through while holding the lock,
+        so a parallel caller is not blocked behind someone else's spacing.
+        """
+        budget = settings.get("OVERCAST_PING_BUDGET")
+        if budget <= 0:
+            return False, 0.0
+        with self._lock:
+            if self._rate_limited or self._spent >= budget:
+                return False, 0.0
+            self._spent += 1
+            gap = settings.get("OVERCAST_PING_MIN_GAP_SECS")
+            now = time.monotonic()
+            wait = 0.0
+            if self._last_ping_at and gap > 0:
+                wait = max(0.0, gap - (now - self._last_ping_at))
+            self._last_ping_at = now + wait
+            return True, wait
+
+    def note_rate_limited(self) -> None:
+        """Stop spending: the limiter is engaged, so later pings would waste."""
+        with self._lock:
+            self._rate_limited = True
+
+    @property
+    def exhausted_reason(self) -> str:
+        with self._lock:
+            if self._rate_limited:
+                return "Overcast is rate-limiting this run"
+            if self._spent >= max(0, settings.get("OVERCAST_PING_BUDGET")):
+                return f"the run's ping budget of {settings.get('OVERCAST_PING_BUDGET')} is spent"
+        return "pinging is disabled"
+
+
+#: The one budget for this process.
+_OVERCAST_BUDGET = _OvercastBudget()
+
 
 #: Cache-Control sent with episode audio.  The bytes under a given name never
 #: change now that a rewrite gets its own name, so a long TTL is safe and keeps
@@ -340,16 +413,22 @@ class S3Manager:
         return key
 
     def _feed_body_matches(self, key: str, new_body: bytes) -> bool:
-        """Return True if the object at *key* already equals *new_body*.
+        """Return True if the object at *key* is the same feed as *new_body*.
+
+        The rebuild timestamp is ignored. Every build stamps a fresh
+        ``lastBuildDate``, so a byte comparison said "changed" on every run of
+        every podcast, and the invalidation and the Overcast ping that follow
+        were spent on feeds whose episodes were identical.
 
         Any read error (missing object, transient S3 failure) returns False so
         the caller falls back to the safe behaviour of invalidating and pinging.
         """
         try:
             resp = self.s3_client.get_object(Bucket=self.bucket, Key=key)
-            return resp["Body"].read() == new_body
+            old_body = resp["Body"].read()
         except Exception:
             return False
+        return _LAST_BUILD_DATE.sub(b"", old_body) == _LAST_BUILD_DATE.sub(b"", new_body)
 
     def get_object_size(self, key: str) -> int:
         """Return the content length (in bytes) of an S3 object.
@@ -597,6 +676,11 @@ class S3Manager:
         """Ping Overcast to trigger an immediate feed crawl.
 
         Uses Overcast's ping API: https://overcast.fm/podcasterinfo
+        Subject to the run's shared ping budget, because the rate limiter is per
+        client: once it is engaged, further pings only produce 429s. A skipped
+        ping costs nothing but latency, since Overcast crawls the feed on its own
+        schedule anyway.
+
         Retries once on HTTP 429 (rate-limited), honoring the server's
         ``Retry-After`` header when present (capped), otherwise a short default.
         All other failures are logged as warnings and swallowed.
@@ -606,6 +690,18 @@ class S3Manager:
             logger.debug("No CLOUDFRONT_BASE set, skipping Overcast ping")
             return
         feed_url = f"{cloudfront_base}/{self.playlist_id}/feed.xml"
+
+        allowed, wait = _OVERCAST_BUDGET.claim()
+        if not allowed:
+            logger.info(
+                "Skipping Overcast ping for %s — %s; Overcast will crawl on its own schedule",
+                feed_url,
+                _OVERCAST_BUDGET.exhausted_reason,
+            )
+            return
+        if wait > 0:
+            logger.debug("Spacing the Overcast ping for %s by %.0fs", feed_url, wait)
+            time.sleep(wait)
 
         try:
             params = urllib.parse.urlencode({"urlprefix": feed_url})
@@ -618,6 +714,10 @@ class S3Manager:
                         logger.info("Overcast ping sent for %s (status=%d)", feed_url, resp.status)
                         return
                 except urllib.error.HTTPError as exc:
+                    if exc.code == 429:
+                        # The limiter is client-wide: every later feed this run
+                        # would get the same answer, so stop spending on them.
+                        _OVERCAST_BUDGET.note_rate_limited()
                     if exc.code == 429 and attempt == 0:
                         # Rate-limited — wait and retry once. Prefer the server's
                         # Retry-After hint (seconds), capped so a huge value can't
