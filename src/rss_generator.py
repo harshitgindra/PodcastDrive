@@ -12,6 +12,7 @@ from email.utils import format_datetime
 from xml.dom.minidom import parseString
 
 import settings
+from episode_object import published_filename, published_key
 from models import EpisodeMeta, PlaylistMeta, VideoEntry
 from s3_manager import S3Manager
 from utils import parse_upload_date
@@ -414,7 +415,7 @@ def build_episode_metadata(
             continue
         seen_titles.add(normalised_title)
 
-        s3_key = f"{playlist_id}/episodes/{video_id}.mp3"
+        s3_key = published_key(playlist_id, video_id, manifest)
         file_size = _episode_file_size(s3, s3_key, video_id, manifest)
         if not isinstance(file_size, int) or file_size <= 0:
             logger.error(
@@ -424,7 +425,7 @@ def build_episode_metadata(
             if omitted_ids is not None:
                 omitted_ids.append(video_id)
             continue
-        cloudfront_url = f"{cloudfront_base}/{playlist_id}/episodes/{video_id}.mp3"
+        cloudfront_url = f"{cloudfront_base}/{playlist_id}/episodes/{published_filename(video_id, manifest)}"
 
         manifest_entry = manifest.get(video_id, {}) if manifest else {}
         summary = manifest_entry.get("summary", "") if isinstance(manifest_entry, dict) else ""

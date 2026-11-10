@@ -145,6 +145,107 @@ class TestUploadEpisode:
             os.unlink(tmp_path)
 
 
+class TestEpisodeCachingAndRevisions:
+    """Audio bytes under a given name must never change.
+
+    The feed is invalidated and recrawled the moment an episode is republished,
+    so it advertises the new byte length immediately. If the CDN still holds the
+    old body at that path, players get a length mismatch and stall. A rewrite
+    therefore goes to its own name, and an in-place replacement invalidates.
+    """
+
+    def _mp3(self, body=b"fake mp3 data"):
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(body)
+            return f.name
+
+    def test_sets_a_long_cache_control(self, s3_manager):
+        path = self._mp3()
+        try:
+            key = s3_manager.upload_episode(path, "vid001", max_age_days=5)
+            obj = s3_manager.s3_client.head_object(Bucket=BUCKET, Key=key)
+            assert obj["CacheControl"] == "public, max-age=86400"
+        finally:
+            os.unlink(path)
+
+    def test_revision_lands_on_its_own_object(self, s3_manager):
+        path = self._mp3()
+        try:
+            first = s3_manager.upload_episode(path, "vid001", 5)
+            second = s3_manager.upload_episode(path, "vid001", 5, revision=1)
+            assert first == f"{PLAYLIST_ID}/episodes/vid001.mp3"
+            assert second == f"{PLAYLIST_ID}/episodes/vid001.r1.mp3"
+            # The published object is untouched, so the CDN copy stays valid.
+            assert s3_manager.s3_client.head_object(Bucket=BUCKET, Key=first)
+        finally:
+            os.unlink(path)
+
+    def test_a_revision_is_still_the_same_episode_when_listing(self, s3_manager):
+        s3_manager.s3_client.put_object(Bucket=BUCKET, Key=f"{PLAYLIST_ID}/episodes/vid001.mp3", Body=b"a")
+        s3_manager.s3_client.put_object(Bucket=BUCKET, Key=f"{PLAYLIST_ID}/episodes/vid001.r2.mp3", Body=b"b")
+        assert s3_manager.list_existing_episodes() == {"vid001"}
+
+    def test_first_upload_does_not_invalidate(self, s3_manager):
+        path = self._mp3()
+        s3_manager._invalidate_cloudfront = unittest.mock.MagicMock()
+        try:
+            s3_manager.upload_episode(path, "vid001", 5)
+            s3_manager._invalidate_cloudfront.assert_not_called()
+        finally:
+            os.unlink(path)
+
+    def test_replacing_an_object_invalidates_that_exact_path(self, s3_manager):
+        path = self._mp3()
+        try:
+            s3_manager.upload_episode(path, "vid001", 5)
+            s3_manager._invalidate_cloudfront = unittest.mock.MagicMock()
+            s3_manager.upload_episode(path, "vid001", 5)
+            s3_manager._invalidate_cloudfront.assert_called_once_with(f"/{PLAYLIST_ID}/episodes/vid001.mp3")
+        finally:
+            os.unlink(path)
+
+    def test_an_unreadable_head_assumes_the_object_exists(self, s3_manager):
+        """A needless invalidation costs cents; a missed one serves stale audio."""
+        from botocore.exceptions import ClientError
+
+        error = ClientError({"Error": {"Code": "AccessDenied"}}, "HeadObject")
+        s3_manager.s3_client.head_object = unittest.mock.MagicMock(side_effect=error)
+        assert s3_manager._object_exists("anything") is True
+
+    def test_a_missing_object_is_not_a_replacement(self, s3_manager):
+        assert s3_manager._object_exists(f"{PLAYLIST_ID}/episodes/nope.mp3") is False
+
+
+class TestDeleteEpisodeRevisions:
+    def test_deletes_every_revision_of_the_episode(self, s3_manager):
+        for name in ("vid001.mp3", "vid001.r1.mp3", "vid001.r2.mp3", "vid002.mp3"):
+            s3_manager.s3_client.put_object(Bucket=BUCKET, Key=f"{PLAYLIST_ID}/episodes/{name}", Body=b"a")
+
+        s3_manager.delete_episode("vid001")
+
+        remaining = s3_manager.s3_client.list_objects_v2(Bucket=BUCKET, Prefix=f"{PLAYLIST_ID}/episodes/")
+        keys = [o["Key"] for o in remaining.get("Contents", [])]
+        assert keys == [f"{PLAYLIST_ID}/episodes/vid002.mp3"]
+
+    def test_does_not_delete_an_episode_whose_id_merely_shares_a_prefix(self, s3_manager):
+        for name in ("vid001.mp3", "vid0019.mp3"):
+            s3_manager.s3_client.put_object(Bucket=BUCKET, Key=f"{PLAYLIST_ID}/episodes/{name}", Body=b"a")
+
+        s3_manager.delete_episode("vid001")
+
+        assert s3_manager.list_existing_episodes() == {"vid0019"}
+
+    def test_a_failed_listing_still_deletes_the_plain_name(self, s3_manager):
+        s3_manager.s3_client.put_object(Bucket=BUCKET, Key=f"{PLAYLIST_ID}/episodes/vid001.mp3", Body=b"a")
+        s3_manager.s3_client.get_paginator = unittest.mock.MagicMock(side_effect=RuntimeError("no listing"))
+
+        s3_manager.delete_episode("vid001")
+
+        conn = boto3.client("s3", region_name="us-east-1")
+        listing = conn.list_objects_v2(Bucket=BUCKET, Prefix=f"{PLAYLIST_ID}/episodes/")
+        assert listing.get("Contents", []) == []
+
+
 class TestSetLifecycleExpiration:
     def test_creates_lifecycle_rule(self, s3_manager):
         s3_manager.set_lifecycle_expiration(5)

@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 import boto3
 
 import settings
+from episode_object import split_episode_filename
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,10 @@ def _published_episode_ids(s3, bucket: str) -> set[str] | None:
             for page in paginator.paginate(Bucket=bucket, Prefix=f"{playlist}episodes/"):
                 for obj in page.get("Contents", []):
                     name = obj["Key"].rsplit("/", 1)[-1]
-                    if name.endswith(".mp3"):
-                        ids.add(name[: -len(".mp3")])
+                    split = split_episode_filename(name)
+                    if split is not None:
+                        # A revision marker (``<id>.r2.mp3``) is the same episode.
+                        ids.add(split[0])
     except Exception as exc:
         logger.warning("Could not list published episodes; keeping the retry queue unchanged: %s", exc)
         return None

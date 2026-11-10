@@ -35,6 +35,7 @@ import ad_remover
 import settings
 from ad_remover import FFMPEG_CRASHED, REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
 from config_provider import PodcastConfig
+from episode_object import REVISION_FIELD, published_filename, published_key, published_revision
 from podcast_downloader import (
     EpisodeMeta,
     download_episode,
@@ -217,7 +218,7 @@ def _build_podcast_feed_xml(
         guid_el.set("isPermaLink", "false")
         guid_el.text = xml_safe(ep.guid)
 
-        cf_url = f"{cloudfront_base}/{slug}/episodes/{ep_id}.mp3"
+        cf_url = f"{cloudfront_base}/{slug}/episodes/{published_filename(ep_id, manifest)}"
         enc = ET.SubElement(item, "enclosure")
         enc.set("url", cf_url)
         enc.set("length", str(size))
@@ -865,8 +866,12 @@ def process_podcast_feed(
                 if file_size <= 0:
                     raise OSError(f"{cleaned_path} is empty — refusing to publish it")
 
+                # Repaired audio goes to a new object name rather than over the
+                # published one: the CDN keeps serving a path whose bytes never
+                # change, and the feed points listeners at the new path.
+                revision = published_revision(manifest, ep_id) + 1 if is_repair else 0
                 logger.info("[PodcastSync] Uploading %s to S3", ep_id)
-                thread_s3.upload_episode(cleaned_path, ep_id, age_days)
+                thread_s3.upload_episode(cleaned_path, ep_id, age_days, revision=revision)
 
                 if cleaned_path and os.path.exists(cleaned_path):
                     os.remove(cleaned_path)
@@ -880,6 +885,7 @@ def process_podcast_feed(
                     "ep_id": ep_id,
                     "uploaded": True,
                     "file_size": file_size,
+                    "revision": revision,
                     "summary": summary,
                     "ads_removed": ads_removed,
                     "ad_removal_checked": ad_removal_checked,
@@ -936,6 +942,7 @@ def process_podcast_feed(
                                     "splice_failed_count",
                                     "cdn",
                                     "ad_removal_fail_reason",
+                                    REVISION_FIELD,
                                 }
                             },
                             "size": result["file_size"],
@@ -950,6 +957,7 @@ def process_podcast_feed(
                             # Preserve historical count so the exhaustion cap still works
                             "splice_failed_count": _prev_fail_count,
                             "cdn": result.get("cdn", "unknown"),
+                            REVISION_FIELD: result.get("revision", 0),
                         }
                         if result.get("ad_removal_failed"):
                             manifest[ep_id]["ad_removal_fail_reason"] = result.get("fail_reason", "")
@@ -1103,7 +1111,7 @@ def process_podcast_feed(
                     len(missing_from_manifest),
                 )
                 for eid in missing_from_manifest:
-                    s3_key = f"{slug}/episodes/{eid}.mp3"
+                    s3_key = published_key(slug, eid, manifest)
                     entry: dict = manifest.setdefault(eid, {})
 
                     # Backfill size via head_object.  A failure must not become

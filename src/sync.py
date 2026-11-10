@@ -16,6 +16,7 @@ import ad_remover
 import settings
 from ad_remover import FFMPEG_CRASHED, REMOVE_ADS_ERROR_CODES, remove_ads, validate_audio_file
 from downloader import MediaForbiddenError, download_and_convert
+from episode_object import REVISION_FIELD, published_revision
 from extractor import BotDetectedError, ExtractionError, extract_playlist, extract_video_metadata
 from models import PlaylistMeta
 from rss_generator import build_episode_metadata, generate_rss
@@ -409,11 +410,17 @@ def process_playlist(
                 if file_size <= 0:
                     raise OSError(f"{mp3_path} is empty — refusing to publish it")
 
+                # Repaired audio goes to a new object name rather than over the
+                # published one, so the CDN never has to serve a path whose bytes
+                # changed underneath it.
+                revision = published_revision(manifest, video.video_id) + 1 if is_recent_repair else 0
+
                 # Upload to S3 (lifecycle expiration is set automatically)
                 logger.info("[Step 4] Uploading %s to S3", video.video_id)
-                s3.upload_episode(mp3_path, video.video_id, max_age_days)
+                s3.upload_episode(mp3_path, video.video_id, max_age_days, revision=revision)
                 os.remove(mp3_path)
                 manifest[video.video_id]["size"] = file_size
+                manifest[video.video_id][REVISION_FIELD] = revision
                 if is_recent_repair:
                     # A no-ads result is a completed check; only the marker
                     # indicates an actual successful splice.

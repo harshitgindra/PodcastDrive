@@ -2259,7 +2259,7 @@ class TestAdRemovalFallbackPublication:
         assert response["new_episodes"] == 1
         assert response["ad_removal_failed"] == 1
         assert response["failed"] == 0
-        s3.upload_episode.assert_called_once_with(str(original), "guid-fallback", 7)
+        s3.upload_episode.assert_called_once_with(str(original), "guid-fallback", 7, revision=0)
         saved = s3.save_manifest.call_args[0][0]
         assert saved["guid-fallback"]["ad_removal_failed"] is True
         # The published audio still has its ads, so the repair pass must retry it.
@@ -2274,7 +2274,7 @@ class TestAdRemovalFallbackPublication:
     def test_exception_publishes_validated_original(self, tmp_path):
         response, s3, _, original, _ = self._run(tmp_path, exception=RuntimeError("transcribe down"))
         assert response["ad_removal_failed"] == 1
-        s3.upload_episode.assert_called_once_with(str(original), "guid-fallback", 7)
+        s3.upload_episode.assert_called_once_with(str(original), "guid-fallback", 7, revision=0)
 
     def test_invalid_original_does_not_upload(self, tmp_path):
         response, s3, remove_ads, _, _ = self._run(tmp_path, valid=False)

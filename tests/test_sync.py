@@ -1511,7 +1511,7 @@ class TestAdRemovalFallbackPublication:
         assert result["new_episodes"] == 1
         assert result["ad_removal_failed"] == 1
         assert result["failed"] == 0
-        s3.upload_episode.assert_called_once_with(str(original), "vid-fallback", 30)
+        s3.upload_episode.assert_called_once_with(str(original), "vid-fallback", 30, revision=0)
         saved = s3.save_manifest.call_args[0][0]
         assert saved["vid-fallback"]["ad_removal_failed"] is True
         assert saved["vid-fallback"]["ads_removed"] is False
@@ -1520,7 +1520,7 @@ class TestAdRemovalFallbackPublication:
     def test_exception_publishes_validated_original(self, tmp_path):
         result, s3, _, original = self._run(tmp_path, remove_ads_error="bedrock unavailable")
         assert result["ad_removal_failed"] == 1
-        s3.upload_episode.assert_called_once_with(str(original), "vid-fallback", 30)
+        s3.upload_episode.assert_called_once_with(str(original), "vid-fallback", 30, revision=0)
 
     def test_invalid_original_fails_closed(self, tmp_path):
         result, s3, remove_ads, _ = self._run(tmp_path, valid=False)

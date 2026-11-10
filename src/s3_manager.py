@@ -15,6 +15,7 @@ import certifi
 from botocore.exceptions import ClientError
 
 import settings
+from episode_object import episode_key, split_episode_filename
 from utils import retry_aws_call
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,11 @@ logger = logging.getLogger(__name__)
 #: Shared SSL context for the Overcast ping — built once at import rather than on
 #: every feed upload (each build loads and parses the certifi CA bundle).
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+
+#: Cache-Control sent with episode audio.  The bytes under a given name never
+#: change now that a rewrite gets its own name, so a long TTL is safe and keeps
+#: range requests served from the edge.
+EPISODE_CACHE_CONTROL = "public, max-age=86400"
 
 
 def _parse_retry_after(value: str | None, *, default: float, cap: float) -> float:
@@ -85,7 +91,9 @@ class S3Manager:
 
         Returns:
             A set of video_id strings extracted from S3 keys matching
-            ``{playlist_id}/episodes/{video_id}.mp3``.
+            ``{playlist_id}/episodes/{video_id}.mp3``.  Repaired audio carries a
+            revision marker (``{video_id}.r2.mp3``); it is the same episode, so
+            the marker is stripped and the bare id returned.
         """
         prefix = f"{self.playlist_id}/episodes/"
         video_ids: set[str] = set()
@@ -99,29 +107,46 @@ class S3Manager:
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 filename = key.rsplit("/", 1)[-1]
-                if filename.endswith(".mp3"):
-                    video_id = filename[:-4]
-                    video_ids.add(video_id)
+                split = split_episode_filename(filename)
+                if split is not None:
+                    video_ids.add(split[0])
 
         return video_ids
 
-    def upload_episode(self, local_path: str, video_id: str, max_age_days: int = 5) -> str:
+    def upload_episode(
+        self,
+        local_path: str,
+        video_id: str,
+        max_age_days: int = 5,
+        revision: int = 0,
+    ) -> str:
         """Upload an MP3 file to S3 and configure automatic expiration.
 
         Sets an S3 lifecycle rule so the object is automatically deleted after
         *max_age_days* days, removing the need for explicit age-based deletion.
+
+        When the upload replaces an object that already exists, the CDN copy of
+        that exact path is invalidated: the feed advertises the new byte length
+        immediately, and a player handed the stale body stalls or re-downloads.
+        Passing a *revision* avoids the replacement altogether by writing to a
+        new name, which is the preferred path for repaired audio.
 
         Args:
             local_path: Path to the local MP3 file.
             video_id: Video ID used to construct the S3 key.
             max_age_days: Number of days after which S3 should auto-delete
                 this object (default: 5).
+            revision: Audio revision for this episode.  0 (the default) is the
+                plain ``{video_id}.mp3``; a rewrite passes 1, 2, ... and lands
+                on ``{video_id}.rN.mp3`` instead of overwriting.
 
         Returns:
             The S3 key where the file was uploaded
-            (``{playlist_id}/episodes/{video_id}.mp3``).
+            (``{playlist_id}/episodes/{video_id}.mp3``, or
+            ``{playlist_id}/episodes/{video_id}.rN.mp3`` for a revision).
         """
-        key = f"{self.playlist_id}/episodes/{video_id}.mp3"
+        key = episode_key(self.playlist_id, video_id, revision)
+        replacing = self._object_exists(key)
         logger.info("Uploading episode %s to s3://%s/%s", video_id, self.bucket, key)
         retry_aws_call(
             lambda: self.s3_client.upload_file(
@@ -130,16 +155,41 @@ class S3Manager:
                 key,
                 ExtraArgs={
                     "ContentType": "audio/mpeg",
+                    "CacheControl": EPISODE_CACHE_CONTROL,
                     "Tagging": f"expiry-days={max_age_days}",
                 },
             ),
             label="s3.upload_file",
         )
+        if replacing:
+            logger.info("Replaced existing audio at %s — invalidating the CDN copy", key)
+            self._invalidate_cloudfront(f"/{key}")
         # Only PUT the lifecycle rule when max_age_days actually changes
         if self._lifecycle_days_set != max_age_days:
             self.set_lifecycle_expiration(max_age_days)
             self._lifecycle_days_set = max_age_days
         return key
+
+    def _object_exists(self, key: str) -> bool:
+        """Return True if *key* is already in the bucket.
+
+        Only a definite 404 answers False.  Any other failure answers True,
+        because the cost of asymmetry runs one way: a needless invalidation is
+        a few cents, a missed one leaves listeners on stale bytes.
+        """
+        try:
+            self.s3_client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if code in ("404", "NoSuchKey", "NotFound") or status == 404:
+                return False
+            logger.warning("Could not check whether %s exists (%s) — assuming it does", key, code)
+            return True
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Could not check whether %s exists (%s) — assuming it does", key, exc)
+            return True
 
     def set_lifecycle_expiration(self, max_age_days: int) -> None:
         """Upsert an S3 lifecycle rule to auto-delete episodes after *max_age_days* days.
@@ -199,17 +249,51 @@ class S3Manager:
             logger.warning("Failed to set lifecycle rule for %s: %s", self.playlist_id, exc)
 
     def delete_episode(self, video_id: str) -> None:
-        """Delete an MP3 episode from S3.
+        """Delete an episode from S3, every revision of its audio included.
+
+        A repaired episode has more than one object (``<id>.mp3``,
+        ``<id>.r1.mp3``, ...).  Deleting only the plain name would leave the
+        rewrites behind to be counted as orphans on every later run.
 
         Args:
             video_id: Video ID of the episode to delete.
         """
-        key = f"{self.playlist_id}/episodes/{video_id}.mp3"
-        logger.info("Deleting episode %s from s3://%s/%s", video_id, self.bucket, key)
+        for key in self._episode_revision_keys(video_id):
+            logger.info("Deleting episode %s from s3://%s/%s", video_id, self.bucket, key)
+            self._delete_object(key)
+
+    def _delete_object(self, key: str) -> None:
+        """Delete one object, with the shared AWS retry policy."""
         retry_aws_call(
             lambda: self.s3_client.delete_object(Bucket=self.bucket, Key=key),
             label="s3.delete_object",
         )
+
+    def _episode_revision_keys(self, video_id: str) -> list[str]:
+        """Every object holding audio for *video_id*, oldest name first.
+
+        Falls back to the plain name if the listing fails, so a delete still
+        does the obvious thing rather than silently nothing.
+        """
+        prefix = f"{self.playlist_id}/episodes/{video_id}"
+        plain = episode_key(self.playlist_id, video_id)
+        try:
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+            pages = retry_aws_call(
+                lambda: list(paginator.paginate(Bucket=self.bucket, Prefix=prefix)),
+                label="s3.list_objects_v2",
+            )
+        except Exception as exc:
+            logger.warning("Could not list revisions of %s (%s) — deleting %s only", video_id, exc, plain)
+            return [plain]
+        keys = []
+        for page in pages:
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                split = split_episode_filename(key.rsplit("/", 1)[-1])
+                if split is not None and split[0] == video_id:
+                    keys.append(key)
+        return sorted(keys) if keys else [plain]
 
     def upload_feed(self, xml_content: str) -> str:
         """Upload the RSS feed XML to S3 and invalidate CloudFront cache.
