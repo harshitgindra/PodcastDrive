@@ -294,6 +294,35 @@ class TestSegmentLengthCap:
         assert max(s["end"] - s["start"] for s in segs) < 6.0
 
 
+class TestPollIntervalFloor:
+    """A zero poll interval must not spin the status loop forever."""
+
+    def test_zero_poll_interval_still_times_out(self):
+        from ad_remover import _transcribe as ad_transcribe
+
+        mock_s3 = MagicMock()
+        mock_transcribe = MagicMock()
+        # Never completes: with `elapsed += poll_interval` and poll_interval=0,
+        # elapsed stayed at 0 and this loop never exited.
+        mock_transcribe.get_transcription_job.return_value = {
+            "TranscriptionJob": {"TranscriptionJobStatus": "IN_PROGRESS"}
+        }
+
+        with pytest.raises(RuntimeError, match="timed out"):
+            ad_transcribe._run_transcribe_job(
+                mock_s3,
+                mock_transcribe,
+                bucket="b",
+                local_path=__file__,
+                clip_id="ep1",
+                namespace="ns",
+                language_code="en-US",
+                poll_interval=0,
+                max_wait=3,
+            )
+        assert mock_transcribe.get_transcription_job.call_count == 3
+
+
 class TestTranscriptOverlapping:
     """Transcript text is selected by overlap, never by containment."""
 

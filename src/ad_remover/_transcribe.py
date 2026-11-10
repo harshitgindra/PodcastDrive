@@ -235,11 +235,15 @@ def _run_transcribe_job(
             label=f"transcribe.start_transcription_job{label_suffix}",
         )
 
+        # A poll_interval of 0 would leave `elapsed` at 0 forever and spin this
+        # loop until the process is killed, so every pass counts for at least a
+        # second of the max_wait budget.
+        tick = max(1, poll_interval)
         elapsed = 0
         consecutive_poll_errors = 0
         while elapsed < max_wait:
             time.sleep(poll_interval)
-            elapsed += poll_interval
+            elapsed += tick
             try:
                 status_resp = transcribe_client.get_transcription_job(TranscriptionJobName=job_name)
                 consecutive_poll_errors = 0

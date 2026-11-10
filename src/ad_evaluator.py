@@ -136,6 +136,31 @@ def _build_proposals(
 # ---------------------------------------------------------------------------
 
 
+def _translate_cleaned_span_to_original(
+    cleaned_start: float,
+    cleaned_end: float,
+    removed_segments: list[dict],
+) -> tuple[float, float]:
+    """Translate a cleaned-file span back to original-file space, keeping its length.
+
+    Translating the two endpoints independently inflates any span that
+    straddles a removed segment: the end picks up the removed duration that the
+    start did not, and a 12.2s residual was reported as a 70.5s one. The start
+    is the anchor — it is the point the residual was actually heard at — so the
+    end is derived from it and the span's own length.
+
+    Args:
+        cleaned_start:    Span start in the cleaned file (seconds).
+        cleaned_end:      Span end in the cleaned file (seconds).
+        removed_segments: Segments removed during ad splicing (``{start, end}``).
+
+    Returns:
+        ``(start, end)`` in original-file space, the same length as the input.
+    """
+    start = _translate_cleaned_to_original(cleaned_start, removed_segments)
+    return start, start + max(0.0, cleaned_end - cleaned_start)
+
+
 def _translate_cleaned_to_original(
     cleaned_time: float,
     removed_segments: list[dict],
@@ -242,10 +267,9 @@ def evaluate_ad_removal(
     # Fix #1: translate residual timestamps from cleaned-file space to original-file
     # space so _classify_residual compares apples-to-apples.
     for residual in residual_segments:
-        residual["original_time_start"] = round(
-            _translate_cleaned_to_original(residual["start"], original_ad_segments), 2
-        )
-        residual["original_time_end"] = round(_translate_cleaned_to_original(residual["end"], original_ad_segments), 2)
+        o_start, o_end = _translate_cleaned_span_to_original(residual["start"], residual["end"], original_ad_segments)
+        residual["original_time_start"] = round(o_start, 2)
+        residual["original_time_end"] = round(o_end, 2)
 
     # Attach transcript text to residual segments for better proposals
     for residual in residual_segments:

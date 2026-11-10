@@ -14,6 +14,7 @@ from ad_evaluator import (
     RESULT_PARTIAL,
     _build_proposals,
     _classify_residual,
+    _translate_cleaned_span_to_original,
     evaluate_ad_removal,
 )
 
@@ -271,6 +272,58 @@ class TestEvaluateAdRemovalClean:
 # ---------------------------------------------------------------------------
 # evaluate_ad_removal — partial/missed residuals
 # ---------------------------------------------------------------------------
+
+
+#: The cold-call episode whose 12.2s residual was reported as a 70.5s one.
+_COLD_CALL_REMOVED = [
+    {"start": 0.4, "end": 20.72},
+    {"start": 656.63, "end": 682.0},
+    {"start": 690.1, "end": 723.03},
+]
+
+
+class TestTranslateCleanedSpan:
+    """A residual keeps its own length when mapped back to original time."""
+
+    def test_span_that_straddles_a_removed_segment_keeps_its_length(self):
+        """Translating both ends independently stretched 12.2s into 70.5s."""
+        start, end = _translate_cleaned_span_to_original(634.6, 646.8, _COLD_CALL_REMOVED)
+
+        assert start == pytest.approx(654.92, abs=0.01)
+        assert round(end - start, 2) == 12.2
+        assert end == pytest.approx(667.12, abs=0.01)
+
+    def test_span_before_any_removal_is_unchanged(self):
+        removed = [{"start": 100.0, "end": 150.0}]
+        assert _translate_cleaned_span_to_original(10.0, 20.0, removed) == (10.0, 20.0)
+
+    def test_no_removals_is_identity(self):
+        assert _translate_cleaned_span_to_original(5.0, 9.0, []) == (5.0, 9.0)
+
+    def test_inverted_span_does_not_go_backwards(self):
+        start, end = _translate_cleaned_span_to_original(30.0, 20.0, [])
+        assert end == start
+
+    def test_report_uses_the_span_translation(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
+
+        residual = {"start": 634.6, "end": 646.8}
+        segments = [{"start": 630.0, "end": 650.0, "text": "sponsor read"}]
+
+        with (
+            patch("ad_remover.transcribe_audio", return_value=segments),
+            patch("ad_remover.detect_ads", return_value=[residual]),
+        ):
+            result = evaluate_ad_removal(
+                "fake.mp3",
+                "ep001",
+                "my-podcast",
+                original_ad_segments=_COLD_CALL_REMOVED,
+                reports_dir=str(tmp_path),
+            )
+
+        r = result["residual_ad_segments"][0]
+        assert round(r["original_time_end"] - r["original_time_start"], 1) == 12.2
 
 
 class TestEvaluateAdRemovalResiduals:
