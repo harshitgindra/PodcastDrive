@@ -402,6 +402,54 @@ if [ "$DRY_RUN" = false ]; then
   ok "Distributed lock held (lease ${LOCK_TTL_SECONDS}s, renewed every ${LOCK_RENEW_INTERVAL}s)"
 fi
 
+# --- Ad-cache helpers (shared by --clear-cache and --reprocess) ---
+# List the episode IDs a podcast owns, from its S3 episode objects. Revision
+# suffixes (<id>.rN.mp3, written when an episode is repaired) map back to the
+# same ID.
+episode_ids_for_slug() {
+    aws s3 ls "s3://${S3_BUCKET}/${1}/episodes/" 2>/dev/null \
+        | awk '{print $4}' \
+        | sed -e 's/\.mp3$//' -e 's/\.r[0-9][0-9]*$//' \
+        | grep -v '^$' \
+        | sort -u
+}
+
+# Delete the ad-segments cache entries belonging to ONE podcast slug.
+#
+# Two layouts coexist. RSS podcasts namespace their cache under
+# transcribe-cache/<slug>/, so the slug prefix is enough. YouTube playlists
+# predate namespacing and still write flat keys (transcribe-cache/<id>_ads.json)
+# that carry no slug, so the only way to scope them is by the playlist's own
+# episode IDs. Deleting every flat key when one playlist was asked for would
+# throw away every other podcast's Bedrock results, so we never do that here.
+clear_ad_cache_for_slug() {
+    local slug="$1"
+    local ids="$2"
+    local deleted=0
+    local key
+
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        aws s3 rm "s3://${S3_BUCKET}/${key}" --quiet 2>/dev/null && deleted=$((deleted + 1))
+    done < <(
+        {
+            # Namespaced layout: every ad cache under the slug prefix.
+            aws s3 ls "s3://${S3_BUCKET}/transcribe-cache/${slug}/" --recursive 2>/dev/null \
+                | awk '{print $4}'
+            # Flat layout: only the keys named after an episode this podcast
+            # owns, matched against a real listing so the count stays honest
+            # (aws s3 rm succeeds silently on a key that was never there).
+            if [ -n "$ids" ]; then
+                aws s3 ls "s3://${S3_BUCKET}/transcribe-cache/" 2>/dev/null | awk '{print $4}' \
+                    | grep -F -x -f <(printf '%s\n' "$ids" | sed 's/$/_ads.json/') \
+                    | sed 's|^|transcribe-cache/|'
+            fi
+        } | grep '_ads\.json$' | sort -u
+    )
+
+    info "Cleared ${deleted} ad-cache entry/entries for ${slug} (transcripts kept)"
+}
+
 # --- Reset mode: wipe all S3 data for enabled podcasts then exit ---
 if [ "$DO_RESET" = true ]; then
     FORCE_FLAG=""
@@ -430,13 +478,8 @@ if [ "${DO_CLEAR_CACHE:-false}" = true ]; then
         echo "Clearing ALL ad-segments caches under s3://${S3_BUCKET}/${PREFIX}"
         aws s3 rm "s3://${S3_BUCKET}/${PREFIX}" --recursive --exclude "*" --include "*_ads.json"
     else
-        PREFIX="transcribe-cache/"
         echo "Clearing ad-segments cache for: ${TARGET_SLUG}"
-        # List and delete only _ads.json files — transcript (.json) and text (.txt) are kept
-        aws s3 ls "s3://${S3_BUCKET}/${PREFIX}" | awk '{print $4}' |              grep "_ads\.json$" | while read -r key; do
-                aws s3 rm "s3://${S3_BUCKET}/${PREFIX}${key}"
-                echo "  Deleted: ${PREFIX}${key}"
-            done || true
+        clear_ad_cache_for_slug "$TARGET_SLUG" "$(episode_ids_for_slug "$TARGET_SLUG")"
     fi
     exit 0
 fi
@@ -549,6 +592,10 @@ print(extract_playlist_id('$INPUT'))
     echo ""
 
     for slug in "${SLUGS[@]}"; do
+        # Read the episode IDs first: the flat ad-cache keys are named after
+        # them, and the delete below is what would otherwise erase that link.
+        EPISODE_IDS="$(episode_ids_for_slug "$slug")"
+
         # Delete episode MP3s
         EP_PREFIX="${slug}/episodes/"
         EP_COUNT=$(aws s3 ls "s3://${S3_BUCKET}/${EP_PREFIX}" 2>/dev/null | wc -l | tr -d " " || true)
@@ -564,11 +611,8 @@ print(extract_playlist_id('$INPUT'))
         aws s3 rm "s3://${S3_BUCKET}/${slug}/feed.xml" --quiet 2>/dev/null || true
         aws s3 rm "s3://${S3_BUCKET}/${slug}/manifest.json" --quiet 2>/dev/null || true
 
-        # Clear ad-segments cache (keep transcripts — they save Transcribe cost)
-        CACHE_PREFIX="transcribe-cache/"
-        aws s3 ls "s3://${S3_BUCKET}/${CACHE_PREFIX}" 2>/dev/null | awk '{print $4}' |              grep "_ads\.json$" | while read -r key; do
-                aws s3 rm "s3://${S3_BUCKET}/${CACHE_PREFIX}${key}" --quiet
-            done || true
+        # Clear this podcast's ad-segments cache (transcripts stay - they save Transcribe cost)
+        clear_ad_cache_for_slug "$slug" "$EPISODE_IDS"
     done
 
     ok "Cleared episodes + ad caches. Now re-syncing with ad removal..."
