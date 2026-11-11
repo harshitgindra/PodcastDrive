@@ -187,7 +187,12 @@ def _translate_cleaned_to_original(
 
     for seg in sorted_segs:
         keep_duration = max(0.0, seg["start"] - original_cursor)
-        if cleaned_cursor + keep_duration >= cleaned_time:
+        # Strictly greater, not >=: splicing joins two keep intervals at a single
+        # instant, and the audio heard at that instant is the first sample of the
+        # *following* keep. Accepting it here instead mapped a residual that sits
+        # just after a cut back onto the cut itself, so the report claimed an ad
+        # was still audible inside the range that had been removed.
+        if cleaned_cursor + keep_duration > cleaned_time:
             # cleaned_time lands inside this keep interval
             return original_cursor + (cleaned_time - cleaned_cursor)
         cleaned_cursor += keep_duration

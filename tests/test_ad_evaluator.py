@@ -304,6 +304,36 @@ class TestTranslateCleanedSpan:
         start, end = _translate_cleaned_span_to_original(30.0, 20.0, [])
         assert end == start
 
+    def test_span_starting_at_a_splice_junction_lands_after_the_cut(self):
+        """A residual heard the instant a cut ends is content, not the cut.
+
+        The @pamphlet_in episode removed [440.0-467.2]; the evaluator then found
+        a 21.4s residual starting at cleaned 440.0, which is exactly the splice
+        junction. Mapping that instant into the keep interval that *ends* there
+        reported the residual at 440.0-461.4 -- inside the range that had just
+        been removed, which is audio no listener can ever hear.
+        """
+        removed = [{"start": 440.0, "end": 467.2}]
+
+        start, end = _translate_cleaned_span_to_original(440.0, 461.4, removed)
+
+        assert start == pytest.approx(467.2, abs=0.01)
+        assert end == pytest.approx(488.6, abs=0.01)
+        assert start >= removed[0]["end"]
+
+    def test_a_cut_at_the_very_start_shifts_the_whole_span(self):
+        """A pre-roll removed from 0.0 leaves cleaned 0.0 at the pre-roll's end."""
+        start, end = _translate_cleaned_span_to_original(0.0, 10.0, [{"start": 0.0, "end": 20.0}])
+
+        assert (start, end) == (20.0, 30.0)
+
+    def test_junction_fix_leaves_interior_points_alone(self):
+        """Only the boundary instant moves; everything inside a keep is unchanged."""
+        removed = [{"start": 440.0, "end": 467.2}]
+
+        assert _translate_cleaned_span_to_original(100.0, 110.0, removed) == (100.0, 110.0)
+        assert _translate_cleaned_span_to_original(439.9, 440.0, removed) == (439.9, 440.0)
+
     def test_report_uses_the_span_translation(self, monkeypatch, tmp_path):
         monkeypatch.setenv("EVALUATE_AD_REMOVAL", "true")
 
