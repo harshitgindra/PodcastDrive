@@ -329,8 +329,8 @@ export PODCASTS_YAML="${PODCASTS_YAML:-${SCRIPT_DIR}/podcasts.yaml}"
 export PYTHONPATH="${SCRIPT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # --- Runner identification ---
-# Auto-detect: hostname + trigger source (cron/webhook/manual)
-# TRIGGER can be set by cron wrapper or webhook; defaults to "manual"
+# Auto-detect: hostname + trigger source (schedule/manual)
+# TRIGGER can be set by the launchd/cron wrapper; defaults to "manual"
 _HOSTNAME=$(hostname -s 2>/dev/null || echo "unknown")
 export RUNNER="${RUNNER:-${_HOSTNAME}/${TRIGGER:-manual}}"
 

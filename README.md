@@ -86,6 +86,8 @@ A JSON report with improvement proposals is written to `reports/{slug}/{episode_
 │   ├── test_ad_evaluator.py    # Ad evaluator — 100% coverage
 │   ├── test_ad_fixes.py        # Regression tests for the 5 ad-removal fixes
 │   └── test_*.py               # All other module tests
+├── docs/                       # Reference material
+│   └── iam-policy.json         # Least-privilege AWS policy this project needs
 ├── eval/                       # Ad-cleaner manual test artefacts (git-ignored)
 │   ├── transcripts/            # Cached Transcribe results keyed by episode ID
 │   ├── episodes/               # Downloaded source MP3s for repeated testing
@@ -127,7 +129,7 @@ s3://your-bucket/
 
 - Python 3.10+ (3.12+ recommended)
 - FFmpeg (for MP3 conversion and ad splicing)
-- AWS CLI v2 configured with credentials
+- AWS CLI v2 configured with credentials (see [`docs/iam-policy.json`](docs/iam-policy.json) for the least-privilege policy this project needs; substitute your bucket name for `${S3_BUCKET}`)
 - An S3 bucket
 - A CloudFront distribution pointing to the S3 bucket
 - *(For ad removal)* AWS Transcribe and Bedrock (Claude Sonnet or Amazon Nova Pro) enabled in your region

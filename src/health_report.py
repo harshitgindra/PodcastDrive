@@ -278,7 +278,7 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
             {
                 "priority": "HIGH",
                 "issue": "No runs recorded in this period",
-                "action": "Check cron/scheduler is active. Verify EC2 instance is running.",
+                "action": "Check the scheduler (launchd agent) is loaded and the host is awake.",
             }
         )
 
@@ -300,7 +300,7 @@ def _analyze(runs: list[dict], log_summaries: list[dict]) -> dict:
                     {
                         "priority": "HIGH",
                         "issue": f"No runs in the last {hours_since:.1f} hours (last run: {latest_start.isoformat()})",
-                        "action": "Check cron schedule, EC2 uptime, and run.lock for stale entries.",
+                        "action": "Check the schedule, host uptime, and run.lock for stale entries.",
                     }
                 )
 

@@ -146,8 +146,8 @@ def _claim_is_live(entry: MediaEntry, config: Config) -> bool:
     """True when another run looks like it still owns this entry.
 
     get_pending() deliberately returns rows left in 'downloading' so work
-    abandoned by a crashed run is picked up again. With two schedulers (the Mac
-    mini and the EC2 runner) that also means a row the other box is actively
+    abandoned by a crashed run is picked up again. With more than one host
+    running the pipeline that also means a row another box is actively
     downloading looks available, and both would download and upload the same
     media. Notion hands us last_edited_time for free and claiming an entry
     stamps the row, so a recent edit means someone else holds it, while an old

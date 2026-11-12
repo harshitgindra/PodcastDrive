@@ -38,7 +38,7 @@ class TestFormatMessage:
         assert "All-In *with* Chamath_" in msg
 
     def test_failure_message(self, monkeypatch):
-        monkeypatch.setenv("RUNNER", "ec2")
+        monkeypatch.setenv("RUNNER", "mini")
         results = [
             {"name": "ThinkSchool", "new_episodes": 0, "failed": 2, "bot_detected": False},
         ]
