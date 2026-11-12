@@ -115,6 +115,108 @@ def _splice_attempts_for_cdn(cdn: str) -> int:
     return max(1, settings.get("SPLICE_MAX_ATTEMPTS_PER_RUN"))
 
 
+def _rotation_match_key(title: str, pub_date: datetime | str) -> tuple[str, str] | None:
+    """Build the (title, publication-day) identity used to re-find a rotated GUID.
+
+    Some hosts (confirmed for Acast) silently mint new GUIDs for episodes that
+    are already in the feed, keeping the title and publication date identical.
+    Matching on that pair is what lets pending work survive the rotation.
+    Returns ``None`` when either half is missing, so an incomplete manifest row
+    can never match anything.
+    """
+    if isinstance(pub_date, str):
+        try:
+            parsed = datetime.fromisoformat(pub_date)
+        except ValueError:
+            return None
+    else:
+        parsed = pub_date
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    normalized = re.sub(r"\s+", " ", (title or "")).strip().casefold()
+    if not normalized:
+        return None
+    return (normalized, parsed.astimezone(UTC).date().isoformat())
+
+
+def _reconcile_rotated_splice_retries(
+    manifest: dict,
+    all_feed_episodes: list[EpisodeMeta],
+    splice_retry_ids: set[str],
+    existing_ids: set[str],
+    podcast_name: str,
+) -> set[str]:
+    """Follow splice-retry episodes whose GUID was rotated by the host.
+
+    A splice-failed episode is pending work tracked by its episode ID.  When
+    the host re-issues a new GUID for the same episode (same title, same
+    publication day), the old manifest row becomes unmatchable: the retry logic
+    looks for an ID the feed no longer contains, so the re-admission path finds
+    nothing and the episode is stranded forever, while the new GUID looks like
+    a brand-new episode and is usually filtered out by the age window.
+
+    This migrates the pending row onto the new ID -- carrying the lifetime
+    ``splice_failed_count`` so retries stay bounded -- and drops the dead one.
+    Mutates ``manifest`` and returns the updated retry-ID set.
+    """
+    if not splice_retry_ids:
+        return splice_retry_ids
+
+    feed_ids = {episode_id_from_guid(ep.guid) for ep in all_feed_episodes}
+    stale_ids = sorted(splice_retry_ids - feed_ids)
+    if not stale_ids:
+        return splice_retry_ids
+
+    # Only episodes the feed presents as unseen can be the rotated successor:
+    # an ID already in the manifest or in S3 is a different episode.
+    candidates: dict[tuple[str, str], list[EpisodeMeta]] = {}
+    for ep in all_feed_episodes:
+        ep_id = episode_id_from_guid(ep.guid)
+        if ep_id in existing_ids or ep_id in manifest:
+            continue
+        key = _rotation_match_key(ep.title, ep.pub_date)
+        if key is not None:
+            candidates.setdefault(key, []).append(ep)
+
+    updated = set(splice_retry_ids)
+    for old_id in stale_ids:
+        entry = manifest.get(old_id)
+        if not isinstance(entry, dict):
+            continue
+        key = _rotation_match_key(entry.get("title", ""), entry.get("pub_date", ""))
+        if key is None:
+            continue
+        matches = candidates.get(key, [])
+        if len(matches) != 1:
+            if len(matches) > 1:
+                logger.warning(
+                    "[PodcastSync] Splice-retry episode %s is gone from '%s' and %d feed episodes "
+                    "share its title and date -- not guessing which GUID replaced it",
+                    old_id,
+                    podcast_name,
+                    len(matches),
+                )
+            continue
+        new_id = episode_id_from_guid(matches[0].guid)
+        manifest[new_id] = {**entry, "guid": matches[0].guid}
+        del manifest[old_id]
+        updated.discard(old_id)
+        updated.add(new_id)
+        # Stop the successor from also being treated as an unseen episode if a
+        # second stale row happens to carry the same title and date.
+        candidates[key] = []
+        logger.warning(
+            "[PodcastSync] '%s' re-issued the GUID for %r -- carrying %d splice failure(s) "
+            "from retired episode ID %s onto %s",
+            podcast_name,
+            entry.get("title", ""),
+            entry.get("splice_failed_count", 0),
+            old_id,
+            new_id,
+        )
+    return updated
+
+
 def _build_podcast_feed_xml(
     podcast: PodcastConfig,
     episodes: list[EpisodeMeta],
@@ -436,6 +538,9 @@ def process_podcast_feed(
             for k, v in manifest.items()
             if isinstance(v, dict) and v.get("splice_failed") and v.get("splice_failed_count", 0) >= _max_splice_retries
         }
+        splice_retry_ids = _reconcile_rotated_splice_retries(
+            manifest, all_feed_episodes, splice_retry_ids, existing_ids, podcast.name
+        )
         if splice_retry_ids:
             logger.info(
                 "[PodcastSync] %d episode(s) marked for splice retry: %s",

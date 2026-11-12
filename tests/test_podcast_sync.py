@@ -15,6 +15,8 @@ from podcast_downloader import EpisodeMeta
 from podcast_sync import (
     CDN_RETRY_OVERRIDES,
     _build_podcast_feed_xml,
+    _reconcile_rotated_splice_retries,
+    _rotation_match_key,
     _splice_attempts_for_cdn,
     detect_cdn,
     process_podcast_feed,
@@ -2177,6 +2179,64 @@ class TestSpliceRetryAgeBypass:
         assert "guid-old" in processed
         assert "guid-new" in processed
 
+    def test_rotated_guid_retry_episode_is_followed_and_drained(self, tmp_path, monkeypatch):
+        """Acast re-issues GUIDs: the pending row must follow the episode.
+
+        Without this the retry ID is absent from the feed, so the re-admission
+        path finds nothing, while the replacement GUID looks brand new and is
+        stripped by the age window -- the episode is stranded forever.
+        """
+        from datetime import timedelta
+
+        monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
+        podcast = _make_podcast(max_age_days=3, max_downloads=1)
+        old_pub = datetime.now(UTC) - timedelta(days=30)
+        new_ep = _make_episode_meta("guid-new", "New in window")
+        rotated_ep = EpisodeMeta(
+            title="Prenups",
+            url="https://example.com/rotated.mp3",
+            pub_date=old_pub,
+            guid="guid-reissued",
+            duration=300,
+        )
+        processed: list[str] = []
+
+        def fake_download(url, ep_id, tmp):
+            path = os.path.join(tmp, f"{ep_id}.mp3")
+            open(path, "wb").write(b"ID3")
+            processed.append(ep_id)
+            return path
+
+        manifest = {
+            "guid-retired": {
+                "title": "Prenups",
+                "guid": "guid-retired",
+                "pub_date": old_pub.isoformat(),
+                "splice_failed": True,
+                "splice_failed_count": 1,
+                "size": 1000,
+            }
+        }
+
+        with (
+            patch("podcast_sync.is_apple_podcasts_url", return_value=False),
+            patch("podcast_sync.fetch_feed_xml", return_value=b"<rss/>"),
+            patch("podcast_sync.parse_episodes", return_value=[new_ep, rotated_ep]),
+            patch("podcast_sync.episode_id_from_guid", side_effect=lambda g: g),
+            patch("podcast_sync.S3Manager") as MockS3,
+            patch("podcast_sync.download_episode", side_effect=fake_download),
+            patch("podcast_sync.remove_ads", side_effect=lambda p, eid, td, **kw: (p, [], "")),
+        ):
+            mock_s3 = MockS3.return_value
+            mock_s3.list_existing_episodes.return_value = set()
+            mock_s3.load_manifest.return_value = manifest
+            process_podcast_feed(podcast, dry_run=False)
+
+        assert "guid-reissued" in processed
+        assert "guid-new" in processed
+        # The dead row is gone, so the stranded-episode warning stops firing.
+        assert "guid-retired" not in manifest
+
     def test_retries_not_counted_against_new_download_cap(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MAX_SPLICE_RETRIES", "3")
         podcast = _make_podcast(max_age_days=7, max_downloads=1)
@@ -2365,3 +2425,179 @@ class TestAdRemovalFallbackS3Integration:
         assert "Fallback integration episode</title>" in feed
         assert "Fallback integration episode [Ad-Free]" not in feed
         assert "guid-fallback-integration.mp3" in feed
+
+
+# ---------------------------------------------------------------------------
+# GUID rotation — _rotation_match_key / _reconcile_rotated_splice_retries
+# ---------------------------------------------------------------------------
+
+
+class TestRotationMatchKey:
+    def test_string_and_datetime_pub_dates_produce_the_same_key(self):
+        from_str = _rotation_match_key("Ep One", "2026-08-19T07:00:00+00:00")
+        from_dt = _rotation_match_key("Ep One", datetime(2026, 8, 19, 7, 0, tzinfo=UTC))
+        assert from_str == from_dt == ("ep one", "2026-08-19")
+
+    def test_whitespace_and_case_differences_are_normalized(self):
+        assert _rotation_match_key("  The   Best\tOne ", "2026-08-19T07:00:00+00:00") == _rotation_match_key(
+            "the best one", "2026-08-19T07:00:00+00:00"
+        )
+
+    def test_naive_pub_date_is_treated_as_utc(self):
+        assert _rotation_match_key("Ep", datetime(2026, 8, 19, 7, 0)) == ("ep", "2026-08-19")
+
+    def test_a_non_utc_offset_is_converted_before_taking_the_day(self):
+        # 23:30 on the 19th in UTC+2 is still the 19th in UTC-ish terms only
+        # after conversion: 21:30 UTC. Comparing the raw local day would drift.
+        assert _rotation_match_key("Ep", "2026-08-20T00:30:00+02:00") == ("ep", "2026-08-19")
+
+    def test_missing_title_or_unparseable_date_matches_nothing(self):
+        assert _rotation_match_key("", "2026-08-19T07:00:00+00:00") is None
+        assert _rotation_match_key("   ", "2026-08-19T07:00:00+00:00") is None
+        assert _rotation_match_key("Ep", "not-a-date") is None
+        assert _rotation_match_key("Ep", "") is None
+
+
+class TestReconcileRotatedSpliceRetries:
+    """Acast re-issues GUIDs for episodes already in the feed; pending splice
+    work keyed on the retired ID must follow the episode to its new ID."""
+
+    def _ep(self, guid, title="Prenups", day=19):
+        return EpisodeMeta(
+            title=title,
+            url=f"https://example.com/{guid}.mp3",
+            pub_date=datetime(2026, 8, day, 7, 0, tzinfo=UTC),
+            guid=guid,
+            duration=584,
+        )
+
+    def _pending(self, guid, title="Prenups", day=19, count=1):
+        return {
+            "title": title,
+            "guid": guid,
+            "pub_date": datetime(2026, 8, day, 7, 0, tzinfo=UTC).isoformat(),
+            "duration": 584,
+            "cdn": "acast",
+            "fail_reason": "splice crashed (1 ads detected but original returned)",
+            "splice_failed": True,
+            "splice_failed_count": count,
+        }
+
+    def test_pending_row_migrates_to_the_new_guid(self):
+        manifest = {"old-id": self._pending("old-id", count=2)}
+        result = _reconcile_rotated_splice_retries(
+            manifest, [self._ep("new-id")], {"old-id"}, set(), "The Best One Yet"
+        )
+        assert result == {"new-id"}
+        assert "old-id" not in manifest
+        # The lifetime counter and the failure reason come along, so the
+        # migrated episode cannot retry past MAX_SPLICE_RETRIES.
+        assert manifest["new-id"]["splice_failed_count"] == 2
+        assert manifest["new-id"]["splice_failed"] is True
+        assert manifest["new-id"]["guid"] == "new-id"
+        assert manifest["new-id"]["title"] == "Prenups"
+
+    def test_retry_id_still_in_the_feed_is_left_untouched(self):
+        manifest = {"old-id": self._pending("old-id")}
+        result = _reconcile_rotated_splice_retries(
+            manifest, [self._ep("old-id")], {"old-id"}, set(), "The Best One Yet"
+        )
+        assert result == {"old-id"}
+        assert list(manifest) == ["old-id"]
+
+    def test_no_match_leaves_the_dead_row_in_place(self):
+        # A feed hiccup must not silently drop pending work: without a
+        # title+date match the row stays and is reconsidered next run.
+        manifest = {"old-id": self._pending("old-id")}
+        result = _reconcile_rotated_splice_retries(
+            manifest, [self._ep("new-id", title="Something Else")], {"old-id"}, set(), "The Best One Yet"
+        )
+        assert result == {"old-id"}
+        assert list(manifest) == ["old-id"]
+
+    def test_ambiguous_matches_are_refused(self, caplog):
+        manifest = {"old-id": self._pending("old-id")}
+        with caplog.at_level("WARNING"):
+            result = _reconcile_rotated_splice_retries(
+                manifest,
+                [self._ep("new-a"), self._ep("new-b")],
+                {"old-id"},
+                set(),
+                "The Best One Yet",
+            )
+        assert result == {"old-id"}
+        assert list(manifest) == ["old-id"]
+        assert "not guessing" in caplog.text
+
+    def test_an_already_known_episode_is_not_mistaken_for_the_successor(self):
+        # A feed episode that is already published (or already has a manifest
+        # row) is a different episode, never the rotated replacement.
+        manifest = {"old-id": self._pending("old-id"), "known-id": {"title": "Prenups"}}
+        result = _reconcile_rotated_splice_retries(
+            manifest,
+            [self._ep("known-id"), self._ep("published-id")],
+            {"old-id"},
+            {"published-id"},
+            "The Best One Yet",
+        )
+        assert result == {"old-id"}
+        assert manifest["old-id"]["splice_failed"] is True
+
+    def test_two_stale_rows_migrate_to_their_own_successors(self):
+        manifest = {
+            "old-a": self._pending("old-a", title="Prenups", day=19),
+            "old-b": self._pending("old-b", title="Rihanna", day=20, count=0),
+        }
+        result = _reconcile_rotated_splice_retries(
+            manifest,
+            [self._ep("new-a", title="Prenups", day=19), self._ep("new-b", title="Rihanna", day=20)],
+            {"old-a", "old-b"},
+            set(),
+            "The Best One Yet",
+        )
+        assert result == {"new-a", "new-b"}
+        assert set(manifest) == {"new-a", "new-b"}
+        assert manifest["new-b"]["splice_failed_count"] == 0
+
+    def test_one_successor_is_claimed_by_only_one_stale_row(self):
+        # Two retired rows sharing a title and date cannot both own the single
+        # replacement; the second must stay pending rather than overwrite it.
+        manifest = {
+            "old-a": self._pending("old-a", count=2),
+            "old-b": self._pending("old-b", count=1),
+        }
+        result = _reconcile_rotated_splice_retries(
+            manifest, [self._ep("new-id")], {"old-a", "old-b"}, set(), "The Best One Yet"
+        )
+        assert result == {"new-id", "old-b"}
+        assert manifest["new-id"]["splice_failed_count"] == 2
+        assert "old-a" not in manifest
+        assert manifest["old-b"]["splice_failed_count"] == 1
+
+    def test_incomplete_manifest_row_is_skipped(self):
+        manifest = {"old-id": {"splice_failed": True, "splice_failed_count": 0}}
+        result = _reconcile_rotated_splice_retries(
+            manifest, [self._ep("new-id")], {"old-id"}, set(), "The Best One Yet"
+        )
+        assert result == {"old-id"}
+        assert list(manifest) == ["old-id"]
+
+    def test_non_dict_manifest_row_is_skipped(self):
+        manifest = {"old-id": "legacy-string-value"}
+        result = _reconcile_rotated_splice_retries(
+            manifest, [self._ep("new-id")], {"old-id"}, set(), "The Best One Yet"
+        )
+        assert result == {"old-id"}
+
+    def test_empty_retry_set_short_circuits(self):
+        manifest = {"old-id": self._pending("old-id")}
+        assert _reconcile_rotated_splice_retries(manifest, [self._ep("new-id")], set(), set(), "P") == set()
+        assert list(manifest) == ["old-id"]
+
+    def test_migration_logs_the_retired_and_new_ids(self, caplog):
+        manifest = {"old-id": self._pending("old-id", count=1)}
+        with caplog.at_level("WARNING"):
+            _reconcile_rotated_splice_retries(manifest, [self._ep("new-id")], {"old-id"}, set(), "The Best One Yet")
+        assert "re-issued the GUID" in caplog.text
+        assert "old-id" in caplog.text
+        assert "new-id" in caplog.text
